@@ -1,0 +1,11 @@
+# build artifacts
+/bin/
+/dist/
+*.exe
+
+# tests / coverage
+*.test
+coverage.*
+
+# editor / OS
+.DS_Store
