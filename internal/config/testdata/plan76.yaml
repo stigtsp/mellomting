@@ -1,0 +1,103 @@
+version: 1
+
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+
+  max_header_bytes: 32768
+  max_body_bytes: 16777216
+  max_response_bytes: 67108864
+  max_inflight_requests: 32
+  max_buffered_request_bytes: 67108864
+
+  read_header_timeout: 5s
+  read_body_timeout: 60s
+  idle_timeout: 120s
+  stream_idle_timeout: 120s
+  stream_write_timeout: 30s
+
+auth:
+  users_file: /etc/mellomting/users.yaml
+  pepper_file: /etc/mellomting/auth.pepper
+
+security:
+  backend_network:
+    mode: loopback-only
+
+  landlock:
+    mode: required
+    minimum_abi: 8
+
+logging:
+  format: json
+  level: info
+
+accounting:
+  enabled: true
+  path: /var/log/mellomting/usage.jsonl
+  ensure_stream_usage: true
+  replay_on_start: true
+  queue_size: 4096
+  overflow: drop-and-alert
+  fsync: interval
+  fsync_interval: 5s
+
+limits:
+  global_requests_per_second: 100
+  global_burst: 200
+
+backends:
+  qwen-a:
+    base_url: http://127.0.0.1:8001
+    upstream_model: Qwen/Qwen3-Coder-Next
+    connect_timeout: 3s
+    request_timeout: 20m
+    stream_idle_timeout: 120s
+    max_concurrency: 4
+    queue_size: 8
+    queue_timeout: 5s
+
+  qwen-b:
+    base_url: http://127.0.0.1:8002
+    upstream_model: Qwen/Qwen3-Coder-Next
+    connect_timeout: 3s
+    request_timeout: 20m
+    stream_idle_timeout: 120s
+    max_concurrency: 4
+    queue_size: 8
+    queue_timeout: 5s
+
+  guard-a:
+    base_url: http://127.0.0.1:8100
+    upstream_model: Qwen/Qwen3Guard-Gen-0.6B
+    max_concurrency: 2
+    queue_size: 4
+
+qualifiers:
+  safety-audit:
+    backend: guard-a
+    model: Qwen/Qwen3Guard-Gen-0.6B
+    timeout: 3s
+    failure_policy: allow
+
+    input:
+      mode: audit
+
+    output:
+      mode: disabled
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: least-inflight
+
+    policy:
+      max_output_tokens: 32768
+
+    qualifier: safety-audit
+
+    backends:
+      - qwen-a
+      - qwen-b

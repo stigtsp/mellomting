@@ -116,7 +116,15 @@ staticcheck ./...     # if installed
 
 ## Current status
 
-Phase 0 (repository skeleton) — module, CLI entry point, and package layout
-exist. `mellomting version` and `mellomting help` work; all other commands
-are stubs. Next: structured logging, config loader with strict validation,
-`config check` and `sandbox check` (PLAN §91).
+Phase 0 complete except the `serve`-side pieces: module, CLI entry point,
+package layout, structured logging (`internal/logging`), config loader with
+strict validation (`internal/config`), `mellomting config check` /
+`config show-effective` / `sandbox check`, version/commit embedding
+(Makefile), CI (`gofmt`, vet, staticcheck, govulncheck, tests, race, fuzz
+smoke, SHA-pinned actions, Dependabot), and `SECURITY.md` /
+`THREAT_MODEL.md` / `HARDENING.md` exist and pass the quality gates.
+
+Next (PLAN §92): `serve` with the signal framework and graceful shutdown,
+Unix/loopback listener, API-key generation/storage with `internal/auth`,
+bearer auth, key ACL, `/v1/models`, and the chat/completions/embeddings
+pipeline with streaming and header sanitation.
