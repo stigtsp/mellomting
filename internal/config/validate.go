@@ -41,6 +41,9 @@ const (
 	defaultGlobalBurst     = 200
 	defaultLandlockABI     = 8
 	defaultAccountingQueue = 4096
+
+	defaultAffinityTTL        = 2 * time.Hour
+	defaultMaxAffinityEntries = 10000
 )
 
 // applyDefaults fills zero-valued fields with the PLAN defaults. Zero
@@ -137,6 +140,17 @@ func applyDefaults(c *Config) {
 		c.Limits.GlobalBurst = defaultGlobalBurst
 	}
 
+	if c.Shutdown.GracePeriod == 0 {
+		c.Shutdown.GracePeriod = Duration(30 * time.Second)
+	}
+
+	if c.Responses.AffinityTTL == 0 {
+		c.Responses.AffinityTTL = Duration(defaultAffinityTTL)
+	}
+	if c.Responses.MaxAffinityEntries == 0 {
+		c.Responses.MaxAffinityEntries = defaultMaxAffinityEntries
+	}
+
 	for name := range c.Backends {
 		b := c.Backends[name]
 		if b.ConnectTimeout == 0 {
@@ -211,6 +225,8 @@ func validate(c *Config) error {
 	errs = append(errs, validateLogging(&c.Logging)...)
 	errs = append(errs, validateAccounting(&c.Accounting)...)
 	errs = append(errs, validateLimits(&c.Limits)...)
+	errs = append(errs, validateShutdown(&c.Shutdown)...)
+	errs = append(errs, validateResponses(&c.Responses)...)
 	errs = append(errs, validateBackends(c.Backends, c.Security.BackendNetwork)...)
 	errs = append(errs, validateQualifiers(c.Qualifiers, c.Backends)...)
 	errs = append(errs, validateModels(c.Models, c.Backends, c.Qualifiers)...)
@@ -405,6 +421,25 @@ func validateLimits(l *Limits) []string {
 	}
 	if l.GlobalBurst <= 0 {
 		errs = append(errs, "limits.global_burst: must be > 0")
+	}
+	return errs
+}
+
+func validateShutdown(s *Shutdown) []string {
+	var errs []string
+	if s.GracePeriod.Duration() <= 0 {
+		errs = append(errs, "shutdown.grace_period: must be > 0")
+	}
+	return errs
+}
+
+func validateResponses(r *Responses) []string {
+	var errs []string
+	if r.AffinityTTL.Duration() <= 0 {
+		errs = append(errs, "responses.affinity_ttl: must be > 0")
+	}
+	if r.MaxAffinityEntries <= 0 {
+		errs = append(errs, "responses.max_affinity_entries: must be > 0")
 	}
 	return errs
 }

@@ -36,9 +36,23 @@ type Config struct {
 	Logging    Logging              `yaml:"logging"`
 	Accounting Accounting           `yaml:"accounting"`
 	Limits     Limits               `yaml:"limits"`
+	Shutdown   Shutdown             `yaml:"shutdown"`
+	Responses  Responses            `yaml:"responses"`
 	Backends   map[string]Backend   `yaml:"backends"`
 	Qualifiers map[string]Qualifier `yaml:"qualifiers"`
 	Models     map[string]Model     `yaml:"models"`
+}
+
+// Responses bounds the in-memory Responses API affinity table (PLAN §21).
+// The mapping is cleared on restart; it is not persisted in v1.
+type Responses struct {
+	AffinityTTL        Duration `yaml:"affinity_ttl"`
+	MaxAffinityEntries int      `yaml:"max_affinity_entries"`
+}
+
+// Shutdown controls graceful shutdown (PLAN §74).
+type Shutdown struct {
+	GracePeriod Duration `yaml:"grace_period"`
 }
 
 // Duration wraps time.Duration for strict YAML parsing (PLAN §28):

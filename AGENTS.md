@@ -116,15 +116,22 @@ staticcheck ./...     # if installed
 
 ## Current status
 
-Phase 0 complete except the `serve`-side pieces: module, CLI entry point,
-package layout, structured logging (`internal/logging`), config loader with
-strict validation (`internal/config`), `mellomting config check` /
-`config show-effective` / `sandbox check`, version/commit embedding
-(Makefile), CI (`gofmt`, vet, staticcheck, govulncheck, tests, race, fuzz
-smoke, SHA-pinned actions, Dependabot), and `SECURITY.md` /
-`THREAT_MODEL.md` / `HARDENING.md` exist and pass the quality gates.
+Phase 0 and Phase 1 (PLAN §91–92) are complete and pass the quality gates:
+module, CLI entry point, package layout, structured logging
+(`internal/logging`), strict config loader (`internal/config`),
+`mellomting config check` / `config show-effective` / `sandbox check` /
+`key create|list|enable|disable|revoke` / `serve`, version/commit embedding
+(Makefile), CI, and `SECURITY.md` / `THREAT_MODEL.md` / `HARDENING.md`.
 
-Next (PLAN §92): `serve` with the signal framework and graceful shutdown,
-Unix/loopback listener, API-key generation/storage with `internal/auth`,
-bearer auth, key ACL, `/v1/models`, and the chat/completions/embeddings
-pipeline with streaming and header sanitation.
+Phase 1 adds `internal/securefile`, `internal/auth` (key store, HMAC,
+offline CLI), `internal/routing`, `internal/backend` (bounded upstream
+client, header sanitation, MPTCP-off dialer, admission queues),
+`internal/proxy` (shallow parse, model rewrite, SSE streaming, Responses
+affinity, byte budget), `internal/httpapi` (allow-listed routes, bearer
+auth, `/v1/models`, health endpoints, no catch-all), and the `serve`
+command (Unix/TCP listeners, signals, graceful shutdown).
+
+Known deferred work (later phases): Landlock enforcement (PLAN §95) —
+`serve` fails closed when `security.landlock.mode: required`; rate
+limiting / token accounting (PLAN §93–94); multi-backend strategies and
+stickiness (PLAN §93).

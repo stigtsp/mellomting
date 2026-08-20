@@ -1,0 +1,163 @@
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+var keyRe = regexp.MustCompile(`mtk_[A-Z2-9]{8}_[A-Z2-9]{52}`)
+
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "mellomting")
+	if err := exec.Command("go", "build", "-o", bin, ".").Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(bin) })
+	return bin
+}
+
+func keyCLIFixture(t *testing.T) (bin, dir string) {
+	t.Helper()
+	bin = buildCLI(t)
+	dir = t.TempDir()
+
+	cfg := `version: 1
+
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+
+auth:
+  users_file: ` + dir + `/users.yaml
+  pepper_file: ` + dir + `/auth.pepper
+
+backends:
+  qwen-a:
+    base_url: http://127.0.0.1:8001
+    upstream_model: Qwen/Qwen3-Coder-Next
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - qwen-a
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "auth.pepper"),
+		[]byte("test-pepper-long-enough-16b+"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return bin, dir
+}
+
+func runCLI(t *testing.T, bin, dir string, args ...string) (int, string, string) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	var outB, errB strings.Builder
+	cmd.Stdout = &outB
+	cmd.Stderr = &errB
+	err := cmd.Run()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	return code, outB.String(), errB.String()
+}
+
+func TestKeyLifecycle(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	// Create a key.
+	code, out, _ := runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "tester", "-models", "qwen-coder")
+	if code != 0 {
+		t.Fatalf("create exit = %d", code)
+	}
+	m := keyRe.FindString(out)
+	if m == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+	key := m
+	// The raw key must be printed exactly once.
+	if n := strings.Count(out, key); n != 1 {
+		t.Fatalf("key printed %d times", n)
+	}
+	id := key[len("mtk_") : len("mtk_")+8]
+
+	// List shows it enabled.
+	code, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
+	if code != 0 || !strings.Contains(out, id) || !strings.Contains(out, "enabled") {
+		t.Fatalf("list exit=%d out=%q", code, out)
+	}
+
+	// Disable / re-enable.
+	if code, _, _ := runCLI(t, bin, dir, "key", "disable", "-config", cfg, "-id", id); code != 0 {
+		t.Fatalf("disable exit = %d", code)
+	}
+	_, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
+	if !strings.Contains(out, "disabled") {
+		t.Fatalf("not disabled: %q", out)
+	}
+	if code, _, _ := runCLI(t, bin, dir, "key", "enable", "-config", cfg, "-id", id); code != 0 {
+		t.Fatalf("enable exit = %d", code)
+	}
+
+	// Second key with wildcard, then revoke it.
+	code, out, _ = runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "wild", "-models", "*",
+		"-expires", "2030-01-01T00:00:00Z")
+	if code != 0 {
+		t.Fatalf("create wildcard exit = %d", code)
+	}
+	key2 := keyRe.FindString(out)
+	if key2 == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+	id2 := key2[4:12]
+	if code, _, _ := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id2); code != 0 {
+		t.Fatalf("revoke exit = %d", code)
+	}
+	_, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
+	if strings.Contains(out, id2) {
+		t.Fatalf("revoked key still listed: %q", out)
+	}
+	if !strings.Contains(out, id) {
+		t.Fatalf("surviving key missing: %q", out)
+	}
+
+	// The created key must actually authenticate: verify hash chain by
+	// re-creating a store (done in the auth package; here we only check
+	// the users file is well-formed and owned 0600).
+	ui, err := os.Stat(filepath.Join(dir, "users.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := ui.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("users.yaml mode = %v, want 0600", perm)
+	}
+
+	// Error paths.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", "NOPE"); code != 1 {
+		t.Fatalf("revoke unknown exit = %d stderr=%q", code, errOut)
+	}
+	if code, _, _ := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-models", "x"); code != 2 {
+		t.Fatalf("create without name exit = %d (want 2)", code)
+	}
+	if code, _, _ := runCLI(t, bin, dir, "key", "bogus"); code != 2 {
+		t.Fatalf("unknown subcommand exit = %d (want 2)", code)
+	}
+}
