@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,8 +26,9 @@ type env struct {
 }
 
 // buildEnv assembles the full HTTP surface in front of a fake backend.
-// mod, when non-nil, tweaks the effective configuration before wiring.
-func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)) *env {
+// mod, when non-nil, tweaks the effective configuration before wiring;
+// k1lim is the per-key limit block of the model-a key.
+func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits) *env {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/responses/") {
@@ -84,7 +86,7 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 		t.Fatal(err)
 	}
 	uf := &auth.UsersFile{Version: 1, Keys: []auth.Key{
-		{ID: id1, Name: "a", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k1)), Enabled: true, Models: []string{"model-a"}},
+		{ID: id1, Name: "a", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k1)), Enabled: true, Models: []string{"model-a"}, Limits: k1lim},
 		{ID: id2, Name: "b", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k2)), Enabled: true, Models: []string{"*"}},
 	}}
 	store, err := auth.NewStore(uf, pepper)
@@ -145,7 +147,7 @@ func TestHealthEndpoints(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
-	}, nil)
+	}, nil, auth.KeyLimits{})
 	// No auth needed.
 	w := e.do(t, http.MethodGet, "/healthz", "", "")
 	if w.Code != 200 || w.Body.String() != "ok" {
@@ -164,7 +166,7 @@ func TestAuthMatrix(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
-	}, nil)
+	}, nil, auth.KeyLimits{})
 	cases := []struct {
 		name string
 		key  string // "", "bearer", "bearer2", "xkey"
@@ -225,7 +227,7 @@ func TestModelsACLFiltering(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
-	}, nil)
+	}, nil, auth.KeyLimits{})
 	// model-a key sees only model-a.
 	w := e.do(t, http.MethodGet, "/v1/models", "bearer", "")
 	var list struct {
@@ -249,7 +251,7 @@ func TestNoCatchAllRoute(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"hacked":true}`))
-	}, nil)
+	}, nil, auth.KeyLimits{})
 	// Backend admin paths MUST be 404, never proxied (PLAN §11.3).
 	paths := []string{
 		"/metrics",
@@ -292,7 +294,7 @@ func TestFullChatFlow(t *testing.T) {
 		_ = json.Unmarshal(body, &env)
 		sawModel = env.Model
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-9"}`))
-	}, nil)
+	}, nil, auth.KeyLimits{})
 	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a","messages":[]}`)
 	if w.Code != 200 {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
@@ -344,7 +346,7 @@ func TestInflightLimit(t *testing.T) {
 		b.HeaderTimeout = config.Duration(30 * time.Second)
 		b.RequestTimeout = config.Duration(30 * time.Second)
 		c.Backends["b1"] = b
-	})
+	}, auth.KeyLimits{})
 	// Hold the four inflight slots with blocking backend requests.
 	for i := 0; i < 4; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
@@ -366,5 +368,101 @@ func TestInflightLimit(t *testing.T) {
 	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
 	if w.Code != 503 {
 		t.Fatalf("inflight bound: status = %d (want 503)", w.Code)
+	}
+}
+
+// PLAN §34: global request-rate exhaustion returns 429 with a
+// Retry-After, before per-key limits are even consulted.
+func TestGlobalRateLimit429(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}, func(c *config.Config) {
+		c.Limits.GlobalRequestsPerSecond = 0.5
+		c.Limits.GlobalBurst = 1
+	}, auth.KeyLimits{})
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("first: %d", w.Code)
+	}
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 {
+		t.Fatalf("second: %d body=%s (want 429)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "too_many_requests") {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Fatal("Retry-After header missing on 429")
+	}
+}
+
+// PLAN §34: a per-key RPS limit 429s that key while sibling keys are
+// unaffected; the response carries a Retry-After.
+func TestKeyRateLimit429(t *testing.T) {
+	t.Parallel()
+	behaviour := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}
+	e := buildEnv(t, behaviour, nil, auth.KeyLimits{RequestsPerSecond: 1, Burst: 1})
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("first: %d", w.Code)
+	}
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("second: %d retry-after=%q (want 429 + Retry-After)", w.Code, w.Header().Get("Retry-After"))
+	}
+	// The unlimited sibling key is unaffected by the sibling's budget.
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("sibling key: %d (want 200)", w.Code)
+	}
+}
+
+// PLAN §35: a key with concurrent_requests=1 cannot hold more than one
+// in-flight request; a different key is unaffected.
+func TestKeyConcurrencyLimit429(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	defer close(done)
+	firstAdmitted := make(chan struct{}, 1)
+	var holder int32 // only the first request may hold the backend
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		// Only the first request (key 1's held request) blocks; later
+		// requests must be able to complete while it is held.
+		if atomic.CompareAndSwapInt32(&holder, 0, 1) {
+			select {
+			case firstAdmitted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-r.Context().Done():
+			case <-done:
+			}
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}, nil, auth.KeyLimits{ConcurrentRequests: 1, RequestsPerSecond: 10, Burst: 10})
+
+	// Key 1 holds its single slot (independent goroutine + recorder).
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	req.Header.Set("Authorization", "Bearer "+e.key)
+	rr := httptest.NewRecorder()
+	go func() { e.srv.Handler().ServeHTTP(rr, req) }()
+	select {
+	case <-firstAdmitted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("held request never admitted")
+	}
+
+	// Key 1's second request must be rejected.
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 {
+		t.Fatalf("key-1 second in-flight: %d (want 429)", w.Code)
+	}
+	// A different key is unaffected by key-1's bound.
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("other key: %d (want 200)", w.Code)
 	}
 }

@@ -17,6 +17,7 @@ import (
 
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
+	"mellomting/internal/limiter"
 	"mellomting/internal/proxy"
 	"mellomting/internal/routing"
 )
@@ -29,6 +30,8 @@ type Server struct {
 	router      *routing.Router
 	proxy       *proxy.Proxy
 	inflight    chan struct{}
+	globalRPS   *limiter.Bucket
+	keyLimits   *limiter.Registry
 	ready       atomic.Bool
 	startedUnix int64
 }
@@ -43,6 +46,17 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 	if size < 1 {
 		size = 1
 	}
+	// Configuration validation guarantees rate > 0 after defaults;
+	// fall back to the PLAN defaults if an un-validated configuration
+	// ever reaches the daemon (PLAN §76).
+	rps, burst := cfg.Limits.GlobalRequestsPerSecond, cfg.Limits.GlobalBurst
+	if rps <= 0 || burst < 1 {
+		rps, burst = 100, 200
+	}
+	globalRPS, err := limiter.NewBucket(rps, burst)
+	if err != nil {
+		panic("httpapi: invalid global rate limit: " + err.Error())
+	}
 	return &Server{
 		cfg:         cfg,
 		log:         log,
@@ -50,6 +64,8 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		router:      router,
 		proxy:       p,
 		inflight:    make(chan struct{}, size),
+		globalRPS:   globalRPS,
+		keyLimits:   limiter.NewRegistry(),
 		startedUnix: time.Now().Unix(),
 	}
 }
@@ -94,11 +110,33 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Global request-rate limit (PLAN §32–§34), checked before paying
+	// the authentication cost beyond the inflight bound above.
+	if ok, ra := s.globalRPS.Allow(time.Now()); !ok {
+		writeRateLimit(w, ra)
+		return
+	}
+
 	key, err := s.authorize(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
 		return
 	}
+
+	// Per-key limits (PLAN §34, §35): request rate, then concurrency.
+	// Acquired before bodies are read (the proxy reads after this
+	// point) so a single key cannot pile up resources (PLAN §35).
+	ks := s.keyLimits.For(key)
+	if ok, ra := ks.AllowRate(time.Now()); !ok {
+		writeRateLimit(w, ra)
+		return
+	}
+	releaseKey, ok := ks.AcquireConcurrency()
+	if !ok {
+		writeRateLimit(w, 0)
+		return
+	}
+	defer releaseKey()
 
 	q := &proxy.Req{
 		W:         w,
