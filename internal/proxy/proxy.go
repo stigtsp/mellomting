@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -124,6 +125,7 @@ type result struct {
 	backend  string
 	bytesIn  int
 	bytesOut int
+	retries  int
 }
 
 // dispatch runs the full pipeline for one allow-listed operation.
@@ -146,6 +148,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"bytes_in", out.bytesIn,
 			"bytes_out", out.bytesOut,
+			"retry_count", out.retries,
 			"error_class", out.class,
 		)
 	}()
@@ -166,7 +169,6 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	var body []byte
 	var stream bool
 	var publicModel string
-	backendOverride := ""
 
 	if o.method == "POST" {
 		enc := q.R.Header.Get("Content-Encoding")
@@ -197,6 +199,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 
 	// 3. Shallow parse, model resolution, ACL (PLAN §12, §13, §31).
+	fixedBackend := ""
 	if o.needsModel {
 		var perr error
 		body, publicModel, stream, perr = shallowParse(body)
@@ -222,15 +225,6 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"model not found or not allowed", "authz")
 			return
 		}
-		t, _ := p.router.Resolve(publicModel)
-		backendOverride = t.Backend
-		// Rewrite the outbound model name (PLAN §13).
-		body, perr = rewriteModel(body, t.Upstream)
-		if perr != nil {
-			fail(400, "invalid_request_error", "invalid_json",
-				"request body could not be normalized", "bad_request")
-			return
-		}
 		if o.capture {
 			if prev, ok := stringField(body, "previous_response_id"); ok {
 				b, ok := p.affinity.Get(q.Key.ID, prev)
@@ -239,7 +233,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 						"previous response not found", "affinity")
 					return
 				}
-				backendOverride = b
+				// The owning backend is authoritative (PLAN §21.3).
+				fixedBackend = b
 			}
 		}
 	} else if o.respID {
@@ -247,9 +242,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// backend; an unknown ID may be forwarded only when exactly one
 		// backend is possible for this key.
 		if b, ok := p.affinity.Get(q.Key.ID, q.ResponseID); ok {
-			backendOverride = b
+			fixedBackend = b
 		} else if only := p.singlePossibleBackend(q.Key); only != "" {
-			backendOverride = only
+			fixedBackend = only
 		} else {
 			fail(404, "invalid_request_error", "response_not_found",
 				"response not found", "affinity")
@@ -273,14 +268,17 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 	}
 
-	client, ok := p.clients[backendOverride]
-	if !ok {
-		fail(500, "api_error", "internal", "internal error", "internal_error")
-		return
+	// 4. Forward under the bounded pre-stream retry/fallback budget
+	// (PLAN §22, §23, §93). The request may make at most retry.max_attempts
+	// attempts in total across all backends (a global bound: no
+	// multiplicative amplification). A fallback to an untried eligible
+	// backend is immediate; repeating a backend that already failed
+	// waits the jittered exponential backoff. Nothing is retried once
+	// any byte has reached the client (PLAN §24).
+	maxAttempts := p.cfg.Retry.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
-	out.backend = backendOverride
-
-	// 4. Forward (PLAN §18: only allow-listed headers are passed).
 	uctx, ucancel := context.WithCancel(q.R.Context())
 	defer ucancel()
 
@@ -288,79 +286,231 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	if len(body) > 0 {
 		headers["Content-Type"] = []string{"application/json"}
 	}
-	res, err := client.Forward(uctx, backend.Request{
-		Method:  o.method,
-		Path:    o.path,
-		Body:    body,
-		Headers: headers,
-		Stream:  stream,
-	})
 
-	// 5. Errors (sanitized, PLAN §43, §72).
-	if err != nil {
-		if errors.Is(err, context.Canceled) && q.R.Context().Err() != nil {
-			// The client went away; no response is sent or possible.
+	tried := make([]string, 0, maxAttempts)
+	retried := 0
+	var lastErr error
+	var lastFailed string
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if q.R.Context().Err() != nil {
 			out.bytesOut = 0
 			return
 		}
-		var up *backend.Upstream
-		if errors.As(err, &up) {
-			switch {
-			case up.Status == 429:
-				// 429: upstream is rate-limiting us
-				fail(429, "rate_limit_error", "upstream_rate_limited",
-					"upstream is rate limited", "backend_429")
-				return
-			case up.Status >= 500:
-				// 5xx: upstream is failing
-				fail(502, "api_error", "upstream_unavailable",
-					"upstream is unavailable", "backend_5xx")
-				return
-			default:
-				// 4xx: client-facing request was rejected by upstream
-				fail(400, "invalid_request_error", "upstream_rejected",
-					"upstream rejected the request", "backend_4xx")
+
+		// Selection (PLAN §19, §22): prefer an untried eligible
+		// backend; when every candidate is unavailable (cooldown or
+		// excluded) a retryable last failure may be repeated in place.
+		backendName := fixedBackend
+		if backendName == "" {
+			t, serr := p.router.Select(publicModel, tried)
+			if serr != nil {
+				if lastErr != nil && retryableBackendError(lastErr) && lastFailed != "" {
+					backendName = lastFailed
+				} else if attempt == 0 {
+					fail(503, "overload_error", "server_overloaded",
+						"no backend is available", "no_backend_available")
+					return
+				} else {
+					break // budget exhausted below
+				}
+			} else {
+				backendName = t.Backend
+			}
+		}
+		var bd []byte = body
+		if o.needsModel {
+			up, _ := p.router.UpstreamFor(backendName)
+			if up != "" {
+				var rerr error
+				if bd, rerr = rewriteModel(body, up); rerr != nil {
+					fail(400, "invalid_request_error", "invalid_json",
+						"request body could not be normalized", "bad_request")
+					return
+				}
+			}
+		}
+
+		// Same-backend repeat: exponential backoff with optional full
+		// jitter (PLAN §23). Fallback to a different backend waits on
+		// nothing.
+		if attempt > 0 && backendName == lastFailed {
+			retried++
+			if !p.sleepBackoff(q.R.Context(), attempt) {
+				out.bytesOut = 0
 				return
 			}
 		}
-		switch {
-		case errors.Is(err, backend.ErrQueueFull):
-			fail(503, "overload_error", "server_overloaded", "server is overloaded", "queue_full")
-		case errors.Is(err, backend.ErrTimeout):
-			fail(504, "api_error", "upstream_timeout", "upstream timed out", "backend_timeout")
-		case errors.Is(err, backend.ErrConnect):
-			fail(502, "api_error", "upstream_unavailable", "upstream is unavailable", "backend_connect")
-		case errors.Is(err, backend.ErrTooLarge):
-			fail(502, "api_error", "upstream_unavailable", "upstream is unavailable", "backend_5xx")
-		case errors.Is(err, backend.ErrPolicy):
-			fail(500, "api_error", "internal", "internal error", "policy")
-		default:
-			fail(502, "api_error", "upstream_unavailable", "upstream is unavailable", "backend_5xx")
+
+		client, ok := p.clients[backendName]
+		if !ok {
+			fail(500, "api_error", "internal", "internal error", "internal_error")
+			return
+		}
+		out.backend = backendName
+
+		res, err := client.Forward(uctx, backend.Request{
+			Method:  o.method,
+			Path:    o.path,
+			Body:    bd,
+			Headers: headers,
+			Stream:  stream,
+		})
+		if err != nil {
+			if errors.Is(err, context.Canceled) && q.R.Context().Err() != nil {
+				// The client went away; no response is sent or possible.
+				out.bytesOut = 0
+				return
+			}
+			lastErr = err
+			lastFailed = backendName
+			if retryableBackendError(err) {
+				// Connection-level failures poison the passive-health
+				// state for subsequent requests (PLAN §70).
+				if connectionLevelError(err) {
+					p.router.RecordFailure(backendName)
+				}
+				tried = append(tried, backendName)
+				continue
+			}
+			break
+		}
+		// A response was received: the backend is up again.
+		p.router.RecordSuccess(backendName)
+
+		// 5/6. Success (PLAN §18: only allow-listed headers pass through).
+		if stream {
+			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName)
+			out.status, out.bytesOut, out.class = status, bytesOut, cls
+			out.retries = retried
+			return
+		}
+		res.Close()
+		out.status = res.Status
+		out.class = "ok"
+		out.bytesOut = len(res.BodyBytes)
+		out.retries = retried
+		ct := "application/json"
+		if v := res.Header.Get("Content-Type"); v != "" {
+			ct = v
+		}
+		q.W.Header().Set("Content-Type", ct)
+		q.W.WriteHeader(res.Status)
+		_, _ = q.W.Write(res.BodyBytes)
+		if o.capture {
+			if id := topLevelID(res.BodyBytes); id != "" {
+				p.affinity.Put(q.Key.ID, id, backendName)
+			}
 		}
 		return
 	}
 
-	// 6. Success.
-	if stream {
-		status, bytesOut, cls := p.pump(q, res, o, ucancel, backendOverride)
-		out.status, out.bytesOut, out.class = status, bytesOut, cls
-		return
-	}
-	res.Close()
-	out.status = res.Status
-	out.class = "ok"
-	out.bytesOut = len(res.BodyBytes)
-	ct := "application/json"
-	if v := res.Header.Get("Content-Type"); v != "" {
-		ct = v
-	}
-	q.W.Header().Set("Content-Type", ct)
-	q.W.WriteHeader(res.Status)
-	_, _ = q.W.Write(res.BodyBytes)
-	if o.capture {
-		if id := topLevelID(res.BodyBytes); id != "" {
-			p.affinity.Put(q.Key.ID, id, backendOverride)
+	// Budget exhausted or a non-retryable failure: emit the sanitized
+	// class of the last error (PLAN §43, §72).
+	if lastErr != nil {
+		var up *backend.Upstream
+		if errors.As(lastErr, &up) {
+			switch {
+			case up.Status == 429:
+				fail(429, "rate_limit_error", "upstream_rate_limited",
+					"upstream is rate limited", "backend_429")
+			case up.Status >= 500:
+				fail(502, "api_error", "upstream_unavailable",
+					"upstream is unavailable", "backend_5xx")
+			default:
+				fail(400, "invalid_request_error", "upstream_rejected",
+					"upstream rejected the request", "backend_4xx")
+			}
 		}
+		switch {
+		case errors.Is(lastErr, backend.ErrQueueFull):
+			fail(503, "overload_error", "server_overloaded",
+				"server is overloaded", "queue_full")
+		case errors.Is(lastErr, backend.ErrDialTimeout),
+			errors.Is(lastErr, backend.ErrHeaderTimeout),
+			errors.Is(lastErr, backend.ErrTimeout):
+			fail(504, "api_error", "upstream_timeout", "upstream timed out", "backend_timeout")
+		case errors.Is(lastErr, backend.ErrConnect):
+			fail(502, "api_error", "upstream_unavailable",
+				"upstream is unavailable", "backend_connect")
+		case errors.Is(lastErr, backend.ErrTooLarge):
+			fail(502, "api_error", "upstream_unavailable",
+				"upstream is unavailable", "backend_5xx")
+		case errors.Is(lastErr, backend.ErrPolicy):
+			fail(500, "api_error", "internal", "internal error", "policy")
+		default:
+			fail(502, "api_error", "upstream_unavailable",
+				"upstream is unavailable", "backend_5xx")
+		}
+	}
+}
+
+// retryableBackendError reports whether a pre-stream failure is on the
+// PLAN §23 retry list: connection failure, connection timeout, queue
+// exhaustion (fallback), or upstream 429/502/503/504.
+func retryableBackendError(err error) bool {
+	var up *backend.Upstream
+	if errors.As(err, &up) {
+		switch up.Status {
+		case 429, 502, 503, 504:
+			return true
+		}
+		return false
+	}
+	switch {
+	case errors.Is(err, backend.ErrConnect):
+	case errors.Is(err, backend.ErrDialTimeout):
+	case errors.Is(err, backend.ErrHeaderTimeout):
+	case errors.Is(err, backend.ErrQueueFull):
+	default:
+		return false
+	}
+	return true
+}
+
+// connectionLevelError reports whether the failure poisons the passive
+// health state (PLAN §70): the backend refused or stalled the
+// connection. A 5xx response or a queue-full admission does not mean
+// the backend is down.
+func connectionLevelError(err error) bool {
+	switch {
+	case errors.Is(err, backend.ErrConnect):
+	case errors.Is(err, backend.ErrDialTimeout):
+	case errors.Is(err, backend.ErrHeaderTimeout):
+	default:
+		return false
+	}
+	return true
+}
+
+// sleepBackoff sleeps the retry backoff for attempt n (1-based retries)
+// with full jitter when enabled, bounded by retry.max_backoff
+// (PLAN §23). It returns false if the client context ended while
+// waiting.
+func (p *Proxy) sleepBackoff(ctx context.Context, attempt int) bool {
+	d := p.cfg.Retry.InitialBackoff.Duration()
+	max := p.cfg.Retry.MaxBackoff.Duration()
+	for i := 1; i < attempt && d < max; i++ {
+		d *= 2
+		if d > max {
+			d = max
+		}
+	}
+	if d > max {
+		d = max
+	}
+	if p.cfg.Retry.JitterEnabled() && d > 0 {
+		d = time.Duration(rand.Int64N(int64(d)))
+	}
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
@@ -471,15 +621,17 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 }
 
 // singlePossibleBackend returns the unique backend that the key may use
-// for generation models, if exactly one applies (PLAN §21.3).
+// for generation models, if exactly one applies (PLAN §21.3: an unknown
+// response ID may be forwarded only when one backend could own it).
 func (p *Proxy) singlePossibleBackend(key *auth.Key) string {
 	seen := map[string]bool{}
 	for _, name := range p.router.List() {
-		t, err := p.router.Resolve(name)
-		if err != nil || t.Type != "generation" || !key.Allows(name) {
+		if p.router.TypeOf(name) != "generation" || !key.Allows(name) {
 			continue
 		}
-		seen[t.Backend] = true
+		for _, b := range p.router.BackendsFor(name) {
+			seen[b] = true
+		}
 	}
 	if len(seen) == 1 {
 		for b := range seen {

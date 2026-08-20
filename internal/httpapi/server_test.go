@@ -92,13 +92,18 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 		t.Fatal(err)
 	}
 
-	router, err := routing.New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := routing.New(cfg, func(name string) int {
+		if name == "b1" {
+			return client.Inflight()
+		}
+		return 0
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,14 +321,13 @@ func TestInflightLimit(t *testing.T) {
 	// backend.
 	done := make(chan struct{})
 	defer close(done)
-	arrived := make(chan struct{})
+	// Buffered for the four held requests so an arrival can never be
+	// dropped by a timing race with the receiver.
+	arrived := make(chan struct{}, 4)
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		// Reaching the handler means the proxy admitted the request
 		// (inflight + backend slot held); record it, then block.
-		select {
-		case arrived <- struct{}{}:
-		default:
-		}
+		arrived <- struct{}{}
 		select {
 		case <-r.Context().Done():
 		case <-done:

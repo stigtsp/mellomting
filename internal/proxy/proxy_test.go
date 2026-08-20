@@ -106,6 +106,12 @@ func testConfig(serverURL string) *config.Config {
 			AffinityTTL:        config.Duration(time.Hour),
 			MaxAffinityEntries: 100,
 		},
+		Retry: config.Retry{
+			MaxAttempts:    1,
+			InitialBackoff: config.Duration(5 * time.Millisecond),
+			MaxBackoff:     config.Duration(10 * time.Millisecond),
+			Jitter:         func() *bool { f := false; return &f }(),
+		},
 		Backends: map[string]config.Backend{
 			"b1": {
 				BaseURL:           serverURL,
@@ -132,7 +138,7 @@ func testConfig(serverURL string) *config.Config {
 func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 	t.Helper()
 	cfg := testConfig(f.server.URL)
-	router, err := routing.New(cfg)
+	router, err := routing.New(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +443,7 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	f3 := newFakeVLLM(t, okJSON)
 	cfg3 := testConfig(f3.server.URL)
 	cfg3.Server.MaxBodyBytes = 64
-	router3, _ := routing.New(cfg3)
+	router3, _ := routing.New(cfg3, nil)
 	cl3, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg3.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg3.Server.MaxResponseBytes, Log: discardLogger(),

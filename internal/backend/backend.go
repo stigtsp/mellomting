@@ -38,12 +38,21 @@ import (
 
 // Sanitized error classes (PLAN §43). These never carry backend
 // hostnames, bodies, or secrets into logs or client responses.
+//
+// Retry classification (PLAN §23): ErrConnect, ErrDialTimeout,
+// ErrHeaderTimeout, and ErrQueueFull denote a connection-level or
+// admission failure before any response byte was observed; they are the
+// client-side connection failures the proxy may retry or fall back.
+// ErrTimeout covers bounded total/body timeouts, which are not on the
+// PLAN §23 retry list.
 var (
-	ErrConnect   = errors.New("backend_connect")
-	ErrTimeout   = errors.New("backend_timeout")
-	ErrQueueFull = errors.New("backend_queue_full")
-	ErrPolicy    = errors.New("backend_network_policy")
-	ErrTooLarge  = errors.New("backend_response_too_large")
+	ErrConnect       = errors.New("backend_connect")
+	ErrDialTimeout   = errors.New("backend_dial_timeout")
+	ErrHeaderTimeout = errors.New("backend_header_timeout")
+	ErrTimeout       = errors.New("backend_timeout")
+	ErrQueueFull     = errors.New("backend_queue_full")
+	ErrPolicy        = errors.New("backend_network_policy")
+	ErrTooLarge      = errors.New("backend_response_too_large")
 )
 
 // Upstream is a non-2xx response from the backend. The body is buffered
@@ -288,10 +297,10 @@ func policyDial(p Policy, connectTimeout time.Duration) func(context.Context, st
 func dialError(err error) error {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
-		return ErrTimeout
+		return ErrDialTimeout
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return ErrTimeout
+		return ErrDialTimeout
 	}
 	return ErrConnect
 }
@@ -406,7 +415,9 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 			return nil, ErrTooLarge
 		}
 		if rerr != nil {
-			return nil, requestError(rerr)
+			// Partial-body read failure: the buffered body cannot be
+			// trusted, so only the sanitized class comes back.
+			return nil, bodyReadError(rerr)
 		}
 		if resp.StatusCode >= 400 {
 			return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, &Upstream{Status: resp.StatusCode}
@@ -419,29 +430,59 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	return &Result{Status: resp.StatusCode, Header: resp.Header, Body: resp.Body}, nil
 }
 
-// requestError classifies an http.Client.Do error into a sanitized class
-// (PLAN §43). A body-carrying read failure after headers are seen is an
-// upstream stream problem.
+// requestError classifies an http.Client.Do error (no response headers
+// observed) into a sanitized class (PLAN §43, §23). Mellomting's own
+// dialer sentinels pass through unchanged so their retry semantics
+// survive the http.Client's url.Error wrapping.
 func requestError(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return ErrTimeout
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, ErrConnect) || errors.Is(err, ErrPolicy) || errors.Is(err, ErrDialTimeout) {
+		return err
 	}
 	var ne net.Error
 	if errors.As(err, &ne) {
 		if ne.Timeout() {
-			return ErrTimeout
+			// No headers within the ResponseHeaderTimeout bound (the
+			// request-total deadline surfaces without a net.Error).
+			return ErrHeaderTimeout
 		}
 		return ErrConnect
 	}
-	// A url.Error from reading the body means the connection dropped
-	// mid-response.
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		if strings.Contains(ue.Op, "read") || strings.Contains(ue.Op, "Post") {
-			return ErrTimeout
-		}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTimeout
 	}
 	return ErrConnect
+}
+
+// bodyReadError classifies a buffered body read failure (headers were
+// observed). A dropped connection is a connection failure (PLAN §23
+// retry candidate); a timeout is the total/body timeout that is not on
+// the retry list.
+func bodyReadError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTimeout
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return ErrTimeout
+	}
+	return ErrConnect
+}
+
+// Inflight reports the current admission load: queued waiters plus
+// active requests (PLAN §19, §22). It is a snapshot for least-inflight
+// routing and is always >= 0.
+func (c *Client) Inflight() int {
+	return len(c.queue) + len(c.conc)
 }
 
 // Name returns the configured backend name (safe to log).

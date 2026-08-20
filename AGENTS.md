@@ -131,7 +131,15 @@ affinity, byte budget), `internal/httpapi` (allow-listed routes, bearer
 auth, `/v1/models`, health endpoints, no catch-all), and the `serve`
 command (Unix/TCP listeners, signals, graceful shutdown).
 
+Phase 2 adds multi-backend routing and resilience (PLAN §93): per-model
+strategies (single, round-robin, weighted round-robin, least-inflight,
+weighted least-inflight) with live admission load; passive backend health
+with exponential cooldowns; a bounded pre-stream retry/fallback budget
+(`retry.max_attempts`, jittered exponential backoff, immediate fallback
+to untried replicas, no retry after any byte reaches the client); and
+distinct timeout classes (dial vs. header vs. total) so only PLAN §23
+retry candidates are retried.
+
 Known deferred work (later phases): Landlock enforcement (PLAN §95) —
 `serve` fails closed when `security.landlock.mode: required`; rate
-limiting / token accounting (PLAN §93–94); multi-backend strategies and
-stickiness (PLAN §93).
+limiting / token accounting (PLAN §94); optional stickiness (PLAN §20).

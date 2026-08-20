@@ -44,6 +44,11 @@ const (
 
 	defaultAffinityTTL        = 2 * time.Hour
 	defaultMaxAffinityEntries = 10000
+
+	defaultRetryMaxAttempts    = 1
+	defaultRetryMaxAttemptsMax = 8
+	defaultRetryInitialBackoff = 100 * time.Millisecond
+	defaultRetryMaxBackoff     = 1 * time.Second
 )
 
 // applyDefaults fills zero-valued fields with the PLAN defaults. Zero
@@ -151,6 +156,16 @@ func applyDefaults(c *Config) {
 		c.Responses.MaxAffinityEntries = defaultMaxAffinityEntries
 	}
 
+	if c.Retry.MaxAttempts == 0 {
+		c.Retry.MaxAttempts = defaultRetryMaxAttempts
+	}
+	if c.Retry.InitialBackoff == 0 {
+		c.Retry.InitialBackoff = Duration(defaultRetryInitialBackoff)
+	}
+	if c.Retry.MaxBackoff == 0 {
+		c.Retry.MaxBackoff = Duration(defaultRetryMaxBackoff)
+	}
+
 	for name := range c.Backends {
 		b := c.Backends[name]
 		if b.ConnectTimeout == 0 {
@@ -227,6 +242,7 @@ func validate(c *Config) error {
 	errs = append(errs, validateLimits(&c.Limits)...)
 	errs = append(errs, validateShutdown(&c.Shutdown)...)
 	errs = append(errs, validateResponses(&c.Responses)...)
+	errs = append(errs, validateRetry(&c.Retry)...)
 	errs = append(errs, validateBackends(c.Backends, c.Security.BackendNetwork)...)
 	errs = append(errs, validateQualifiers(c.Qualifiers, c.Backends)...)
 	errs = append(errs, validateModels(c.Models, c.Backends, c.Qualifiers)...)
@@ -440,6 +456,23 @@ func validateResponses(r *Responses) []string {
 	}
 	if r.MaxAffinityEntries <= 0 {
 		errs = append(errs, "responses.max_affinity_entries: must be > 0")
+	}
+	return errs
+}
+
+func validateRetry(r *Retry) []string {
+	var errs []string
+	if r.MaxAttempts < 1 || r.MaxAttempts > defaultRetryMaxAttemptsMax {
+		errs = append(errs, fmt.Sprintf("retry.max_attempts: %d out of range 1..%d (PLAN §23)", r.MaxAttempts, defaultRetryMaxAttemptsMax))
+	}
+	if r.InitialBackoff.Duration() <= 0 {
+		errs = append(errs, "retry.initial_backoff: must be > 0")
+	}
+	if r.MaxBackoff.Duration() <= 0 {
+		errs = append(errs, "retry.max_backoff: must be > 0")
+	}
+	if r.InitialBackoff.Duration() > r.MaxBackoff.Duration() {
+		errs = append(errs, "retry.initial_backoff: must not exceed retry.max_backoff")
 	}
 	return errs
 }

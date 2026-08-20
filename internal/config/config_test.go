@@ -83,6 +83,12 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 	if cfg.Limits.GlobalRequestsPerSecond != 100 || cfg.Limits.GlobalBurst != 200 {
 		t.Fatalf("limits defaults wrong: %+v", cfg.Limits)
 	}
+	if cfg.Retry.MaxAttempts != 1 ||
+		cfg.Retry.InitialBackoff.Duration() != 100*time.Millisecond ||
+		cfg.Retry.MaxBackoff.Duration() != time.Second ||
+		!cfg.Retry.JitterEnabled() {
+		t.Fatalf("retry defaults wrong: %+v", cfg.Retry)
+	}
 
 	b := cfg.Backends["qwen-a"]
 	if b.ConnectTimeout.Duration() != 3*time.Second ||
@@ -139,6 +145,16 @@ models:
     backends: [qa]
 `,
 			wantErr: "field bogus not found",
+		},
+		{
+			name:    "retry max_attempts out of range",
+			yaml:    "version: 1\nretry:\n  max_attempts: 9\n" + restOfConfig,
+			wantErr: "retry.max_attempts",
+		},
+		{
+			name:    "retry backoff inverted",
+			yaml:    "version: 1\nretry:\n  initial_backoff: 5s\n  max_backoff: 1s\n" + restOfConfig,
+			wantErr: "retry.initial_backoff",
 		},
 		{
 			name: "YAML alias rejected",

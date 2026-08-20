@@ -38,6 +38,7 @@ type Config struct {
 	Limits     Limits               `yaml:"limits"`
 	Shutdown   Shutdown             `yaml:"shutdown"`
 	Responses  Responses            `yaml:"responses"`
+	Retry      Retry                `yaml:"retry"`
 	Backends   map[string]Backend   `yaml:"backends"`
 	Qualifiers map[string]Qualifier `yaml:"qualifiers"`
 	Models     map[string]Model     `yaml:"models"`
@@ -49,6 +50,22 @@ type Responses struct {
 	AffinityTTL        Duration `yaml:"affinity_ttl"`
 	MaxAffinityEntries int      `yaml:"max_affinity_entries"`
 }
+
+// Retry bounds conservative pre-stream retries and fallbacks
+// (PLAN §23). max_attempts is the total number of attempts a request may
+// make across all backends; the default of 1 means "no retry unless
+// explicitly enabled".
+type Retry struct {
+	MaxAttempts    int      `yaml:"max_attempts"`
+	InitialBackoff Duration `yaml:"initial_backoff"`
+	MaxBackoff     Duration `yaml:"max_backoff"`
+	// Jitter enables full jitter on the exponential backoff. A nil
+	// pointer means the default (true).
+	Jitter *bool `yaml:"jitter"`
+}
+
+// JitterEnabled reports whether backoff jitter is on (default true).
+func (r Retry) JitterEnabled() bool { return r.Jitter == nil || *r.Jitter }
 
 // Shutdown controls graceful shutdown (PLAN §74).
 type Shutdown struct {

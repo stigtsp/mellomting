@@ -137,6 +137,92 @@ func TestForwardUpstreamErrors(t *testing.T) {
 	}
 }
 
+// PLAN §23: a dead port is a connection failure (retryable class), and
+// a silent server is a header timeout, kept distinct from total/body
+// timeouts.
+func TestForwardTimeoutClassification(t *testing.T) {
+	t.Parallel()
+
+	// Refused connection.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "http://" + ln.Addr().String()
+	ln.Close()
+	c1, err := New(testOptions(t, dead))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c1.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)}); !errors.Is(err, ErrConnect) {
+		t.Fatalf("dead port: err = %v (want ErrConnect)", err)
+	}
+
+	// Accepted, but no headers within header_timeout.
+	never := make(chan struct{})
+	defer close(never)
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-never:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(silent.Close)
+	o := testOptions(t, silent.URL)
+	o.Cfg.HeaderTimeout = config.Duration(200 * time.Millisecond)
+	c2, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if !errors.Is(err, ErrHeaderTimeout) {
+		t.Fatalf("silent server: err = %v (want ErrHeaderTimeout)", err)
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Fatal("header timeout misclassified as total timeout")
+	}
+}
+
+// PLAN §19: Inflight reports admission load so least-inflight routing
+// can see queued and active requests.
+func TestInflightSnapshot(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts)
+	if c.Inflight() != 0 {
+		t.Fatalf("fresh Inflight = %d, want 0", c.Inflight())
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+		if err == nil && res != nil {
+			res.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request never reached the backend")
+	}
+	if n := c.Inflight(); n < 1 {
+		t.Fatalf("Inflight = %d while held, want >= 1", n)
+	}
+	close(release)
+	<-done
+}
+
 func TestForwardQueueFull(t *testing.T) {
 	t.Parallel()
 

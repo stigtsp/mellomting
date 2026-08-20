@@ -258,11 +258,6 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("key store: %w", err)
 	}
 
-	router, err := routing.New(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("routing: %w", err)
-	}
-
 	policy, err := buildNetworkPolicy(cfg.Security.BackendNetwork)
 	if err != nil {
 		return nil, err
@@ -280,6 +275,17 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			return nil, fmt.Errorf("backend %q: %w", name, err)
 		}
 		clients[name] = client
+	}
+
+	router, err := routing.New(cfg, func(name string) int {
+		c, ok := clients[name]
+		if !ok {
+			return 0
+		}
+		return c.Inflight()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("routing: %w", err)
 	}
 
 	prox, err := proxy.New(cfg, router, clients, log)
