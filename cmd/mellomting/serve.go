@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"mellomting/internal/accounting"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -36,6 +37,7 @@ type daemon struct {
 	log    *slog.Logger
 	api    *httpapi.Server
 	proxy  *proxy.Proxy
+	acc    *accounting.Writer // usage JSONL writer; nil when disabled
 	listen net.Listener
 }
 
@@ -128,10 +130,15 @@ func serveCmd(args []string) int {
 	cancel()
 	// 4. cancel whatever remains.
 	srv.Close()
-	// 7. close listener (files: none open in v1; accounting flush lands
-	// in the accounting phase, PLAN §37-42).
+	// 7. close listener.
 	if err := ln.Close(); err != nil {
 		log.Warn("listener close", "error", err)
+	}
+	// 8. flush and close the accounting writer (PLAN §42).
+	if d.acc != nil {
+		if err := d.acc.Close(); err != nil {
+			log.Warn("accounting close", "error", err)
+		}
 	}
 	log.Info("shutdown complete")
 	return 0
@@ -288,7 +295,40 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("routing: %w", err)
 	}
 
-	prox, err := proxy.New(cfg, router, clients, log)
+	// Token accounting (PLAN §37-42): a quota tracker and the bounded
+	// JSONL writer. When enabled, replay the recent log tail at startup so
+	// a daemon restart does not trivially reset per-key token windows
+	// (PLAN §40). Startup is fail-closed: an unusable accounting file is
+	// a startup error rather than a silent reset.
+	var quota *accounting.Quota
+	var writer *accounting.Writer
+	if cfg.Accounting.Enabled {
+		quota = accounting.NewQuota()
+		w, err := accounting.NewWriter(accounting.WriterConfig{
+			Path:          cfg.Accounting.Path,
+			QueueSize:     cfg.Accounting.QueueSize,
+			FSync:         cfg.Accounting.FSync,
+			FSyncInterval: cfg.Accounting.FSyncInterval.Duration(),
+			Log:           log,
+		})
+		if err != nil {
+			return nil, err
+		}
+		writer = w
+		if cfg.Accounting.ReplayOnStart != nil && *cfg.Accounting.ReplayOnStart {
+			if err := quota.Replay(cfg.Accounting.Path, cfg.Accounting.ReplayMaxBytes); err != nil {
+				_ = writer.Close()
+				return nil, fmt.Errorf("accounting replay: %w", err)
+			}
+		}
+		log.Info("accounting enabled",
+			"path", cfg.Accounting.Path,
+			"fsync", cfg.Accounting.FSync,
+			"queue_size", cfg.Accounting.QueueSize,
+		)
+	}
+
+	prox, err := proxy.New(cfg, router, clients, log, quota, writer)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
@@ -298,8 +338,9 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		"backends", len(cfg.Backends),
 		"models", len(cfg.Models),
 		"keys", len(users.Keys),
+		"accounting_enabled", cfg.Accounting.Enabled,
 	)
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer}, nil
 }
 
 // listenAddr returns the listener address for logging/cleanup.

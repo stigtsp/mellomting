@@ -110,7 +110,7 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, testLogger())
+	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, testLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

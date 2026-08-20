@@ -175,6 +175,7 @@ type Accounting struct {
 	Path              string   `yaml:"path"`
 	EnsureStreamUsage *bool    `yaml:"ensure_stream_usage"`
 	ReplayOnStart     *bool    `yaml:"replay_on_start"`
+	ReplayMaxBytes    int64    `yaml:"replay_max_bytes"`
 	QueueSize         int      `yaml:"queue_size"`
 	Overflow          string   `yaml:"overflow"`
 	FSync             string   `yaml:"fsync"`

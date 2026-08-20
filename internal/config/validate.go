@@ -41,6 +41,9 @@ const (
 	defaultGlobalBurst     = 200
 	defaultLandlockABI     = 8
 	defaultAccountingQueue = 4096
+	// defaultAccountingReplayMaxBytes bounds the JSONL tail replayed at
+	// startup (PLAN §40).
+	defaultAccountingReplayMaxBytes int64 = 1 << 30
 
 	defaultAffinityTTL        = 2 * time.Hour
 	defaultMaxAffinityEntries = 10000
@@ -123,6 +126,9 @@ func applyDefaults(c *Config) {
 		if a.ReplayOnStart == nil {
 			t := true
 			a.ReplayOnStart = &t
+		}
+		if a.ReplayMaxBytes == 0 {
+			a.ReplayMaxBytes = defaultAccountingReplayMaxBytes
 		}
 		if a.QueueSize == 0 {
 			a.QueueSize = defaultAccountingQueue
@@ -396,7 +402,7 @@ func validateAccounting(a *Accounting) []string {
 
 	if !a.Enabled {
 		set := a.Path != "" || a.EnsureStreamUsage != nil || a.ReplayOnStart != nil ||
-			a.QueueSize != 0 || a.Overflow != "" || a.FSync != "" || a.FSyncInterval != 0
+			a.ReplayMaxBytes != 0 || a.QueueSize != 0 || a.Overflow != "" || a.FSync != "" || a.FSyncInterval != 0
 		if set {
 			errs = append(errs, "accounting: remaining fields must be empty when enabled is false")
 		}
@@ -408,6 +414,9 @@ func validateAccounting(a *Accounting) []string {
 	}
 	if a.QueueSize <= 0 {
 		errs = append(errs, "accounting.queue_size: must be > 0 when accounting is enabled")
+	}
+	if a.ReplayMaxBytes < 0 {
+		errs = append(errs, "accounting.replay_max_bytes: must be >= 0")
 	}
 	switch a.Overflow {
 	case "drop-and-alert":

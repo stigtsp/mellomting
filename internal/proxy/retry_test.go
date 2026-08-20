@@ -91,7 +91,7 @@ func newDualEnv(t *testing.T, maxAttempts int, b1, b2 http.HandlerFunc) *dualEnv
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.p, err = New(cfg, router, clients, discardLogger())
+	e.p, err = New(cfg, router, clients, discardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -152,7 +152,7 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger())
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, discardLogger())
+	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, discardLogger(), nil, nil)
 	rec = run(t, p3, http.MethodPost, "/v1/chat/completions", big, testKey())
 	if rec.Code != 413 {
 		t.Fatalf("oversized body: status = %d", rec.Code)

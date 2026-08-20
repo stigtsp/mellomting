@@ -17,9 +17,7 @@ import (
 
 // plannedCommands exist in the CLI but are implemented in later phases
 // (PLAN §7, §91-98).
-var plannedCommands = map[string]bool{
-	"usage": true,
-}
+var plannedCommands = map[string]bool{}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +36,8 @@ func main() {
 		os.Exit(sandboxCmd(os.Args[2:]))
 	case "key":
 		os.Exit(keyCmd(os.Args[2:]))
+	case "usage":
+		os.Exit(usageCmd(os.Args[2:]))
 	case "serve":
 		os.Exit(serveCmd(os.Args[2:]))
 	default:
@@ -456,8 +456,6 @@ key subcommands (docs/PLAN.md §29):
   all key subcommands accept -config PATH (default: mellomting config path)
 
   serve -config PATH           run the proxy daemon (default: config path)
-
-planned commands (docs/PLAN.md):
-  usage                        report token/request usage
+  usage report                 report per-key token/request usage (docs/PLAN.md §44)
 `)
 }

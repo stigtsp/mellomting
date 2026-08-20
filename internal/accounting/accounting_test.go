@@ -1,0 +1,250 @@
+package accounting
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestParseUsageChat(t *testing.T) {
+	body := []byte(`{"id":"x","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2}}}`)
+	u := ParseUsage(body, "chat.completions")
+	if !u.Present {
+		t.Fatal("expected present usage")
+	}
+	if u.Input != 10 || u.Output != 5 || u.Total != 15 || u.Cached != 3 || u.Reasoning != 2 {
+		t.Fatalf("unexpected usage: %+v", u)
+	}
+}
+
+func TestParseUsageResponses(t *testing.T) {
+	body := []byte(`{"id":"resp_1","output":[{"type":"message"}],"usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27,"input_tokens_details":{"cached_tokens":9},"output_tokens_details":{"reasoning_tokens":4}}}`)
+	u := ParseUsage(body, "responses")
+	if !u.Present {
+		t.Fatal("expected present usage")
+	}
+	if u.Input != 20 || u.Output != 7 || u.Total != 27 || u.Cached != 9 || u.Reasoning != 4 {
+		t.Fatalf("unexpected usage: %+v", u)
+	}
+}
+
+func TestParseUsageNestedResponse(t *testing.T) {
+	// The Responses streaming final event nests usage under "response".
+	body := []byte(`{"type":"response.completed","response":{"id":"r","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}}`)
+	u := ParseUsage(body, "responses")
+	if !u.Present || u.Input != 3 || u.Output != 4 || u.Total != 7 {
+		t.Fatalf("unexpected usage: %+v", u)
+	}
+}
+
+func TestParseUsageNone(t *testing.T) {
+	u := ParseUsage([]byte(`{"id":"x","choices":[{"message":{"content":"hi"}}]}`), "chat.completions")
+	if u.Present {
+		t.Fatal("expected no usage")
+	}
+	if u := ParseUsage([]byte(``), ""); u.Present {
+		t.Fatal("expected no usage for empty body")
+	}
+}
+
+func TestParseUsageZeroIsNotPresent(t *testing.T) {
+	u := ParseUsage([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`), "")
+	if u.Present {
+		t.Fatal("all-zero usage must not count as present")
+	}
+}
+
+func TestParseStreamChunk(t *testing.T) {
+	u := ParseStreamChunk(`{"id":"c","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+	if !u.Present || u.Input != 1 || u.Output != 2 {
+		t.Fatalf("unexpected usage: %+v", u)
+	}
+}
+
+func TestQuotaWindows(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	q := &Quota{clock: func() time.Time { return now }}
+	lim := WindowLimit{TokensPerHour: 100, TokensPerDay: 1000}
+
+	// Admit with settled 0 and reservation 50 fits.
+	if ok, _ := q.Admit("k", lim, 50, now); !ok {
+		t.Fatal("expected admit")
+	}
+	q.Settle("k", 60, now)
+	// 60 settled + 50 reservation = 110 > 100 hour limit.
+	if ok, reason := q.Admit("k", lim, 50, now); ok {
+		t.Fatal("expected reject")
+	} else if reason != "tokens_per_hour" {
+		t.Fatalf("expected hour reject, got %q", reason)
+	}
+	// Day window still fits within 60+50.
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerDay: 1000}, 50, now); !ok {
+		t.Fatal("expected day admit")
+	}
+}
+
+func TestQuotaHourRollover(t *testing.T) {
+	t0 := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	t1 := time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC)
+	q := &Quota{}
+	q.Settle("k", 80, t0)
+	lim := WindowLimit{TokensPerHour: 100}
+	if ok, _ := q.Admit("k", lim, 50, t0); ok {
+		t.Fatal("expected reject before rollover")
+	}
+	// New hour window resets.
+	if ok, _ := q.Admit("k", lim, 50, t1); !ok {
+		t.Fatal("expected admit after hour rollover")
+	}
+}
+
+func TestQuotaUnlimited(t *testing.T) {
+	q := &Quota{}
+	if ok, _ := q.Admit("k", WindowLimit{}, 1<<30, time.Now()); !ok {
+		t.Fatal("no limits must always admit")
+	}
+}
+
+func TestQuotaReplay(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+
+	write := func(r Record) {
+		b, _ := json.Marshal(r)
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+		_, _ = f.Write(append(b, '\n'))
+		_ = f.Close()
+	}
+	// A record in the current hour/day.
+	write(Record{Time: now, KeyID: "k", TotalTokens: 40})
+	// A record in an earlier hour and earlier day — must not count.
+	write(Record{Time: now.Add(-2 * time.Hour), KeyID: "k", TotalTokens: 999})
+	write(Record{Time: now.Add(-30 * time.Hour), KeyID: "k", TotalTokens: 999})
+
+	q := &Quota{clock: func() time.Time { return now }}
+	if err := q.Replay(path, 1<<20); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	lim := WindowLimit{TokensPerHour: 50, TokensPerDay: 100}
+	if ok, _ := q.Admit("k", lim, 20, now); ok {
+		t.Fatal("expected reject: 40 settled in hour")
+	}
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerHour: 60}, 20, now); !ok {
+		t.Fatal("expected admit within remaining hour")
+	}
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerDay: 50}, 10, now); ok {
+		t.Fatal("expected reject: 40 settled in day")
+	}
+}
+
+func TestQuotaReplayMissingFile(t *testing.T) {
+	q := &Quota{}
+	if err := q.Replay(filepath.Join(t.TempDir(), "nope.jsonl"), 1<<20); err != nil {
+		t.Fatalf("missing file should not error: %v", err)
+	}
+}
+
+func TestQuotaReplayTail(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	var f *os.File
+	f, _ = os.Create(path)
+	// Many old records, one current.
+	for i := 0; i < 500; i++ {
+		b, _ := json.Marshal(Record{Time: now.Add(-5 * time.Hour), KeyID: "old", TotalTokens: 10})
+		_, _ = f.Write(append(b, '\n'))
+	}
+	b, _ := json.Marshal(Record{Time: now, KeyID: "k", TotalTokens: 30})
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+
+	q := &Quota{clock: func() time.Time { return now }}
+	// Replay only the tail (small budget), so only the final record
+	// (and possibly part of the last old record) is seen.
+	if err := q.Replay(path, 2000); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	lim := WindowLimit{TokensPerHour: 40}
+	if ok, _ := q.Admit("k", lim, 20, now); ok {
+		t.Fatal("expected reject: current record replayed")
+	}
+}
+
+func TestWriterEnqueueAndDrain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	w, err := NewWriter(WriterConfig{Path: path, QueueSize: 8, FSync: "every"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		w.Enqueue(Record{KeyID: "k", TotalTokens: int64(i + 1), Time: time.Now()})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	f, _ := os.Open(path)
+	defer f.Close()
+	var lines int
+	var total int64
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var r Record
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatalf("bad line: %v", err)
+		}
+		lines++
+		total += r.TotalTokens
+	}
+	if lines != 5 || total != 15 {
+		t.Fatalf("expected 5 lines/15 tokens, got %d/%d", lines, total)
+	}
+}
+
+func TestWriterDropAndAlert(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	w, err := NewWriter(WriterConfig{Path: path, QueueSize: 2, FSync: "never"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	// Fill the queue; further Enqueue calls must not block and must drop.
+	for i := 0; i < 100; i++ {
+		w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
+	}
+	if w.Dropped() == 0 {
+		t.Fatal("expected some dropped records")
+	}
+	_ = w.Close()
+}
+
+func TestWriterMissingDirFailsClosed(t *testing.T) {
+	if _, err := NewWriter(WriterConfig{Path: filepath.Join(t.TempDir(), "no", "such", "dir", "usage.jsonl")}); err == nil {
+		t.Fatal("expected error for missing directory")
+	}
+}
+
+func TestWriterDroppedCounterAtomic(t *testing.T) {
+	w := &Writer{}
+	var n int64
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.dropped.Add(1)
+			atomic.AddInt64(&n, 1)
+		}()
+	}
+	wg.Wait()
+	if w.Dropped() != n {
+		t.Fatalf("dropped=%d want %d", w.Dropped(), n)
+	}
+}

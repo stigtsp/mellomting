@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"mellomting/internal/accounting"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -47,31 +48,41 @@ type operation struct {
 	needsModel bool // body must carry a "model" field
 	capture    bool // record created response IDs (responses create)
 	respID     bool // ResponseID is authoritative (retrieve/cancel)
+	endpoint   string
+	// capField and altCapField name the generative output-limit request
+	// fields (PLAN §36); empty means the operation is not generative
+	// (no output cap applies).
+	capField    string
+	altCapField string
 }
 
 var (
-	opChat       = operation{path: "/v1/chat/completions", method: "POST", needsModel: true}
-	opLegacy     = operation{path: "/v1/completions", method: "POST", needsModel: true}
-	opEmbed      = operation{path: "/v1/embeddings", method: "POST", needsModel: true}
-	opResp       = operation{path: "/v1/responses", method: "POST", needsModel: true, capture: true}
-	opRespGet    = operation{path: "/v1/responses", method: "GET", respID: true}
-	opRespCancel = operation{path: "/v1/responses", method: "POST", respID: true}
+	opChat       = operation{path: "/v1/chat/completions", method: "POST", needsModel: true, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
+	opLegacy     = operation{path: "/v1/completions", method: "POST", needsModel: true, endpoint: "completions", capField: "max_tokens"}
+	opEmbed      = operation{path: "/v1/embeddings", method: "POST", needsModel: true, endpoint: "embeddings"}
+	opResp       = operation{path: "/v1/responses", method: "POST", needsModel: true, capture: true, endpoint: "responses", capField: "max_output_tokens"}
+	opRespGet    = operation{path: "/v1/responses", method: "GET", respID: true, endpoint: "responses"}
+	opRespCancel = operation{path: "/v1/responses", method: "POST", respID: true, endpoint: "responses"}
 )
 
 // Proxy wires configuration, routing, and backend clients together.
 type Proxy struct {
-	router   *routing.Router
-	clients  map[string]*backend.Client
-	cfg      *config.Config
-	log      *slog.Logger
-	affinity *affinity
-	budget   *budget
-	draining atomic.Bool
+	router      *routing.Router
+	clients     map[string]*backend.Client
+	cfg         *config.Config
+	log         *slog.Logger
+	affinity    *affinity
+	budget      *budget
+	quota       *accounting.Quota  // token windows (PLAN §39); nil = disabled
+	acc         *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
+	ensureUsage bool               // inject stream_options.include_usage (§38)
+	draining    atomic.Bool
 }
 
 // New builds a Proxy. clients is the backend-name -> client table built
-// from the same configuration.
-func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger) (*Proxy, error) {
+// from the same configuration. quota and acc enable token-usage quota and
+// JSONL accounting respectively; passing nil for both disables accounting.
+func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer) (*Proxy, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -89,6 +100,10 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 		log:      log,
 		affinity: newAffinity(cfg.Responses.AffinityTTL.Duration(), cfg.Responses.MaxAffinityEntries),
 		budget:   newBudget(total),
+		quota:    quota,
+		acc:      acc,
+		ensureUsage: cfg.Accounting.Enabled && cfg.Accounting.EnsureStreamUsage != nil &&
+			*cfg.Accounting.EnsureStreamUsage,
 	}, nil
 }
 
@@ -268,6 +283,46 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 	}
 
+	// 3.5. Generative output cap (PLAN §36), stream-usage injection
+	// (PLAN §38), and token-quota admission (PLAN §39). These are
+	// client-facing and deterministic, so they run once before the retry
+	// budget. The model field is rewritten per-attempt later.
+	var (
+		prepared      []byte = body
+		reservation   int64
+		injectedUsage bool
+	)
+	if o.needsModel {
+		cap := 0
+		if m, ok := p.cfg.Models[publicModel]; ok {
+			cap = m.Policy.MaxOutputTokens
+		}
+		var perr error
+		prepared, reservation, injectedUsage, perr = prepareOutbound(body, o, cap, stream, p.ensureUsage)
+		switch {
+		case errors.Is(perr, errCapExceeded):
+			fail(400, "invalid_request_error", "output_limit_exceeded",
+				"requested output tokens exceed the model policy cap", "bad_request")
+			return
+		case errors.Is(perr, errNotJSONObject):
+			fail(400, "invalid_request_error", "invalid_json",
+				"request body is not a valid JSON object", "bad_request")
+			return
+		case perr != nil:
+			fail(400, "invalid_request_error", "invalid_json",
+				"request body could not be normalized", "bad_request")
+			return
+		}
+		if p.quota != nil {
+			ok, _ := p.quota.Admit(q.Key.ID, windowLimits(q.Key.Limits), reservation, time.Now())
+			if !ok {
+				fail(429, "rate_limit_error", "token_quota_exceeded",
+					"token quota exceeded for this window", "token_quota")
+				return
+			}
+		}
+	}
+
 	// 4. Forward under the bounded pre-stream retry/fallback budget
 	// (PLAN §22, §23, §93). The request may make at most retry.max_attempts
 	// attempts in total across all backends (a global bound: no
@@ -283,7 +338,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	defer ucancel()
 
 	headers := passthroughHeaders(q.R)
-	if len(body) > 0 {
+	if len(prepared) > 0 {
 		headers["Content-Type"] = []string{"application/json"}
 	}
 
@@ -317,12 +372,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				backendName = t.Backend
 			}
 		}
-		var bd []byte = body
+		var bd []byte = prepared
 		if o.needsModel {
 			up, _ := p.router.UpstreamFor(backendName)
 			if up != "" {
 				var rerr error
-				if bd, rerr = rewriteModel(body, up); rerr != nil {
+				if bd, rerr = rewriteModel(prepared, up); rerr != nil {
 					fail(400, "invalid_request_error", "invalid_json",
 						"request body could not be normalized", "bad_request")
 					return
@@ -379,9 +434,15 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 		// 5/6. Success (PLAN §18: only allow-listed headers pass through).
 		if stream {
-			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName)
+			var usage accounting.Usage
+			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, &usage, injectedUsage)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
 			out.retries = retried
+			usageStatus := accounting.UsageUnknown
+			if usage.Present {
+				usageStatus = accounting.UsageExact
+			}
+			p.account(q, o, publicModel, start, status, backendName, usage, usageStatus, retried, reservation)
 			return
 		}
 		res.Close()
@@ -389,6 +450,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.class = "ok"
 		out.bytesOut = len(res.BodyBytes)
 		out.retries = retried
+		usageStatus := accounting.UsageUnknown
+		usage := accounting.ParseUsage(res.BodyBytes, o.endpoint)
+		if usage.Present {
+			usageStatus = accounting.UsageExact
+		}
+		p.account(q, o, publicModel, start, res.Status, backendName, usage, usageStatus, retried, reservation)
 		ct := "application/json"
 		if v := res.Header.Get("Content-Type"); v != "" {
 			ct = v
@@ -442,6 +509,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"upstream is unavailable", "backend_5xx")
 		}
 	}
+	// Record the failed request (PLAN §41): no usage was produced.
+	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, retried, 0)
 }
 
 // retryableBackendError reports whether a pre-stream failure is on the
@@ -520,7 +589,7 @@ func (p *Proxy) sleepBackoff(ctx context.Context, attempt int) bool {
 // stream_idle_timeout, client write-idle is bounded by
 // stream_write_timeout, and any terminal path cancels the upstream
 // context.
-func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName string) (int, int, string) {
+func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName string, usage *accounting.Usage, injectedUsage bool) (int, int, string) {
 	defer res.Close()
 	defer ucancel() // tear down the upstream on every exit path.
 	flusher, _ := q.W.(http.Flusher)
@@ -600,6 +669,19 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 					p.affinity.Put(q.Key.ID, id, backendName)
 					captured = true
 				}
+			}
+		}
+
+		// Capture token usage (PLAN §37-38) and swallow the synthetic
+		// final usage-only chunk when it was injected on the client's
+		// behalf (PLAN §38) so the client sees no semantic change.
+		if data, ok := dataField(ev); ok {
+			if u := accounting.ParseStreamChunk(data); u.Present {
+				*usage = u
+			}
+			if injectedUsage && isUsageOnlyChunk(data) {
+				// Record the usage above; do not relay the chunk.
+				continue
 			}
 		}
 
@@ -787,7 +869,191 @@ var (
 	errJSON           = errors.New("invalid json")
 	errMissingModel   = errors.New("missing model")
 	errModelNotString = errors.New("model not a string")
+	errCapExceeded    = errors.New("output limit exceeds policy cap")
+	errNotJSONObject  = errors.New("body is not a JSON object")
 )
+
+// prepareOutbound applies the generative output cap (PLAN §36) and, for
+// streams, injects stream_options.include_usage (PLAN §38). ensureUsage
+// selects whether stream-usage injection is enabled for this deployment.
+// It returns the transformed body, the effective output capacity to
+// reserve against quota, whether usage was injected on the client's
+// behalf, or an error if the client asked for more output than the
+// configured cap.
+//
+// The model field is left untouched here; rewriteModel still overrides it
+// per-attempt because the upstream model can differ across backends.
+func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool) (out []byte, reservation int64, injectedUsage bool, err error) {
+	if o.capField == "" && !(stream && ensureUsage) {
+		// Neither the output cap nor stream-usage injection applies
+		// (e.g. embeddings, or usage injection disabled).
+		return body, 0, false, nil
+	}
+	if len(body) == 0 {
+		return body, 0, false, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, 0, false, errNotJSONObject
+	}
+
+	// Output cap (PLAN §36): never silently raise a client limit; reject
+	// when the client asks for more than the configured cap; inject the
+	// cap when the client supplied no output limit.
+	var clientLimit int64
+	if o.capField != "" && cap > 0 {
+		if v, ok := intField(fields, o.capField); ok {
+			clientLimit = v
+			if v > int64(cap) {
+				return nil, 0, false, errCapExceeded
+			}
+		} else if o.altCapField != "" {
+			if v, ok := intField(fields, o.altCapField); ok {
+				clientLimit = v
+				if v > int64(cap) {
+					return nil, 0, false, errCapExceeded
+				}
+			}
+		}
+		if clientLimit == 0 {
+			enc, _ := json.Marshal(int64(cap))
+			fields[o.capField] = enc
+			clientLimit = int64(cap)
+		}
+	}
+	reservation = clientLimit
+
+	// Stream usage injection (PLAN §38): known OpenAI-compatible
+	// Chat/Completions requests. Responses API emits usage in-band, so no
+	// injection there.
+	if stream && ensureUsage {
+		switch o.endpoint {
+		case "chat.completions", "completions":
+			if !clientRequestedUsage(fields) {
+				injectStreamUsage(fields)
+				injectedUsage = true
+			}
+		}
+	}
+
+	bd, err := json.Marshal(fields)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return bd, reservation, injectedUsage, nil
+}
+
+// intField extracts a top-level integer field.
+func intField(fields map[string]json.RawMessage, name string) (int64, bool) {
+	raw, ok := fields[name]
+	if !ok {
+		return 0, false
+	}
+	var v json.Number
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	n, err := v.Int64()
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// clientRequestedUsage reports whether the client asked for a stream
+// usage chunk (stream_options.include_usage == true).
+func clientRequestedUsage(fields map[string]json.RawMessage) bool {
+	raw, ok := fields["stream_options"]
+	if !ok {
+		return false
+	}
+	var so struct {
+		IncludeUsage bool `json:"include_usage"`
+	}
+	if err := json.Unmarshal(raw, &so); err != nil {
+		return false
+	}
+	return so.IncludeUsage
+}
+
+// injectStreamUsage sets stream_options.include_usage=true, preserving
+// any other existing stream options (PLAN §38).
+func injectStreamUsage(fields map[string]json.RawMessage) {
+	var so map[string]json.RawMessage
+	if raw, ok := fields["stream_options"]; ok {
+		_ = json.Unmarshal(raw, &so)
+	}
+	if so == nil {
+		so = map[string]json.RawMessage{}
+	}
+	if _, ok := so["include_usage"]; !ok {
+		so["include_usage"] = json.RawMessage(`true`)
+	}
+	enc, err := json.Marshal(so)
+	if err != nil {
+		return
+	}
+	fields["stream_options"] = enc
+}
+
+// isUsageOnlyChunk reports whether a streaming data payload is the
+// synthetic final usage-only chunk (usage present, no choices) that
+// Mellomting injected on the client's behalf and may swallow (PLAN §38).
+func isUsageOnlyChunk(data string) bool {
+	var chunk struct {
+		Choices []json.RawMessage `json:"choices"`
+		Usage   json.RawMessage   `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false
+	}
+	return len(chunk.Usage) > 0 && len(chunk.Choices) == 0
+}
+
+// windowLimits maps a key's configured token budgets to quota windows.
+func windowLimits(l auth.KeyLimits) accounting.WindowLimit {
+	return accounting.WindowLimit{TokensPerHour: l.TokensPerHour, TokensPerDay: l.TokensPerDay}
+}
+
+// account settles token quota and (when enabled) enqueues a JSONL record
+// for one completed request (PLAN §39, §41, §42). Unknown usage on a
+// successful request conservatively charges the reserved output capacity;
+// errors settle nothing.
+func (p *Proxy) account(q *Req, o operation, model string, start time.Time, status int, backendName string, usage accounting.Usage, usageStatus accounting.UsageStatus, retries int, reservation int64) {
+	if p.quota == nil && p.acc == nil {
+		return
+	}
+	total := usage.Total
+	if usageStatus == accounting.UsageUnknown {
+		if status >= 200 && status < 300 {
+			total = reservation // conservative charge (PLAN §39)
+		} else {
+			total = 0
+		}
+	}
+	if p.quota != nil && total > 0 {
+		p.quota.Settle(q.Key.ID, total, time.Now())
+	}
+	if p.acc != nil {
+		p.acc.Enqueue(accounting.Record{
+			Time:            time.Now().UTC(),
+			RequestID:       q.RequestID,
+			KeyID:           q.Key.ID,
+			Model:           model,
+			Backend:         backendName,
+			Endpoint:        o.endpoint,
+			Status:          status,
+			DurationMS:      time.Since(start).Milliseconds(),
+			InputTokens:     usage.Input,
+			OutputTokens:    usage.Output,
+			TotalTokens:     usage.Total,
+			CachedTokens:    usage.Cached,
+			ReasoningTokens: usage.Reasoning,
+			UsageStatus:     usageStatus,
+			Retries:         retries,
+		})
+	}
+}
 
 // writeError emits a sanitized OpenAI-shaped error (PLAN §72).
 func writeError(w http.ResponseWriter, status int, typ, code, msg string) {
