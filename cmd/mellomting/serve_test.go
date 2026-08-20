@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
+	"mellomting/internal/landlock"
 )
 
 // unixHTTPClient dials a pathname Unix socket for HTTP requests.
@@ -102,7 +104,8 @@ func fakeChatBackend(t *testing.T) *httptest.Server {
 }
 
 // serveFixture wires a temp config + users/pepper + fake backend.
-func serveFixture(t *testing.T) (bin, cfgPath, sock string, key string) {
+// landlockMode is the security.landlock.mode of the written config.
+func serveFixture(t *testing.T, landlockMode string) (bin, cfgPath, sock string, key string) {
 	t.Helper()
 	bin = buildCLI(t)
 	dir := t.TempDir()
@@ -147,7 +150,7 @@ auth:
 
 security:
   landlock:
-    mode: disabled
+    mode: %s
 
 backends:
   local-a:
@@ -160,7 +163,7 @@ models:
     strategy: single
     backends:
       - local-a
-`, sock, usersPath, pepperPath, backend.URL)
+`, sock, usersPath, pepperPath, landlockMode, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +221,7 @@ func waitReady(t *testing.T, sock string) *http.Client {
 }
 
 func TestServeEndToEnd(t *testing.T) {
-	bin, cfgPath, sock, key := serveFixture(t)
+	bin, cfgPath, sock, key := serveFixture(t, "disabled")
 	cmd := startServe(t, bin, cfgPath)
 	client := waitReady(t, sock)
 
@@ -410,7 +413,17 @@ func TestMPTCPListenersDisabled(t *testing.T) {
 	defer ln.Close()
 }
 
+// TestServeSandboxRequiredFails verifies that landlock.mode=required is
+// fail-closed when the sandbox cannot be enforced (non-Linux, no kernel
+// support, or ABI below the configured minimum): startup must fail with
+// exit 1 (PLAN §55, §57). On a kernel that can enforce the default
+// minimum ABI (8), required mode succeeds instead; that path is covered
+// by TestServeSandboxRequiredApplies.
 func TestServeSandboxRequiredFails(t *testing.T) {
+	report := landlock.Check()
+	if report.Supported && report.KernelABI >= 8 {
+		t.Skip("landlock is available with ABI >= 8: required mode enforces the policy instead of failing; see TestServeSandboxRequiredApplies")
+	}
 	bin := buildCLI(t)
 	dir := t.TempDir()
 	backend := fakeChatBackend(t)
@@ -493,4 +506,92 @@ models:
 // configListenUnix builds a unix listen config for listener tests.
 func configListenUnix(address, mode string) config.Listen {
 	return config.Listen{Network: "unix", Address: address, Mode: mode}
+}
+
+// sandboxTestConfig returns a minimal config for applySandbox tests.
+func sandboxTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	return &config.Config{
+		Auth: config.Auth{
+			UsersFile:  filepath.Join(dir, "users.yaml"),
+			PepperFile: filepath.Join(dir, "pepper"),
+		},
+		Backends: map[string]config.Backend{
+			"b1": {BaseURL: "http://127.0.0.1:8001", UpstreamModel: "m"},
+		},
+		Security: config.Security{
+			Landlock: config.Landlock{Mode: landlock.ModeRequired, MinimumABI: 8},
+		},
+	}
+}
+
+// TestEnforceSandboxModes verifies the mode dispatch of applySandbox
+// (PLAN §55) without applying a real policy: the minimum ABI is set to
+// a value no kernel can reach, so the gate rejects required mode and
+// accepts best-effort on every platform. The real enforcement path is
+// covered by TestAllThreadsEnforced (Linux) and the e2e tests.
+func TestEnforceSandboxModes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := sandboxTestConfig(t)
+	cfg.Security.Landlock.Mode = landlock.ModeDisabled
+	if err := applySandbox(cfg, log); err != nil {
+		t.Fatalf("disabled: %v", err)
+	}
+
+	cfg.Security.Landlock.Mode = landlock.ModeBestEffort
+	cfg.Security.Landlock.MinimumABI = 255 // unreachable: force the gate
+	if err := applySandbox(cfg, log); err != nil {
+		t.Fatalf("best-effort must continue without a sandbox, got %v", err)
+	}
+
+	cfg.Security.Landlock.Mode = landlock.ModeRequired
+	if err := applySandbox(cfg, log); err == nil {
+		t.Fatal("required mode must fail closed when the sandbox cannot be enforced")
+	}
+}
+
+// TestServeSandboxRequiredApplies runs the daemon end to end with
+// landlock.mode=required on a kernel that can enforce it (PLAN §55,
+// §57): the daemon must begin accepting requests only after the policy
+// has been applied to all threads, and it must operate normally
+// afterwards (the policy allows the backend port).
+func TestServeSandboxRequiredApplies(t *testing.T) {
+	report := landlock.Check()
+	if !report.Supported || report.KernelABI < 8 {
+		t.Skipf("landlock unavailable or kernel ABI %d < 8; required-mode enforcement cannot be tested here", report.KernelABI)
+	}
+
+	bin, cfgPath, sock, key := serveFixture(t, "required")
+	cmd := startServe(t, bin, cfgPath)
+	client := waitReady(t, sock) // ready only after the sandbox is applied (PLAN §57 step 19)
+
+	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("chat under sandbox: %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"id":"e2e-1"`) {
+		t.Fatalf("chat body = %s", body)
+	}
+
+	// Reaching this point also proves the PLAN §57 ordering: a
+	// required-mode daemon sets ready only after the sandbox has been
+	// applied to all threads, and it served a request under the
+	// confines of the policy.
+	err := cmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+	}
 }

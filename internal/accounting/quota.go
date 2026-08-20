@@ -101,14 +101,6 @@ func (q *Quota) now() time.Time {
 	return time.Now()
 }
 
-// size returns the number of keys currently tracked (bounded by the key
-// store; used for diagnostics/tests).
-func (q *Quota) size() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.states)
-}
-
 // replay reconstructs per-key token windows from a JSONL log (PLAN §40).
 // It scans up to maxBytes from the end of the file (the longest active
 // window is the recent tail) and aggregates only records that fall in the

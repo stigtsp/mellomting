@@ -70,15 +70,6 @@ func serveCmd(args []string) int {
 		return 1
 	}
 
-	// Sandbox gate (PLAN §55, §57): mode required is fail-closed. Policy
-	// application itself lands in the hardening phase (PLAN §95); until
-	// then a required sandbox means "cannot claim the safety property",
-	// which is a startup failure rather than a degradation.
-	if err := gateSandbox(cfg.Security.Landlock, log); err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
-		return 1
-	}
-
 	ln, err := buildListener(cfg.Server.Listen)
 	if err != nil {
 		log.Error("listener failed", "error_class", "listener", "network", cfg.Server.Listen.Network)
@@ -92,6 +83,19 @@ func serveCmd(args []string) int {
 		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
 		cfg.Server.AllowPlaintextNonLoopback {
 		log.Warn("plaintext non-loopback TCP listener is active (PLAN §8.2)")
+	}
+
+	// Landlock confinement (PLAN §55-63, §95). This is the last step
+	// before the listener accepts (PLAN §57 step 19): the policy is
+	// applied to every runtime thread and verified before any client
+	// request may be processed. No config/secret file descriptors are
+	// open here (auth.LoadUsers/LoadPepper and securefile.Read close
+	// their own FDs), so the open-file caveat (PLAN §59) is satisfied.
+	if err := applySandbox(cfg, log); err != nil {
+		log.Error("sandbox enforcement failed", "error_class", "landlock")
+		_ = ln.Close()
+		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
+		return 1
 	}
 
 	srv := newHTTPServer(cfg, d.api)
@@ -149,24 +153,92 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 	return logging.New(os.Stdout, cfg.Logging.Level, cfg.Logging.Format)
 }
 
-// gateSandbox enforces the configured Landlock policy at startup.
-func gateSandbox(l config.Landlock, log *slog.Logger) error {
-	report := landlock.Check()
-	switch l.Mode {
-	case "disabled":
+// applySandbox builds the post-startup policy from the validated
+// configuration and enforces it on every runtime thread (PLAN §55-63,
+// §95). It runs after all listener/secret file descriptors are settled
+// and before the listener accepts (PLAN §57 step 19); no client request
+// may be processed before it returns nil in required mode.
+//
+// Mode semantics (PLAN §55):
+//   - "disabled":     no sandbox; an informational log.
+//   - "best-effort":  enforce the full policy, or continue with a
+//     warning when the policy cannot be applied. The daemon never runs
+//     under a partially degraded policy.
+//   - "required":     enforce the full policy or fail startup. It never
+//     falls back to the library's BestEffort() downgrade, which could
+//     degrade to no protection (PLAN §55 step 5).
+//
+// The policy is the minimal post-startup right set (PLAN §58): read the
+// users file (SIGHUP reload, PLAN §30), write the accounting log, and
+// connect to the configured backend TCP ports. Secrets are preloaded
+// and their FDs closed before this runs (PLAN §59).
+func applySandbox(cfg *config.Config, log *slog.Logger) error {
+	l := cfg.Security.Landlock
+	if l.Mode == landlock.ModeDisabled {
 		log.Info("landlock disabled by configuration")
 		return nil
-	case "best-effort":
-		if !report.Supported {
-			log.Warn("landlock not applied (unavailable)", "reason", report.Reason)
-			return nil
-		}
-		log.Warn("landlock not applied yet; enforcement lands in the hardening phase (PLAN §95)",
-			"kernel_abi", report.KernelABI)
-		return nil
-	default: // "required"
-		return errors.New("security.landlock.mode is required but sandbox enforcement is not yet available (PLAN §55, §95); set mode to best-effort or disabled for this phase")
 	}
+	required := l.Mode == landlock.ModeRequired
+
+	// Build the policy (PLAN §58, §60, §62).
+	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
+	if err != nil {
+		return fmt.Errorf("landlock: %w", err)
+	}
+	pol := landlock.Policy{
+		ReadFiles:  []string{cfg.Auth.UsersFile},
+		ConnectTCP: ports,
+	}
+	if cfg.Accounting.Enabled {
+		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
+	}
+
+	failClosed := func(reason, detail string) error {
+		if required {
+			msg := reason
+			if detail != "" {
+				msg += ": " + detail
+			}
+			return fmt.Errorf("security.landlock.mode is %q but the sandbox cannot be enforced: %s", l.Mode, msg)
+		}
+		log.Warn("landlock: not applied (continuing without a sandbox)", "reason", reason, "detail", detail)
+		return nil
+	}
+
+	report := landlock.Check()
+	if !report.Supported {
+		return failClosed("sandbox cannot be enforced", report.Reason)
+	}
+	if report.KernelABI < l.MinimumABI {
+		return failClosed(
+			"kernel Landlock ABI is below the configured minimum",
+			fmt.Sprintf("kernel ABI %d < minimum_abi %d", report.KernelABI, l.MinimumABI))
+	}
+	// Enforce at the highest ABI supported by both the kernel and the
+	// pinned library (PLAN §55 step 3).
+	abi := report.KernelABI
+	if abi > landlock.MaxABI {
+		abi = landlock.MaxABI
+	}
+	if err := landlock.Apply(abi, pol); err != nil {
+		return failClosed("sandbox application failed", err.Error())
+	}
+	log.Info("landlock enforced",
+		"mode", l.Mode,
+		"kernel_abi", report.KernelABI,
+		"applied_abi", abi,
+		"rules", pol.Summarize(),
+	)
+	return nil
+}
+
+// backendBaseURLs returns the configured backend base URLs (PLAN §60).
+func backendBaseURLs(cfg *config.Config) []string {
+	urls := make([]string, 0, len(cfg.Backends))
+	for _, b := range cfg.Backends {
+		urls = append(urls, b.BaseURL)
+	}
+	return urls
 }
 
 // buildListener creates the ingress listener (PLAN §8).

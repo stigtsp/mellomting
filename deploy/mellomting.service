@@ -1,0 +1,71 @@
+# Mellomting hardened systemd unit (PLAN §64).
+#
+# This complements the in-process Landlock confinement (PLAN §53-63):
+# Landlock is post-start containment against a compromised process;
+# these directives restrict the service account from systemd's side.
+#
+# Install as a mellomting system user, place the config at
+# /etc/mellomting/config.yaml and the users/pepper files there too.
+# The daemon's Landlock policy is generated from that config
+# (security.landlock.mode: required in production, PLAN §55).
+#
+# Test each directive on the target distribution before relying on it.
+# If a directive must be removed, document exactly why (PLAN §64).
+[Unit]
+Description=Mellomting - authenticated LLM inference proxy
+Documentation=https://github.com/your-org/mellomting
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mellomting
+Group=mellomting
+Type=simple
+ExecStart=/usr/local/bin/mellomting serve -config /etc/mellomting/config.yaml
+Restart=on-failure
+RestartSec=2
+
+# Directories: runtime socket, state (future), and the accounting log.
+RuntimeDirectory=mellomting
+StateDirectory=mellomting
+LogsDirectory=mellomting
+
+UMask=0077
+
+# No privilege escalation, no capabilities at all.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Filesystem.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths=/etc/mellomting
+ReadWritePaths=/var/log/mellomting /var/lib/mellomting
+
+# Kernel interfaces.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Process restrictions.
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Network: only the families Mellomting needs, and only to localhost
+# (the backends). Landlock adds port-level connect restrictions on top
+# of this (PLAN §60).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

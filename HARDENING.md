@@ -47,15 +47,31 @@ control lands in the implementation plan.
 
 ## Sandbox (Landlock)
 
-- Applied on Linux at start-up, before serving; a `required` policy never
-  degrades silently to no sandbox — start-up fails instead (§55).
-  [Phase 5 — reported now via `sandbox check`]
-- Enforced on all Go runtime threads; Multipath TCP explicitly disabled on
-  every listener/dialer because Go 1.24+ default listeners are
-  MPTCP-capable and bypass classic TCP restrictions (§61, §66).
+- Applied on Linux at start-up, after all secrets are preloaded and their
+  FDs are closed, and before the listener accepts (§57); a `required`
+  policy never degrades silently to no sandbox — start-up fails instead,
+  and the library's `BestEffort()` downgrade path is never used (§55).
+  [Phase 4 — `internal/landlock.Apply`]
+- Enforced on all Go runtime threads via the ABI 8+ all-thread TSYNC path;
+  threads created afterwards inherit the confined domain at clone time
+  (§56, covered by `TestAllThreadsEnforced`).
+- Post-startup policy is minimal (§58): read the users file (SIGHUP
+  reload), write the accounting log, connect to the configured backend
+  TCP ports; execute nowhere; everything else denied. Scoped IPC
+  (signals / abstract Unix sockets to processes outside the domain) is
+  restricted on ABI 6+ (§62).
+- `best-effort` mode enforces the full policy or continues with a loud
+  warning (never a partially degraded policy); TCP port rules are
+  port-based only — external address restriction comes from the backend
+  network modes (§16, §60).
+- Multipath TCP explicitly disabled on every listener/dialer because Go
+  1.24+ default listeners are MPTCP-capable and bypass classic TCP
+  restrictions (§61).
 - Default policy: `mode: required`, `minimum_abi: 8` (§55).
-- Non-Linux builds clearly report that Landlock is unavailable (§7).
-  [Phase 0 — `sandbox check`]
+- Non-Linux builds clearly report that Landlock is unavailable and
+  `Apply` fails (§7); `sandbox check` reports capability either way.
+- `deploy/mellomting.service` ships the hardened systemd unit that
+  complements the in-process sandbox (§64).
 
 ## Logging
 

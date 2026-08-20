@@ -140,6 +140,30 @@ to untried replicas, no retry after any byte reaches the client); and
 distinct timeout classes (dial vs. header vs. total) so only PLAN §23
 retry candidates are retried.
 
-Known deferred work (later phases): Landlock enforcement (PLAN §95) —
-`serve` fails closed when `security.landlock.mode: required`; rate
-limiting / token accounting (PLAN §94); optional stickiness (PLAN §20).
+Phase 3a adds request-rate and concurrency limiting (PLAN §32-35):
+bounded per-key and global RPS limiters with burst, plus global and
+per-backend in-flight concurrency caps admitted before forwarding.
+
+Phase 3b adds token accounting and quotas (PLAN §36-44):
+`internal/accounting` (backend-reported usage parsing, bounded JSONL
+writer with drop-and-alert overflow, fixed UTC per-key token windows,
+startup replay, per-key report), the generative output cap (reject over
+cap, inject cap when absent, never raise a client limit), stream-usage
+injection with synthetic-chunk swallow, conservative unknown-usage
+reservation, the `mellomting usage report` CLI, and
+`docs/COMPATIBILITY.md`.
+
+Phase 4 adds Landlock hardening (PLAN §95): `internal/landlock` builds
+the minimal post-startup policy from config (users-file read, accounting
+write, backend TCP connect ports; everything else denied), enforces it
+strictly on all runtime threads (ABI 8+ TSYNC path) only after all
+startup FDs are settled and before the listener accepts (PLAN §57);
+`security.landlock.mode: required` fails closed, `best-effort` warns and
+continues (never a partial policy). MPTCP is explicitly disabled on every
+listener/dialer it owns (PLAN §61). `deploy/mellomting.service` ships the
+hardened systemd unit (PLAN §64).
+
+Known deferred work (later phases): SIGHUP key reload (PLAN §30 —
+the Landlock policy already grants the users file read); optional
+stickiness (PLAN §20); qualifier framework (PLAN §96); static-TLS
+convenience (PLAN §97); defence-in-depth review (PLAN §98).
