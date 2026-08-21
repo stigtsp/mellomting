@@ -323,6 +323,32 @@ func TestNonStreamingLongerThanHeaderTimeoutSucceeds(t *testing.T) {
 
 // PLAN §19: Inflight reports admission load so least-inflight routing
 // can see queued and active requests.
+// T-L7: the backend client bounds per-host connections, bounds response
+// headers, and disables transparent compression (PLAN §9.2).
+func TestBackendClientTransportBounds(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c := newTestClient(t, ts)
+
+	for name, hc := range map[string]*http.Client{"stream": c.http, "plain": c.httpPlain} {
+		tr, ok := hc.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("%s: transport is %T", name, hc.Transport)
+		}
+		if tr.MaxConnsPerHost != 2 {
+			t.Fatalf("%s: MaxConnsPerHost = %d (want 2 = MaxConcurrency)", name, tr.MaxConnsPerHost)
+		}
+		if tr.MaxResponseHeaderBytes != maxBackendResponseHeaderBytes {
+			t.Fatalf("%s: MaxResponseHeaderBytes = %d", name, tr.MaxResponseHeaderBytes)
+		}
+		if !tr.DisableCompression {
+			t.Fatalf("%s: DisableCompression = false (want true, PLAN §9.2)", name)
+		}
+	}
+}
+
 func TestInflightSnapshot(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)

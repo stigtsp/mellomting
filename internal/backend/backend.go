@@ -140,6 +140,10 @@ type Client struct {
 	queueTimeout time.Duration
 }
 
+// maxBackendResponseHeaderBytes bounds the backend response header size
+// so a misbehaving backend cannot grow its headers unboundedly (T-L7).
+const maxBackendResponseHeaderBytes = 64 << 10
+
 // New builds a validated backend client (PLAN §15.1, §16, §17).
 func New(o Options) (*Client, error) {
 	if o.Log == nil {
@@ -192,8 +196,20 @@ func New(o Options) (*Client, error) {
 	t := &http.Transport{
 		DisableKeepAlives: false,
 		MaxIdleConns:      16,
-		IdleConnTimeout:   90 * time.Second,
-		DialContext:       policyDial(policy, o.Cfg.ConnectTimeout.Duration(), resolver),
+		// Bound physical connections to the backend host by the
+		// admission concurrency cap: at most maxConc requests are
+		// in-flight to a backend, so more connections can never be
+		// needed (T-L7, §9.1 fd bound).
+		MaxConnsPerHost: maxConc,
+		IdleConnTimeout: 90 * time.Second,
+		DialContext:     policyDial(policy, o.Cfg.ConnectTimeout.Duration(), resolver),
+		// PLAN §9.2 SHOULD: the proxy passes response bodies through
+		// byte-identical; transparent gzip decoding would corrupt the
+		// accounting byte count and SSE framing (T-L7).
+		DisableCompression: true,
+		// Bound response headers so a hostile backend cannot grow them
+		// unboundedly (T-L7).
+		MaxResponseHeaderBytes: maxBackendResponseHeaderBytes,
 	}
 	// Streaming: the first stream byte is expected promptly, so the
 	// header wait is bounded by header_timeout (PLAN §15).
