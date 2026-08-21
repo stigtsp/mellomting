@@ -637,7 +637,16 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 	// ingress listener in v1) SetWriteDeadline reports unusable and the
 	// client context remains the disconnect signal.
 	ctrl := http.NewResponseController(w)
+	// Upstream read-idle bound (PLAN §24, §15). The per-backend
+	// stream_idle_timeout governs this backend's streams (T-M3); the
+	// server-level value remains the fallback for unknown backends, and
+	// the client write-idle below falls back to it too.
 	idle := p.cfg.Server.StreamIdleTimeout.Duration()
+	if c, ok := p.clients[backendName]; ok {
+		if bIdle := c.StreamIdleTimeout(); bIdle > 0 {
+			idle = bIdle
+		}
+	}
 	clientIdle := p.cfg.Server.StreamWriteTimeout.Duration()
 	if clientIdle <= 0 {
 		clientIdle = idle

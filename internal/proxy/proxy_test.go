@@ -565,6 +565,56 @@ type panickingReader struct{}
 
 func (panickingReader) Read([]byte) (int, error) { panic("synthetic parser panic") }
 
+// TestStreamIdleUsesPerBackendBound is the T-M3 regression test: the
+// pump's upstream read-idle bound must come from the per-backend
+// stream_idle_timeout, not the server-level default. A backend that
+// sends one chunk then stalls must be terminated at the per-backend
+// bound (well below the server-level value).
+func TestStreamIdleUsesPerBackendBound(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"H"}}]}` + "\n\n"))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	})
+	cfg := testConfig(f.server.URL)
+	// Server-level bound is large; the per-backend value must govern.
+	cfg.Server.StreamIdleTimeout = config.Duration(5 * time.Second)
+	b := cfg.Backends["b1"]
+	b.StreamIdleTimeout = config.Duration(200 * time.Millisecond)
+	cfg.Backends["b1"] = b
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name:             "b1",
+		Cfg:              cfg.Backends["b1"],
+		Network:          backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes,
+		Log:              discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"messages":[]}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		t.Fatalf("stalled stream not terminated at per-backend stream_idle_timeout: elapsed = %v (server default was 5s)", elapsed)
+	}
+}
+
 // TestPumpPanicContained proves a panic inside the stream-parser
 // goroutine is converted into a bounded stream error and never takes
 // the process down (the goroutine is spawned by the handler, so
