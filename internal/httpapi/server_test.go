@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +34,12 @@ type env struct {
 // mod, when non-nil, tweaks the effective configuration before wiring;
 // k1lim is the per-key limit block of the model-a key.
 func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits) *env {
+	return buildEnvWithLog(t, behaviour, mod, k1lim, testLogger())
+}
+
+// buildEnvWithLog is buildEnv with a caller-supplied logger (used to
+// assert bounded log output, e.g. T-M4's invalid-auth flood).
+func buildEnvWithLog(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits, log *slog.Logger) *env {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/responses/") {
@@ -100,7 +107,7 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,11 +121,11 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, testLogger(), nil, nil)
+	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg, testLogger(), store, router, prox)
+	s := New(cfg, log, store, router, prox)
 	s.SetReady(true)
 
 	return &env{srv: s, key: k1, key2: k2}
@@ -130,7 +137,15 @@ func testLogger() *slog.Logger {
 
 func (e *env) do(t *testing.T, method, path, key, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return e.doFrom(t, method, path, key, body, "192.0.2.1:1234")
+}
+
+// doFrom is do with a caller-chosen socket peer, which is how T-M4
+// exercises per-source pre-auth limiting through the real HTTP stack.
+func (e *env) doFrom(t *testing.T, method, path, key, body, remote string) *httptest.ResponseRecorder {
+	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.RemoteAddr = remote
 	if body != "" {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -141,6 +156,8 @@ func (e *env) do(t *testing.T, method, path, key, body string) *httptest.Respons
 		r.Header.Set("Authorization", "Bearer "+e.key2)
 	case "xkey":
 		r.Header.Set("X-Api-Key", e.key)
+	case "badbearer":
+		r.Header.Set("Authorization", "Bearer mtk_invalid_0000000000000000000000000000")
 	}
 	w := httptest.NewRecorder()
 	e.srv.Handler().ServeHTTP(w, r)
@@ -540,6 +557,90 @@ func TestResponsesSingleSegmentStillRoutes(t *testing.T) {
 	rec = e.do(t, http.MethodPost, "/v1/responses/resp_x/cancel", "bearer", "")
 	if rec.Code != 200 {
 		t.Fatalf("cancel status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPreauthSourceFloodDoesNotDrainGlobal(t *testing.T) {
+	t.Parallel()
+	// T-M4: a host flooding with bogus bearer tokens must be throttled
+	// by the per-source pre-auth limiter without draining the shared
+	// global bucket, so a legitimate key from another source keeps
+	// working. The global bucket is tiny (burst 5) so a flood would
+	// exhaust it pre-fix; the preauth bucket is burst 1 so the flooding
+	// source is cut off after its first attempt.
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
+	}, func(cfg *config.Config) {
+		cfg.Limits.GlobalRequestsPerSecond = 1
+		cfg.Limits.GlobalBurst = 5
+		cfg.Limits.PreauthRequestsPerSecond = 1
+		cfg.Limits.PreauthBurst = 1
+	}, auth.KeyLimits{})
+
+	// The flooding host blasts bogus bearer tokens.
+	var flood429s, flood401s int
+	for i := 0; i < 10; i++ {
+		rec := e.doFrom(t, http.MethodPost, "/v1/chat/completions", "badbearer", `{"model":"model-a"}`, "10.0.0.1:1234")
+		switch rec.Code {
+		case http.StatusUnauthorized:
+			flood401s++
+		case http.StatusTooManyRequests:
+			flood429s++
+		default:
+			t.Fatalf("flood attempt: status = %d, want 401 or 429 (body=%s)", rec.Code, rec.Body.String())
+		}
+	}
+	// The flooder must actually be throttled, not just 401'd forever.
+	if flood429s == 0 {
+		t.Fatal("flooding host was never pre-auth throttled")
+	}
+
+	// A legitimate key from a different source must not be 429'd: the
+	// shared global bucket still has tokens because the flood never
+	// reached it.
+	rec := e.doFrom(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a","input":"hi"}`, "10.0.0.2:1234")
+	if rec.Code != 200 {
+		t.Fatalf("legit key status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuthFailureLogBounded(t *testing.T) {
+	t.Parallel()
+	// T-M4 (PLAN §33): during a bogus-token flood the invalid-auth warn
+	// output must be bounded, not one line per token. The sampler allows
+	// a small burst then counts suppresseds on subsequent lines.
+	var buf bytes.Buffer
+	capLog := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	e := buildEnvWithLog(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
+	}, func(cfg *config.Config) {
+		cfg.Limits.AuthFailureLogRate = 1
+		cfg.Limits.PreauthRequestsPerSecond = 1000
+		cfg.Limits.PreauthBurst = 1000
+		cfg.Limits.GlobalRequestsPerSecond = 1000
+		cfg.Limits.GlobalBurst = 1000
+	}, auth.KeyLimits{}, capLog)
+
+	const attempts = 200
+	for i := 0; i < attempts; i++ {
+		rec := e.doFrom(t, http.MethodPost, "/v1/chat/completions", "badbearer", `{"model":"model-a"}`, "10.0.0.1:1234")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status = %d, want 401 (body=%s)", i, rec.Code, rec.Body.String())
+		}
+	}
+	lines := strings.Count(buf.String(), "auth rejected")
+	if lines == 0 {
+		t.Fatal("no auth-rejection warn line was ever emitted")
+	}
+	if lines >= attempts {
+		t.Fatalf("auth-failure logging is unbounded: %d warn lines for %d attempts", lines, attempts)
+	}
+	// With a 1/s rate and a burst of 3, a tight flood can emit only a
+	// handful of lines; allow a small margin for scheduler noise.
+	if lines > 8 {
+		t.Fatalf("auth-failure warn lines = %d, want bounded (~3)", lines)
 	}
 }
 

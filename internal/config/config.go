@@ -199,6 +199,16 @@ type Accounting struct {
 type Limits struct {
 	GlobalRequestsPerSecond float64 `yaml:"global_requests_per_second"`
 	GlobalBurst             int     `yaml:"global_burst"`
+	// PreauthRequestsPerSecond bounds pre-auth requests per source IP
+	// (PLAN §33): a bogus-token flood from one host is throttled before
+	// authentication and before it can drain the shared authenticated
+	// bucket.
+	PreauthRequestsPerSecond float64 `yaml:"preauth_requests_per_second"`
+	PreauthBurst             int     `yaml:"preauth_burst"`
+	// AuthFailureLogRate bounds invalid-auth warn-line output during a
+	// flood (PLAN §33): at most this many lines per second, each
+	// carrying the count of suppressed attempts.
+	AuthFailureLogRate float64 `yaml:"auth_failure_log_rate"`
 }
 
 // Backend is one OpenAI-compatible inference server (PLAN §15, §17).

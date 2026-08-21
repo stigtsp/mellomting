@@ -177,3 +177,88 @@ func (r *Registry) Size() int {
 	defer r.mu.Unlock()
 	return len(r.keys)
 }
+
+// SourceState is the pre-auth admission state of one source IP (PLAN
+// §33): a per-source request-rate bucket checked before authentication.
+type SourceState struct {
+	rate *Bucket // per-source RPS
+	last time.Time
+}
+
+// SourceRegistry is a bounded, lazily-populated per-source pre-auth
+// limiter (PLAN §33). Unlike the key registry, sources are not bounded
+// by the key store: any IP can knock on the door, so the map is capped
+// and, when full, the least-recently-touched entry is evicted. A flood
+// of distinct addresses therefore cannot grow the process's memory
+// without bound, and a single host's flood is throttled before it can
+// drain the shared authenticated bucket.
+type SourceRegistry struct {
+	mu    sync.Mutex
+	cap   int
+	rate  float64
+	burst int
+	srcs  map[string]*SourceState
+}
+
+// NewSourceRegistry builds a bounded per-source pre-auth limiter. rate
+// must be > 0; cap is the maximum number of distinct sources held.
+func NewSourceRegistry(rate float64, burst, cap int) (*SourceRegistry, error) {
+	if rate <= 0 {
+		return nil, fmt.Errorf("limiter: preauth rate must be > 0, got %v", rate)
+	}
+	if burst < 1 {
+		burst = 1
+	}
+	if cap < 1 {
+		cap = 1
+	}
+	return &SourceRegistry{
+		cap:   cap,
+		rate:  rate,
+		burst: burst,
+		srcs:  make(map[string]*SourceState, cap),
+	}, nil
+}
+
+// Allow consumes one pre-auth token for the source at time now. It
+// reports ok and, when !ok, the duration until a token is available.
+func (r *SourceRegistry) Allow(ip string, now time.Time) (ok bool, retryAfter time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.srcs[ip]
+	if !ok {
+		if len(r.srcs) >= r.cap {
+			r.evictOldest()
+		}
+		b, err := NewBucket(r.rate, r.burst)
+		if err != nil { // unreachable: constructor validated the rate
+			return true, 0
+		}
+		st = &SourceState{rate: b}
+		r.srcs[ip] = st
+	}
+	st.last = now
+	return st.rate.Allow(now)
+}
+
+// evictOldest drops the least-recently-touched source so the map stays
+// bounded. It must be called with r.mu held.
+func (r *SourceRegistry) evictOldest() {
+	var oldest string
+	var oldestTime time.Time
+	first := true
+	for ip, st := range r.srcs {
+		if first || st.last.Before(oldestTime) {
+			oldest, oldestTime, first = ip, st.last, false
+		}
+	}
+	delete(r.srcs, oldest)
+}
+
+// Size is the number of materialized source states (test/operational
+// aid).
+func (r *SourceRegistry) Size() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.srcs)
+}

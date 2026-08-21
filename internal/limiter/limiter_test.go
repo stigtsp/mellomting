@@ -131,3 +131,70 @@ func TestRegistryPerKeyState(t *testing.T) {
 		t.Fatalf("Size = %d, want 2", reg.Size())
 	}
 }
+
+func TestSourceRegistryPerSourceIsolation(t *testing.T) {
+	t.Parallel()
+	t0 := time.Now()
+	r, err := NewSourceRegistry(1, 2, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Source A bursts 2, then is throttled while source B is unaffected.
+	if ok, _ := r.Allow("1.2.3.4", t0); !ok {
+		t.Fatal("source A: first request admitted")
+	}
+	if ok, _ := r.Allow("1.2.3.4", t0); !ok {
+		t.Fatal("source A: second (burst) request admitted")
+	}
+	if ok, _ := r.Allow("1.2.3.4", t0); ok {
+		t.Fatal("source A: third immediate request must be throttled")
+	}
+	if ok, _ := r.Allow("5.6.7.8", t0); !ok {
+		t.Fatal("source B must be unaffected by source A's throttle")
+	}
+	if r.Size() != 2 {
+		t.Fatalf("Size = %d, want 2", r.Size())
+	}
+}
+
+func TestSourceRegistryBoundedEviction(t *testing.T) {
+	t.Parallel()
+	t0 := time.Now()
+	r, err := NewSourceRegistry(10, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Touch three sources, then a fourth: the map must not exceed the
+	// cap, and the evicted entry must be the least-recently-touched one.
+	if ok, _ := r.Allow("a", t0); !ok {
+		t.Fatal("a admitted")
+	}
+	if ok, _ := r.Allow("b", t0.Add(1*time.Second)); !ok {
+		t.Fatal("b admitted")
+	}
+	if ok, _ := r.Allow("c", t0.Add(2*time.Second)); !ok {
+		t.Fatal("c admitted")
+	}
+	// "a" is now the oldest; a fourth source must evict it.
+	if ok, _ := r.Allow("d", t0.Add(3*time.Second)); !ok {
+		t.Fatal("d admitted")
+	}
+	if r.Size() != 3 {
+		t.Fatalf("Size = %d, want 3 (bounded)", r.Size())
+	}
+	// "a" was evicted: its bucket is fresh again (admitted even though it
+	// had not been touched since t0).
+	if ok, _ := r.Allow("a", t0.Add(4*time.Second)); !ok {
+		t.Fatal("evicted source a must be admitted fresh")
+	}
+}
+
+func TestSourceRegistryRejectsBadConfig(t *testing.T) {
+	t.Parallel()
+	if _, err := NewSourceRegistry(0, 1, 4); err == nil {
+		t.Fatal("zero rate accepted")
+	}
+	if _, err := NewSourceRegistry(-1, 1, 4); err == nil {
+		t.Fatal("negative rate accepted")
+	}
+}

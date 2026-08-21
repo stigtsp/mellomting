@@ -37,8 +37,16 @@ const (
 	defaultQualifierConcurrency = 2
 	defaultQualifierQueueSize   = 4
 
-	defaultGlobalRPS       = 100.0
-	defaultGlobalBurst     = 200
+	defaultGlobalRPS    = 100.0
+	defaultGlobalBurst  = 200
+	defaultPreauthRPS   = 100.0
+	defaultPreauthBurst = 200
+	defaultAuthLogRate  = 1.0
+	// DefaultPreauthSources caps the number of per-source pre-auth
+	// states (PLAN §33): sources are not bounded by the key store, so
+	// the registry must be bounded to keep a flood of distinct
+	// addresses from growing memory without limit.
+	DefaultPreauthSources  = 4096
 	defaultLandlockABI     = 6
 	defaultAccountingQueue = 4096
 	// defaultAccountingReplayMaxBytes bounds the JSONL tail replayed at
@@ -153,6 +161,15 @@ func applyDefaults(c *Config) {
 	}
 	if c.Limits.GlobalBurst == 0 {
 		c.Limits.GlobalBurst = defaultGlobalBurst
+	}
+	if c.Limits.PreauthRequestsPerSecond == 0 {
+		c.Limits.PreauthRequestsPerSecond = defaultPreauthRPS
+	}
+	if c.Limits.PreauthBurst == 0 {
+		c.Limits.PreauthBurst = defaultPreauthBurst
+	}
+	if c.Limits.AuthFailureLogRate == 0 {
+		c.Limits.AuthFailureLogRate = defaultAuthLogRate
 	}
 
 	if c.Shutdown.GracePeriod == 0 {
@@ -456,6 +473,15 @@ func validateLimits(l *Limits) []string {
 	}
 	if l.GlobalBurst <= 0 {
 		errs = append(errs, "limits.global_burst: must be > 0")
+	}
+	if l.PreauthRequestsPerSecond <= 0 {
+		errs = append(errs, "limits.preauth_requests_per_second: must be > 0")
+	}
+	if l.PreauthBurst <= 0 {
+		errs = append(errs, "limits.preauth_burst: must be > 0")
+	}
+	if l.AuthFailureLogRate <= 0 {
+		errs = append(errs, "limits.auth_failure_log_rate: must be > 0")
 	}
 	return errs
 }

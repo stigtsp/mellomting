@@ -83,6 +83,10 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 	if cfg.Limits.GlobalRequestsPerSecond != 100 || cfg.Limits.GlobalBurst != 200 {
 		t.Fatalf("limits defaults wrong: %+v", cfg.Limits)
 	}
+	if cfg.Limits.PreauthRequestsPerSecond != 100 || cfg.Limits.PreauthBurst != 200 ||
+		cfg.Limits.AuthFailureLogRate != 1.0 {
+		t.Fatalf("preauth/limits defaults wrong: %+v", cfg.Limits)
+	}
 	if cfg.Retry.MaxAttempts != 1 ||
 		cfg.Retry.InitialBackoff.Duration() != 100*time.Millisecond ||
 		cfg.Retry.MaxBackoff.Duration() != time.Second ||

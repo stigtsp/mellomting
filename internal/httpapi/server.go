@@ -33,6 +33,9 @@ type Server struct {
 	proxy       *proxy.Proxy
 	inflight    chan struct{}
 	globalRPS   *limiter.Bucket
+	sourceLimit *limiter.SourceRegistry
+	authLog     *limiter.Bucket
+	authDropped atomic.Int64
 	keyLimits   *limiter.Registry
 	ready       atomic.Bool
 	startedUnix int64
@@ -59,6 +62,29 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 	if err != nil {
 		panic("httpapi: invalid global rate limit: " + err.Error())
 	}
+	// Pre-auth per-source flood protection (PLAN §33): always present,
+	// bounded by the source registry. Defaults mirror the config
+	// defaults if an un-validated configuration ever arrives.
+	prps, pburst := cfg.Limits.PreauthRequestsPerSecond, cfg.Limits.PreauthBurst
+	if prps <= 0 || pburst < 1 {
+		prps, pburst = 100, 200
+	}
+	sourceLimit, err := limiter.NewSourceRegistry(prps, pburst, config.DefaultPreauthSources)
+	if err != nil {
+		panic("httpapi: invalid preauth rate limit: " + err.Error())
+	}
+	// Bounded invalid-auth logging (PLAN §33): at most
+	// auth_failure_log_rate warn-lines per second, each carrying the
+	// count of suppressed attempts. The burst is fixed small so output
+	// is never a flood.
+	alr := cfg.Limits.AuthFailureLogRate
+	if alr <= 0 {
+		alr = 1
+	}
+	authLog, err := limiter.NewBucket(alr, 3)
+	if err != nil {
+		panic("httpapi: invalid auth log rate: " + err.Error())
+	}
 	s := &Server{
 		cfg:         cfg,
 		log:         log,
@@ -66,6 +92,8 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		proxy:       p,
 		inflight:    make(chan struct{}, size),
 		globalRPS:   globalRPS,
+		sourceLimit: sourceLimit,
+		authLog:     authLog,
 		keyLimits:   limiter.NewRegistry(),
 		startedUnix: time.Now().Unix(),
 	}
@@ -189,6 +217,16 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 		defer func() { <-s.inflight }()
 	default:
 		writeErr(w, http.StatusServiceUnavailable, "overload_error", "server_overloaded", msgOverload)
+		return
+	}
+
+	// Pre-auth per-source flood protection (PLAN §33): a per-source rate
+	// bucket is consumed before the shared authenticated bucket and
+	// before authentication, so a bogus-token flood from one host cannot
+	// 429 legit keys on the global bucket, and invalid-auth attempts
+	// never materialize per-key state.
+	if ok, ra := s.sourceLimit.Allow(peerString(r), time.Now()); !ok {
+		writeRateLimit(w, ra)
 		return
 	}
 
@@ -356,7 +394,15 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 		case err == auth.ErrExpired:
 			class = "auth_expired"
 		}
-		s.log.Warn("auth rejected", "class", class, "remote", peerString(r))
+		// Bounded invalid-auth logging (PLAN §33): during a bogus-token
+		// flood we do not log every invalid token. A single rate-limited
+		// warn line is emitted, carrying the count of attempts suppressed
+		// since the previous line.
+		if ok, _ := s.authLog.Allow(time.Now()); ok {
+			s.log.Warn("auth rejected", "class", class, "remote", peerString(r), "suppressed", s.authDropped.Swap(0))
+		} else {
+			s.authDropped.Add(1)
+		}
 		return nil, errAuth
 	}
 	return rec, nil
