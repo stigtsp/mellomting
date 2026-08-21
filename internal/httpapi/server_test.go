@@ -300,42 +300,88 @@ func TestNonStreamingWriteDeadlineBounded(t *testing.T) {
 
 func TestAuthMatrix(t *testing.T) {
 	t.Parallel()
-	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+	// Disabled and expired keys are 401 like any other bad key; they are
+	// added to the users file so the table covers those branches (T-T4).
+	dk, did, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ek, eid, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(-time.Hour)
+	e := buildEnvWithUsers(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
-	}, nil, auth.KeyLimits{})
+	}, func(c *config.Config) {
+		// Generous preauth/global limits so the auth-matrix flood of 401s
+		// is never misclassified as a rate-limit 429.
+		c.Limits.AuthFailureLogRate = 1
+		c.Limits.PreauthRequestsPerSecond = 1000
+		c.Limits.PreauthBurst = 1000
+		c.Limits.GlobalRequestsPerSecond = 1000
+		c.Limits.GlobalBurst = 1000
+	}, auth.KeyLimits{}, testLogger(), func(uf *auth.UsersFile) {
+		uf.Keys = append(uf.Keys,
+			auth.Key{ID: did, Name: "disabled", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), dk)), Enabled: false, Models: []string{"*"}},
+			auth.Key{ID: eid, Name: "expired", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), ek)), Enabled: true, ExpiresAt: &expiry, Models: []string{"*"}},
+		)
+	})
 	cases := []struct {
 		name string
-		key  string // "", "bearer", "bearer2", "xkey"
+		key  string // drives the credential construction below
 		code int
 	}{
 		{"no credentials", "", 401},
 		{"unknown key", "unknown", 401},
-		{"malformed header", "basic", 401},
+		{"basic scheme", "basic", 401},
+		{"duplicate authorization", "dup-auth", 401},
+		{"authorization without space", "nospace", 401},
+		{"empty bearer", "empty-bearer", 401},
+		{"duplicate x-api-key", "dup-xkey", 401},
+		{"disabled key", "disabled", 401},
+		{"expired key", "expired", 401},
 		{"x-api-key ok", "xkey", 200},
 		{"bearer ok", "bearer", 200},
 		{"mismatched dual headers", "mismatch", 401},
-		{"query param ignored", "query", 200},
+		// Non-tautological (T-T4): a plausible api_key in the query
+		// string with NO credential header must 401, proving the query
+		// parameter is never read.
+		{"query param api_key ignored", "query", 401},
 	}
 	for _, tc := range cases {
-		w := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?api_key=should-be-ignored",
+		w := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?api_key=mtk_query_mustbeignored",
 			strings.NewReader(`{"model":"model-a"}`))
 		w.Header.Set("Content-Type", "application/json")
 		switch tc.key {
 		case "bearer":
 			w.Header.Set("Authorization", "Bearer "+e.key)
-		case "bearer2":
-			w.Header.Set("Authorization", "Bearer "+e.key2)
 		case "xkey":
 			w.Header.Set("X-Api-Key", e.key)
 		case "unknown":
 			w.Header.Set("Authorization", "Bearer mtk_9X9X9X_unknownkeyunknownkeyunknownk")
 		case "basic":
 			w.Header.Set("Authorization", "Basic abc")
+		case "dup-auth":
+			w.Header.Add("Authorization", "Bearer "+e.key)
+			w.Header.Add("Authorization", "Bearer "+e.key)
+		case "nospace":
+			w.Header.Set("Authorization", "Bearer"+e.key)
+		case "empty-bearer":
+			w.Header.Set("Authorization", "Bearer ")
+		case "dup-xkey":
+			w.Header.Add("X-Api-Key", e.key)
+			w.Header.Add("X-Api-Key", e.key)
+		case "disabled":
+			w.Header.Set("Authorization", "Bearer "+dk)
+		case "expired":
+			w.Header.Set("Authorization", "Bearer "+ek)
 		case "mismatch":
 			w.Header.Set("Authorization", "Bearer "+e.key)
 			w.Header.Set("X-Api-Key", e.key2)
 		case "query":
-			w.Header.Set("Authorization", "Bearer "+e.key)
+			// No credential header: the query param alone must not
+			// authenticate (authorize never reads query parameters).
 		}
 		rr := httptest.NewRecorder()
 		e.srv.Handler().ServeHTTP(rr, w)
