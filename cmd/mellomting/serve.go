@@ -432,8 +432,12 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 	srv.ConnState = func(c net.Conn, s http.ConnState) {
 		switch s {
 		case http.StateNew:
+			// If the counter exceeds the cap, close the connection. We
+			// do NOT compensate here: net/http still fires StateClosed
+			// for this connection once its serve loop ends, which is
+			// what releases the slot. Compensating here too would
+			// double-decrement and let the effective cap drift upward.
 			if active.Add(1) > max {
-				active.Add(-1)
 				_ = c.Close()
 			}
 		case http.StateClosed, http.StateHijacked:

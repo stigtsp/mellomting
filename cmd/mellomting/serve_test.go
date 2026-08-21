@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -212,10 +213,31 @@ models:
 	return bin, cfgPath, sock, key
 }
 
+// syncBuffer is a goroutine-safe output sink for a child process:
+// exec.Cmd's copy goroutines write into it while the test's Cleanup may
+// read it, so the shared buffer must be locked (startServe). A plain
+// bytes.Buffer races the copy goroutine even after Process.Wait returns.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 func startServe(t *testing.T, bin, cfgPath string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(bin, "serve", "-config", cfgPath)
-	var logB bytes.Buffer
+	var logB syncBuffer
 	cmd.Stdout = &logB
 	cmd.Stderr = &logB
 	if err := cmd.Start(); err != nil {
