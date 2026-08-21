@@ -315,3 +315,43 @@ func TestWriterDroppedCounterAtomic(t *testing.T) {
 		t.Fatalf("dropped=%d want %d", w.Dropped(), n)
 	}
 }
+
+// T-M11: records submitted after Close() must be counted as dropped, not
+// silently vanish into a queue the consumer has already left.
+func TestWriterEnqueueAfterCloseCountsDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	w, err := NewWriter(WriterConfig{Path: path, QueueSize: 8, FSync: "never"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if w.Dropped() != 0 {
+		t.Fatalf("pre-close record dropped: %d", w.Dropped())
+	}
+	for i := 0; i < 3; i++ {
+		w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
+	}
+	if w.Dropped() != 3 {
+		t.Fatalf("records after Close() must count as dropped, got %d", w.Dropped())
+	}
+}
+
+// T-M11: Close must surface the final-sync error (e.g. ENOSPC) instead of
+// discarding it. /dev/full makes every write and sync fail, exactly the
+// full-disk class of failure the final-sync path must report.
+func TestWriterCloseSurfacesFinalSyncError(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full unavailable")
+	}
+	w, err := NewWriter(WriterConfig{Path: "/dev/full", QueueSize: 4, FSync: "never"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
+	if err := w.Close(); err == nil {
+		t.Fatal("Close must surface the final-sync error, got nil")
+	}
+}

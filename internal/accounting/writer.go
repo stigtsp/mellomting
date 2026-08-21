@@ -22,10 +22,16 @@ type Writer struct {
 	log      *slog.Logger
 
 	dropped atomic.Int64
+	closed  atomic.Bool
 
 	closeOnce sync.Once
 	stop      chan struct{}
 	done      chan struct{}
+	// finalErr records the last filesystem error (final sync or close)
+	// from the consumer goroutine. It is written before done is closed
+	// and read by Close after <-done, so the happens-before of the
+	// channel close makes the plain field safe (T-M11).
+	finalErr  error
 	lastAlert atomic.Int64
 }
 
@@ -69,8 +75,14 @@ func NewWriter(cfg WriterConfig) (*Writer, error) {
 
 // Enqueue submits a record for writing. It never blocks: if the bounded
 // queue is full the record is dropped, a counter is incremented, and a
-// rate-limited error is logged (PLAN §42).
+// rate-limited error is logged (PLAN §42). Records submitted after Close()
+// has begun are counted as dropped rather than silently vanishing
+// (T-M11).
 func (w *Writer) Enqueue(r Record) {
+	if w.closed.Load() {
+		w.dropped.Add(1)
+		return
+	}
 	select {
 	case w.q <- r:
 	default:
@@ -113,11 +125,20 @@ func (w *Writer) run() {
 				select {
 				case r := <-w.q:
 					if err := w.writeRecord(r); err != nil {
+						w.log.Error("accounting write failed", "error_class", "accounting_write")
 						w.dropped.Add(1)
 					}
 				default:
-					_ = w.fh.Sync()
-					_ = w.fh.Close()
+					// Surface a final-sync (e.g. ENOSPC) or close error
+					// through Close() instead of discarding it (T-M11).
+					if w.finalErr == nil {
+						w.finalErr = w.fh.Sync()
+					}
+					if w.finalErr == nil {
+						w.finalErr = w.fh.Close()
+					} else {
+						_ = w.fh.Close()
+					}
 					return
 				}
 			}
@@ -143,11 +164,24 @@ func (w *Writer) writeRecord(r Record) error {
 }
 
 // Close stops the consumer, drains the queue, syncs, and closes the file.
+// It returns the final-sync or close error (T-M11), so an ENOSPC on the
+// last flush is visible to the caller. Records that raced in after the
+// drain are counted as dropped. Close is idempotent.
 func (w *Writer) Close() error {
-	var err error
 	w.closeOnce.Do(func() {
+		w.closed.Store(true)
 		close(w.stop)
 		<-w.done
+		// Records that arrived after the consumer finished can no longer
+		// be written; count them dropped (T-M11).
+		for {
+			select {
+			case <-w.q:
+				w.dropped.Add(1)
+			default:
+				return
+			}
+		}
 	})
-	return err
+	return w.finalErr
 }

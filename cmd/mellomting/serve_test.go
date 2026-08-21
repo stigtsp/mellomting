@@ -111,6 +111,40 @@ func fakeChatBackend(t *testing.T) *httptest.Server {
 	return ts
 }
 
+// slowChatBackend completes non-streaming requests immediately but holds
+// streaming requests open: it flushes one chunk then waits on release
+// before finishing. It keeps a handler alive across shutdown so a drain
+// is observable (T-M11).
+func slowChatBackend(t *testing.T, release chan struct{}) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(404)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var env struct {
+			Stream bool   `json:"stream"`
+			Model  string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &env)
+		if !env.Stream {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":"slow-1","object":"chat.completion","model":%q}`, env.Model)))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if fl, ok := w.(http.Flusher); ok {
+			_, _ = w.Write([]byte(`data: {"id":"slow-1","choices":[{"delta":{"content":"H"}}]}` + "\n\n"))
+			fl.Flush()
+		}
+		<-release
+		_, _ = w.Write([]byte(`data: [DONE]` + "\n\n"))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // serveFixture wires a temp config + users/pepper + fake backend.
 // landlockMode is the security.landlock.mode of the written config.
 func serveFixture(t *testing.T, landlockMode string) (bin, cfgPath, sock string, key string) {
@@ -1073,6 +1107,139 @@ models:
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not exit after SIGTERM following SIGHUP reloads")
+	}
+}
+
+// T-M11: a second SIGTERM during a drain must force a prompt exit (not be
+// swallowed) and still flush accounting, even when an active stream would
+// otherwise hold the drain open until the grace deadline.
+func TestServeSecondSignalForcesShutdown(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	release := make(chan struct{})
+	backend := slowChatBackend(t, release)
+	t.Cleanup(func() { close(release) })
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+	accPath := filepath.Join(dir, "usage.jsonl")
+
+	pepper := []byte("force-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+accounting:
+  enabled: true
+  path: %s
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, accPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := startServe(t, bin, cfgPath)
+	client := waitReady(t, sock)
+
+	// One completed request so there is an accounting record to flush.
+	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("chat: %d %s", resp.StatusCode, body)
+	}
+
+	// Keep a handler alive across shutdown: a streaming request whose
+	// backend holds the response open on release.
+	req, err := http.NewRequest(http.MethodPost, "http://mellomting/v1/chat/completions",
+		strings.NewReader(`{"model":"qwen-coder","stream":true,"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	doneReq := make(chan error, 1)
+	go func() { _, err := client.Do(req); doneReq <- err }()
+	// Give the request time to reach the backend and start streaming.
+	time.Sleep(300 * time.Millisecond)
+
+	// First SIGTERM: the graceful drain starts but is held open by the
+	// active stream.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	// Second SIGTERM: must force a prompt exit with an accounting flush,
+	// not be swallowed.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("second SIGTERM did not force prompt exit; took %s", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after the second SIGTERM")
+	}
+
+	// Accounting was flushed on the forced path: the completed request's
+	// record is in the log.
+	data, err := os.ReadFile(accPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"model":"qwen-coder"`) {
+		t.Fatalf("accounting not flushed on forced shutdown: %q", data)
 	}
 }
 

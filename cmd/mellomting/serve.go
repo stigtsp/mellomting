@@ -159,21 +159,36 @@ func serveCmd(args []string) int {
 	log.Info("shutting down", "grace_period", cfg.Shutdown.GracePeriod.Duration().String())
 	// PLAN §74: 1-2. stop accepting, reject new admissions.
 	d.proxy.BeginDraining()
-	// 3. let active streams finish up to the deadline.
+	// 3. let active streams finish up to the deadline. A second
+	// SIGINT/SIGTERM/SIGHUP during the drain forces a prompt exit with an
+	// accounting flush instead of being swallowed (T-M11): the drain
+	// either completes on its own or the second signal severs remaining
+	// handlers.
 	timeout := cfg.Shutdown.GracePeriod.Duration()
 	gctx, cancel := context.WithTimeout(context.Background(), timeout)
-	_ = srv.Shutdown(gctx)
-	cancel()
-	// 4. cancel whatever remains.
-	srv.Close()
+	defer cancel()
+	shutdownDone := make(chan struct{})
+	go func() {
+		_ = srv.Shutdown(gctx)
+		close(shutdownDone)
+	}()
+	select {
+	case <-shutdownDone:
+	case sig := <-sigCh:
+		log.Warn("second signal during drain; forcing shutdown", "signal", sig.String())
+		// 4. cancel whatever remains.
+		srv.Close()
+		<-shutdownDone
+	}
 	// 7. close listener.
 	if err := ln.Close(); err != nil {
 		log.Warn("listener close", "error", err)
 	}
-	// 8. flush and close the accounting writer (PLAN §42).
+	// 8. flush and close the accounting writer (PLAN §42). The final-sync
+	// error (e.g. ENOSPC) is surfaced here (T-M11), never discarded.
 	if d.acc != nil {
 		if err := d.acc.Close(); err != nil {
-			log.Warn("accounting close", "error", err)
+			log.Error("accounting final-sync failed", "error", err)
 		}
 	}
 	log.Info("shutdown complete")
