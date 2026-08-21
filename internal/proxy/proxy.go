@@ -253,13 +253,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 		}
 	} else if o.respID {
-		// Responses retrieve/cancel (PLAN §21.3): route to the owning
-		// backend; an unknown ID may be forwarded only when exactly one
-		// backend is possible for this key.
+		// Responses retrieve/cancel (PLAN §21.1, §21.3): route only to
+		// the backend that owns the response for THIS key. A different
+		// key must not be able to retrieve or cancel another key's
+		// response even if it knows the ID, so on an affinity miss we
+		// fail closed rather than forward on backend reachability.
 		if b, ok := p.affinity.Get(q.Key.ID, q.ResponseID); ok {
 			fixedBackend = b
-		} else if only := p.singlePossibleBackend(q.Key); only != "" {
-			fixedBackend = only
 		} else {
 			fail(404, "invalid_request_error", "response_not_found",
 				"response not found", "affinity")
@@ -700,27 +700,6 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			flusher.Flush()
 		}
 	}
-}
-
-// singlePossibleBackend returns the unique backend that the key may use
-// for generation models, if exactly one applies (PLAN §21.3: an unknown
-// response ID may be forwarded only when one backend could own it).
-func (p *Proxy) singlePossibleBackend(key *auth.Key) string {
-	seen := map[string]bool{}
-	for _, name := range p.router.List() {
-		if p.router.TypeOf(name) != "generation" || !key.Allows(name) {
-			continue
-		}
-		for _, b := range p.router.BackendsFor(name) {
-			seen[b] = true
-		}
-	}
-	if len(seen) == 1 {
-		for b := range seen {
-			return b
-		}
-	}
-	return ""
 }
 
 // shallowParse inspects the routing/policy fields of a JSON body and

@@ -381,13 +381,19 @@ func TestResponsesAffinityLifecycle(t *testing.T) {
 		t.Fatalf("retrieve: status=%d path=%q", rec.Code, f.lastPath)
 	}
 
-	// A different key with no affinity and multiple possible backends
-	// (here only one) still reaches the backend; with a truly unknown ID
-	// and one possible backend, §21.3 permits the single forward.
+	// A different key with no affinity must NOT reach the backend: a
+	// response is bound to the key that created it, so a foreign key
+	// gets 404 even when it knows the ID and only one backend is
+	// possible (PLAN §21.1).
 	other := &auth.Key{ID: "K2", Name: "o", Enabled: true, Models: []string{"gen-1"}}
-	rec = run(t, p, http.MethodGet, "/v1/responses/resp_unknown", "", other)
-	if rec.Code != 200 {
-		t.Fatalf("single-backend unknown-id forward: status = %d", rec.Code)
+	rec = run(t, p, http.MethodGet, "/v1/responses/resp_123", "", other)
+	if rec.Code != 404 {
+		t.Fatalf("foreign-key retrieve: status = %d, want 404", rec.Code)
+	}
+	// And it must not be able to cancel key K1's response either.
+	rec = run(t, p, http.MethodPost, "/v1/responses/resp_123/cancel", "", other)
+	if rec.Code != 404 {
+		t.Fatalf("foreign-key cancel: status = %d, want 404", rec.Code)
 	}
 
 	// Cancel routes the same way.

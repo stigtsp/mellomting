@@ -316,6 +316,41 @@ func TestFullChatFlow(t *testing.T) {
 	}
 }
 
+// TestResponsesCrossKeyIsolation is the PLAN §21.1 acceptance test
+// through the real HTTP surface: a response is bound to the key that
+// created it. A different key must not be able to retrieve or cancel it
+// even if it knows the ID and only one backend exists.
+func TestResponsesCrossKeyIsolation(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		// POST create returns a response owned by the creating key.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_OWNED","object":"response"}`))
+	}, nil, auth.KeyLimits{})
+
+	// Key A (model-a) creates a response.
+	rec := e.do(t, http.MethodPost, "/v1/responses", "bearer", `{"model":"model-a","input":"hi"}`)
+	if rec.Code != 200 {
+		t.Fatalf("create status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Key B (wildcard) must not retrieve key A's response.
+	rec = e.do(t, http.MethodGet, "/v1/responses/resp_OWNED", "bearer2", "")
+	if rec.Code != 404 {
+		t.Fatalf("cross-key retrieve status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// Key B must not cancel key A's response either.
+	rec = e.do(t, http.MethodPost, "/v1/responses/resp_OWNED/cancel", "bearer2", "")
+	if rec.Code != 404 {
+		t.Fatalf("cross-key cancel status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// The owning key can still retrieve it.
+	rec = e.do(t, http.MethodGet, "/v1/responses/resp_OWNED", "bearer", "")
+	if rec.Code != 200 {
+		t.Fatalf("owner retrieve status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestInflightLimit(t *testing.T) {
 	t.Parallel()
 	// A second request while the first holds its slot must 503 once the
