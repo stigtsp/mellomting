@@ -184,8 +184,10 @@ func serveCmd(args []string) int {
 		srv.Close()
 		<-shutdownDone
 	}
-	// 7. close listener.
-	if err := ln.Close(); err != nil {
+	// 7. close listener. Shutdown already closed it on the clean path,
+	// so "use of closed network connection" is expected, not a WARN
+	// (T-L12).
+	if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Warn("listener close", "error", err)
 	}
 	// 8. flush and close the accounting writer (PLAN §42). The final-sync

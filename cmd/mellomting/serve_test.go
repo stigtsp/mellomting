@@ -1243,6 +1243,59 @@ models:
 	}
 }
 
+// T-L12: a clean shutdown must not log a spurious "listener close:
+// use of closed network connection" WARN (Shutdown already closed the
+// listener; closing it again is expected, not a warning).
+func TestServeCleanShutdownNoListenerWarn(t *testing.T) {
+	bin, cfgPath, sock, _ := serveFixture(t, "disabled")
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	dir := filepath.Dir(cfgPath)
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if cmd.Process != nil && !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	_ = waitReady(t, sock)
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit cleanly after SIGTERM")
+	}
+	killed = true
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logData), "listener close") ||
+		strings.Contains(string(logData), "closed network connection") {
+		t.Fatalf("clean shutdown logged a spurious listener-close warning:\n%s", logData)
+	}
+}
+
 // TestServeSandboxRequiredApplies runs the daemon end to end with
 // landlock.mode=required on a kernel that can enforce it (PLAN §55,
 // §57): the daemon must begin accepting requests only after the policy
