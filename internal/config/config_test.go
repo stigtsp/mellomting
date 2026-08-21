@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -862,6 +863,45 @@ backends:
 				t.Fatalf("Parse failed: %v", err)
 			}
 		})
+	}
+}
+
+// TestMalformedBaseURLCredentialsRedacted is the T-M13 regression test:
+// a malformed base_url with inlined credentials must never echo the
+// password (or the userinfo) in a validation error, whether it failed to
+// parse or was rejected by the well-formed-userinfo check.
+func TestMalformedBaseURLCredentialsRedacted(t *testing.T) {
+	const secret = "s3cr3t-pw"
+	cases := []string{
+		"http://admin:" + secret + "@host\x7f",          // parse failure (control byte) — the T-M13 case
+		"http://admin:" + secret + "@",                  // parses; missing host
+		"://admin:" + secret + "@host:8000",             // missing scheme (parse failure)
+		"http://admin:" + secret + "@127.0.0.1:8001",    // well-formed userinfo branch
+		"http://user:" + secret + "@vllm.internal:8001", // well-formed userinfo branch
+	}
+	for _, base := range cases {
+		cfg := fmt.Sprintf("version: 1\n%s\nbackends:\n  qa:\n    base_url: %q\n    upstream_model: M\nmodels:\n  m1:\n    backends: [qa]\n", minimalServer, base)
+		if _, err := Parse([]byte(cfg)); err == nil {
+			t.Fatalf("Parse succeeded for %q; want a validation error", base)
+		} else if strings.Contains(err.Error(), secret) {
+			t.Fatalf("validation error leaks password for %q: %s", base, err)
+		}
+	}
+}
+
+// TestRedactURL pins the redaction helper's edge cases (T-M13).
+func TestRedactURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://admin:pass@host\x7f", "http://<redacted>@host\x7f"},
+		{"http://user:pass@127.0.0.1:8001", "http://<redacted>@127.0.0.1:8001"},
+		{"http://127.0.0.1:8001", "http://127.0.0.1:8001"},
+		{"http://127.0.0.1:8001/v1", "http://127.0.0.1:8001/v1"},
+		{"no-scheme-value", "no-scheme-value"},
+	}
+	for _, tc := range cases {
+		if got := redactURL(tc.in); got != tc.want {
+			t.Fatalf("redactURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
