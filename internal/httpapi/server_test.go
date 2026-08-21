@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -366,6 +367,78 @@ func TestClientDisconnectCancelsUpstream(t *testing.T) {
 	case <-upstreamCancelled:
 	case <-time.After(3 * time.Second):
 		t.Fatal("client disconnect did not cancel the upstream within 3s")
+	}
+}
+
+// TestLogScrubbing locks in PLAN §24, §41, §43 and §25-27: operational
+// logs must never contain client API keys, prompts, backend response
+// content, raw backend error bodies, or backend credentials. It drives
+// a success, a sanitized backend 5xx, and an auth rejection through the
+// real HTTP stack while capturing the actual slog output, then asserts
+// none of the distinctive markers survive into the log.
+func TestLogScrubbing(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	capLog := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	const (
+		promptMarker = "PROMPT-MARKER-7f3a9c"
+		respMarker   = "BACKEND-RESP-MARKER-9b2c1d"
+		errorMarker  = "BACKEND-ERROR-BODY-SECRET-51e8"
+		backendToken = "sk-backend-secret-token-8d41aa"
+	)
+	keyfile := filepath.Join(t.TempDir(), "backend.key")
+	if err := os.WriteFile(keyfile, []byte(backendToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e := buildEnvWithLog(t, func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(reqBody), `"stream":true`):
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"id":"chatcmpl-1","choices":[]}` + "\n\n"))
+		case strings.Contains(string(reqBody), errorMarker):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"detail":"` + errorMarker + `"}`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","marker":"` + respMarker + `"}`))
+		}
+	}, func(cfg *config.Config) {
+		b := cfg.Backends["b1"]
+		b.APIKeyFile = keyfile
+		cfg.Backends["b1"] = b
+	}, auth.KeyLimits{}, capLog)
+
+	// 1. Success carrying a distinctive prompt in the body and a
+	// distinctive marker in the backend response.
+	promptBody := `{"model":"model-a","messages":[{"role":"user","content":"` + promptMarker + `"}]}`
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", promptBody); w.Code != 200 {
+		t.Fatalf("success: status = %d", w.Code)
+	}
+
+	// 2. Backend 5xx whose raw error body carries a distinctive secret.
+	errBody := `{"model":"model-a","x":"` + errorMarker + `"}`
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", errBody)
+	if w.Code != 502 {
+		t.Fatalf("backend 5xx: status = %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), errorMarker) {
+		t.Fatalf("client-facing error leaks raw backend body: %q", w.Body.String())
+	}
+
+	// 3. Auth rejection with a distinctive bogus key.
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "badbearer", `{"model":"model-a"}`); w.Code != 401 {
+		t.Fatalf("auth rejection: status = %d", w.Code)
+	}
+
+	out := buf.String()
+	badKey := "mtk_invalid_0000000000000000000000000000"
+	for _, secret := range []string{promptMarker, respMarker, errorMarker, backendToken, e.key, badKey} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("log leaked %q; captured log:\n%s", secret, out)
+		}
 	}
 }
 
