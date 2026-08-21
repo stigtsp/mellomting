@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +41,12 @@ func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config)
 // buildEnvWithLog is buildEnv with a caller-supplied logger (used to
 // assert bounded log output, e.g. T-M4's invalid-auth flood).
 func buildEnvWithLog(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits, log *slog.Logger) *env {
+	return buildEnvWithUsers(t, behaviour, mod, k1lim, log, nil)
+}
+
+// buildEnvWithUsers additionally lets the caller mutate the users file
+// before the store is built (e.g. to add disabled or expired keys).
+func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits, log *slog.Logger, usersFn func(*auth.UsersFile)) *env {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/responses/") {
@@ -100,6 +107,9 @@ func buildEnvWithLog(t *testing.T, behaviour http.HandlerFunc, mod func(*config.
 		{ID: id1, Name: "a", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k1)), Enabled: true, Models: []string{"model-a"}, Limits: k1lim},
 		{ID: id2, Name: "b", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k2)), Enabled: true, Models: []string{"*"}},
 	}}
+	if usersFn != nil {
+		usersFn(uf)
+	}
 	store, err := auth.NewStore(uf, pepper)
 	if err != nil {
 		t.Fatal(err)
@@ -346,6 +356,95 @@ func TestAuthMatrix(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &env)
 	if rr.Code != 401 || env.Err.Type != "authentication_error" {
 		t.Fatalf("401 body = %s", rr.Body.String())
+	}
+}
+
+func TestClassifyAuthError(t *testing.T) {
+	t.Parallel()
+	// T-Q5: the operator-facing class must survive a wrapped sentinel,
+	// so classification uses errors.Is, never ==.
+	wrappedDisabled := fmt.Errorf("key id: %w", auth.ErrDisabled)
+	wrappedExpired := fmt.Errorf("key id: %w", auth.ErrExpired)
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"wrapped disabled", wrappedDisabled, "auth_disabled"},
+		{"wrapped expired", wrappedExpired, "auth_expired"},
+		{"bare disabled", auth.ErrDisabled, "auth_disabled"},
+		{"bare expired", auth.ErrExpired, "auth_expired"},
+		{"unknown", auth.ErrUnknownKey, "auth_unknown"},
+		{"unrelated", errors.New("boom"), "auth_unknown"},
+	}
+	for _, tc := range cases {
+		if got := classifyAuthError(tc.err); got != tc.want {
+			t.Errorf("%s: classifyAuthError(%v) = %q, want %q", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestAuthDisabledExpiredClassified(t *testing.T) {
+	t.Parallel()
+	// T-Q5 (T-T4): a disabled and an expired key are 401 like any other
+	// bad key, but are logged under their own class so the operator can
+	// distinguish them from a bogus-token flood.
+	var buf bytes.Buffer
+	capLog := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	dk, did, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ek, eid, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := buildEnvWithUsers(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}, func(cfg *config.Config) {
+		cfg.Limits.AuthFailureLogRate = 1
+		cfg.Limits.PreauthRequestsPerSecond = 1000
+		cfg.Limits.PreauthBurst = 1000
+		cfg.Limits.GlobalRequestsPerSecond = 1000
+		cfg.Limits.GlobalBurst = 1000
+	}, auth.KeyLimits{}, capLog, func(uf *auth.UsersFile) {
+		past := time.Now().Add(-time.Hour)
+		uf.Keys = append(uf.Keys,
+			auth.Key{ID: did, Name: "disabled", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), dk)), Enabled: false, Models: []string{"*"}},
+			auth.Key{ID: eid, Name: "expired", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), ek)), Enabled: true, ExpiresAt: &past, Models: []string{"*"}},
+		)
+	})
+
+	cases := []struct {
+		name, key, class string
+	}{
+		{"disabled", dk, "auth_disabled"},
+		{"expired", ek, "auth_expired"},
+	}
+	for _, tc := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+tc.key)
+		rr := httptest.NewRecorder()
+		e.srv.Handler().ServeHTTP(rr, r)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: status = %d, want 401", tc.name, rr.Code)
+		}
+		if !strings.Contains(buf.String(), "class="+tc.class) {
+			t.Fatalf("%s: no %s log line; captured log:\n%s", tc.name, tc.class, buf.String())
+		}
+	}
+	// A valid key still works and adds no rejection line.
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+e.key)
+	rr := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rr, r)
+	if rr.Code != 200 {
+		t.Fatalf("valid key: status = %d, want 200", rr.Code)
+	}
+	if n := strings.Count(buf.String(), "auth rejected"); n != 2 {
+		t.Fatalf("auth-rejection lines = %d, want 2 (disabled + expired); log:\n%s", n, buf.String())
 	}
 }
 

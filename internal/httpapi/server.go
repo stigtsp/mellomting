@@ -399,13 +399,7 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 	if err != nil {
 		// All key failures read identically to the client (no oracle);
 		// the cause is an operator concern, not a client one.
-		class := "auth_unknown"
-		switch {
-		case err == auth.ErrDisabled:
-			class = "auth_disabled"
-		case err == auth.ErrExpired:
-			class = "auth_expired"
-		}
+		class := classifyAuthError(err)
 		// Bounded invalid-auth logging (PLAN §33): during a bogus-token
 		// flood we do not log every invalid token. A single rate-limited
 		// warn line is emitted, carrying the count of attempts suppressed
@@ -418,6 +412,20 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 		return nil, errAuth
 	}
 	return rec, nil
+}
+
+// classifyAuthError maps a key-store lookup failure to an operator-facing
+// class (T-Q5). errors.Is is used (not ==) so a wrapped sentinel — e.g. a
+// store that annotates ErrDisabled with context — still classifies
+// correctly instead of silently degrading to auth_unknown.
+func classifyAuthError(err error) string {
+	switch {
+	case errors.Is(err, auth.ErrDisabled):
+		return "auth_disabled"
+	case errors.Is(err, auth.ErrExpired):
+		return "auth_expired"
+	}
+	return "auth_unknown"
 }
 
 // responsesID extracts a safe {id} from a /v1/responses/... path.
