@@ -1296,6 +1296,143 @@ func TestServeCleanShutdownNoListenerWarn(t *testing.T) {
 	}
 }
 
+// T-L11: a TCP listener's shutdown must never attempt an os.Remove of a
+// host:port-named relative path in the working directory. Before the fix,
+// a pre-existing file named like the listen address was wiped on
+// shutdown; after the fix it survives.
+func TestServeTCPUsesNoUnlink(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// A file that an unguarded os.Remove("host:port") would delete.
+	decoy := filepath.Join(dir, addr)
+	if err := os.WriteFile(decoy, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+	pepper := []byte("unlink-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: tcp
+    address: %s
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: M
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, addr, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	cmd.Dir = dir // CWD where the unguarded relative os.Remove would land
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if cmd.Process != nil && !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	// Wait until the TCP listener answers readyz.
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(15 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("http://" + addr + "/readyz")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("TCP daemon never became ready (see daemon.log)")
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+	}
+	killed = true
+
+	if _, err := os.Stat(decoy); err != nil {
+		t.Fatalf("TCP shutdown removed the host:port-named file (T-L11): %v", err)
+	}
+}
+
 // TestServeSandboxRequiredApplies runs the daemon end to end with
 // landlock.mode=required on a kernel that can enforce it (PLAN §55,
 // §57): the daemon must begin accepting requests only after the policy

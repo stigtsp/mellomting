@@ -94,7 +94,13 @@ func serveCmd(args []string) int {
 		ln = tls.NewListener(ln, d.tlsConfig)
 	}
 	d.listen = ln
-	defer os.Remove(d.listenAddr()) // best-effort socket cleanup
+	// Only a Unix-socket listener leaves a filesystem artifact to clean
+	// up; a TCP listener must never os.Remove a host:port-named relative
+	// path (T-L11). The path was already vetted against symlink and
+	// non-socket attacks in safeUnixListen before bind.
+	if cfg.Server.Listen.Network == "unix" {
+		defer os.Remove(d.listenAddr()) // best-effort socket cleanup
+	}
 
 	if cfg.Server.TLS.Mode == "" && cfg.Server.Listen.Network == "tcp" &&
 		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
