@@ -157,7 +157,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"key_id", q.Key.ID,
 			"remote", q.Remote,
 			"endpoint", o.method+" "+o.path,
-			"public_model", out.model,
+			"public_model", logModel(out.model),
 			"backend", out.backend,
 			"status", out.status,
 			"duration_ms", time.Since(start).Milliseconds(),
@@ -864,6 +864,19 @@ func stringField(body []byte, field string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// maxLoggedModelLen bounds the client-supplied model name written to a
+// log record so a hostile client cannot journal an unbounded string
+// (T-L3). The value is a public model name, so a short bound suffices.
+const maxLoggedModelLen = 128
+
+// logModel truncates a client-supplied model name for structured logs.
+func logModel(m string) string {
+	if len(m) > maxLoggedModelLen {
+		return m[:maxLoggedModelLen]
+	}
+	return m
 }
 
 // topLevelID extracts the "id" field of a non-stream Responses body.

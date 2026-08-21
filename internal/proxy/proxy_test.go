@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -202,6 +203,51 @@ func run(t *testing.T, p *Proxy, method, path, body string, key *auth.Key) *http
 		}
 	}
 	return w
+}
+
+// TestModelLoggedTruncated verifies a hostile client cannot journal an
+// unbounded model string (T-L3): the logged public_model is bounded even
+// when the client sends a 16 KiB model name.
+func TestModelLoggedTruncated(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	cfg := testConfig(f.server.URL)
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	longModel := strings.Repeat("m", 16*1024)
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"`+longModel+`"}`, testKey(longModel))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d (want 404)", w.Code)
+	}
+	var rec struct {
+		PublicModel string `json:"public_model"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("log is not a single JSON record: %v (%q)", err, buf.String())
+	}
+	if len(rec.PublicModel) > maxLoggedModelLen {
+		t.Fatalf("logged model length = %d, exceeds bound %d", len(rec.PublicModel), maxLoggedModelLen)
+	}
+	if rec.PublicModel != longModel[:maxLoggedModelLen] {
+		t.Fatalf("logged model = %q", rec.PublicModel)
+	}
 }
 
 // --- SSE parser --------------------------------------------------------
