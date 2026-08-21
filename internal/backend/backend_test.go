@@ -139,11 +139,18 @@ func TestForwardNonStream(t *testing.T) {
 
 	c := newTestClient(t, ts)
 	res, err := c.Forward(context.Background(), Request{
-		Method:  "POST",
-		Path:    "/v1/chat/completions",
-		Body:    []byte(`{"model":"m"}`),
-		Headers: map[string][]string{"User-Agent": {"mellomting-test"}},
-		Stream:  false,
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body:   []byte(`{"model":"m"}`),
+		Headers: map[string][]string{
+			"User-Agent":          {"mellomting-test"},
+			"Accept":              {"application/json"},
+			"Authorization":       {"Bearer client-secret"},
+			"X-Api-Key":           {"client-key"},
+			"Proxy-Authorization": {"Basic dXNlcjpwYXNz"},
+			"X-Forwarded-For":     {"1.2.3.4"},
+		},
+		Stream: false,
 	})
 	if err != nil {
 		t.Fatalf("Forward: %v", err)
@@ -151,18 +158,26 @@ func TestForwardNonStream(t *testing.T) {
 	if res.Status != 200 || string(res.BodyBytes) != `{"id":"chatcmpl-1"}` {
 		t.Fatalf("res = %+v", res)
 	}
-	if gotXAPIKey != "" {
-		t.Errorf("X-Api-Key forwarded: %q", gotXAPIKey)
-	}
+	// Forward is a pass-through by contract (PLAN §18): the caller's
+	// header map reaches the backend verbatim and Host is rewritten to
+	// the backend. Stripping of client auth/identity headers is the
+	// proxy layer's job (proxy.passthroughHeaders); they must never be
+	// placed in a Request there (T-T1). These assertions document the
+	// pass-through contract so the earlier vacuous "not forwarded"
+	// checks (which never sent these headers) cannot regress.
 	if gotUA != "mellomting-test" {
 		t.Errorf("User-Agent = %q", gotUA)
 	}
+	if gotXAPIKey != "client-key" {
+		t.Errorf("X-Api-Key = %q, want pass-through", gotXAPIKey)
+	}
+	// No api_key_file is configured, so the Authorization that arrived
+	// is the caller's pass-through value, not a backend injection.
+	if gotAuth != "Bearer client-secret" {
+		t.Errorf("Authorization = %q, want pass-through (no injection)", gotAuth)
+	}
 	if gotHost != ts.Listener.Addr().String() {
 		t.Errorf("Host = %q, want backend host", gotHost)
-	}
-	// No credential configured → no Authorization injected.
-	if gotAuth != "" {
-		t.Errorf("Authorization injected without api_key_file: %q", gotAuth)
 	}
 }
 

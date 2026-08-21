@@ -438,6 +438,53 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 	decodeErr(t, rec.Body.String(), 400)
 }
 
+// TestPassthroughHeadersStripsSensitiveHeaders is the T-T1 regression
+// test for the PLAN §18 allow-list: only User-Agent and Accept are
+// end-to-end headers. Client auth/identity headers (Authorization,
+// X-Api-Key, Proxy-Authorization, Forwarded/X-Forwarded-*, X-Real-IP)
+// must be stripped at the proxy layer — backend.Forward is a pass-through
+// by contract, so the proxy is the only enforcement point.
+func TestPassthroughHeadersStripsSensitiveHeaders(t *testing.T) {
+	t.Parallel()
+	var got http.Header
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	})
+	p := newProxy(t, f)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "mellomting-client")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer client-secret")
+	req.Header.Set("X-Api-Key", "client-key")
+	req.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("Forwarded", "for=1.2.3.4")
+	req.Header.Set("X-Real-IP", "1.2.3.4")
+	w := httptest.NewRecorder()
+	p.ChatCompletions(&Req{W: w, R: req, Key: testKey(), RequestID: "req_test", Remote: "127.0.0.1"})
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+	// Both allow-list arms pass through.
+	if got.Get("User-Agent") != "mellomting-client" {
+		t.Errorf("User-Agent = %q, want pass-through", got.Get("User-Agent"))
+	}
+	if got.Get("Accept") != "application/json" {
+		t.Errorf("Accept = %q, want pass-through", got.Get("Accept"))
+	}
+	// Sensitive headers must never reach the backend.
+	for _, h := range []string{"Authorization", "X-Api-Key", "Proxy-Authorization", "X-Forwarded-For", "Forwarded", "X-Real-IP"} {
+		if v := got.Get(h); v != "" {
+			t.Errorf("sensitive header %s leaked to backend: %q", h, v)
+		}
+	}
+}
+
 // TestRedirectNotRelayed is the X3 proxy-level check: a backend 3xx
 // must surface as a sanitized OpenAI error (never the redirect body),
 // and the redirect must not be followed toward /metrics or elsewhere.
