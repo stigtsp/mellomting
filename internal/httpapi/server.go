@@ -368,7 +368,17 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 			return nil, errAuth
 		}
 	}
-	apiKey := r.Header.Get("X-Api-Key")
+	// Duplicate X-Api-Key is rejected like duplicate Authorization
+	// (T-L1): a client sending the credential twice is ambiguous and
+	// must not silently first-wins.
+	apiKeys := r.Header.Values("X-Api-Key")
+	if len(apiKeys) > 1 {
+		return nil, errAuth
+	}
+	var apiKey string
+	if len(apiKeys) == 1 {
+		apiKey = apiKeys[0]
+	}
 	var rawKey string
 	switch {
 	case bearer != "" && apiKey == "":

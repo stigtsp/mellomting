@@ -349,6 +349,35 @@ func TestAuthMatrix(t *testing.T) {
 	}
 }
 
+func TestDuplicateXApiKeyRejected(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	}, nil, auth.KeyLimits{})
+
+	// A single X-Api-Key authenticates (control).
+	w := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	w.Header.Set("Content-Type", "application/json")
+	w.Header.Set("X-Api-Key", e.key)
+	rr := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rr, w)
+	if rr.Code != 200 {
+		t.Fatalf("single X-Api-Key: status = %d (want 200)", rr.Code)
+	}
+
+	// Two X-Api-Key headers are ambiguous and must be rejected
+	// (consistent with duplicate Authorization), never first-wins (T-L1).
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Add("X-Api-Key", e.key)
+	r.Header.Add("X-Api-Key", e.key2)
+	rec := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rec, r)
+	if rec.Code != 401 {
+		t.Fatalf("duplicate X-Api-Key: status = %d (want 401)", rec.Code)
+	}
+}
+
 func TestModelsACLFiltering(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
