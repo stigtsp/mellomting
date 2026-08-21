@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -81,6 +82,57 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	// Defence-in-depth panic containment (PLAN §5.1 robustness
+	// envelope): a panic on the handler goroutine must become a
+	// sanitized 500, never a torn connection or a process kill. The
+	// pump path additionally contains its own spawned goroutine, which
+	// net/http's per-connection recover cannot reach.
+	rw := &committedWriter{ResponseWriter: w}
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.log.Error("panic recovered in request handler", "remote", peerString(r), "path", r.URL.Path, "panic", sanitizePanic(rec))
+			if !rw.committed {
+				writeErr(rw, http.StatusInternalServerError, "api_error", "internal", "internal error")
+			}
+		}
+	}()
+	routeBody(s, rw, r)
+}
+
+// committedWriter tracks whether a response header has been written so a
+// recovery path can avoid a superfluous second WriteHeader.
+type committedWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (c *committedWriter) WriteHeader(code int) {
+	c.committed = true
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *committedWriter) Write(b []byte) (int, error) {
+	c.committed = true
+	return c.ResponseWriter.Write(b)
+}
+
+// sanitizePanic reduces a recovered panic value to a short, loggable
+// string with no stack trace or filesystem detail (PLAN §43, §72).
+func sanitizePanic(rec any) string {
+	switch v := rec.(type) {
+	case error:
+		return v.Error()
+	case string:
+		if len(v) > 200 {
+			return v[:200]
+		}
+		return v
+	default:
+		return fmt.Sprintf("%v", rec)
+	}
+}
+
+func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	rid := newRequestID()
 	w.Header().Set("X-Request-ID", rid)
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"mellomting/internal/accounting"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -430,6 +431,56 @@ func TestHugeSSEEventBounded(t *testing.T) {
 	}
 	if rec.Body.Len() > maxSSEEvent+64 {
 		t.Fatalf("oversized event passed through (%d bytes)", rec.Body.Len())
+	}
+}
+
+// TestStreamRequestNon200StreamResponse is the X4 regression test: a
+// stream:true request answered with a 2xx other than 200 must not be
+// read as a stream (the body was buffered and res.Body is nil). Before
+// the fix the proxy read a nil body in a spawned goroutine and killed
+// the process.
+func TestStreamRequestNon200StreamResponse(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-created","object":"chat.completion"}`))
+	})
+	p := newProxy(t, f)
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"messages":[]}`, testKey())
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "chatcmpl-created") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+// panickingReader is an io.Reader whose Read always panics, used to
+// prove the pump's spawned-goroutine recover containment.
+type panickingReader struct{}
+
+func (panickingReader) Read([]byte) (int, error) { panic("synthetic parser panic") }
+
+// TestPumpPanicContained proves a panic inside the stream-parser
+// goroutine is converted into a bounded stream error and never takes
+// the process down (the goroutine is spawned by the handler, so
+// net/http's per-connection recover cannot reach it).
+func TestPumpPanicContained(t *testing.T) {
+	p := newProxy(t, newFakeVLLM(t, okJSON))
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gen-1","stream":true}`))
+	w := httptest.NewRecorder()
+	q := &Req{W: w, R: r, Key: testKey(), RequestID: "req_test", Remote: "127.0.0.1"}
+	res := &backend.Result{Status: http.StatusOK, Body: io.NopCloser(panickingReader{})}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	status, _, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if cls != "backend_stream_error" {
+		t.Fatalf("class = %q, want backend_stream_error", cls)
 	}
 }
 

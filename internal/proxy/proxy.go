@@ -433,7 +433,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		p.router.RecordSuccess(backendName)
 
 		// 5/6. Success (PLAN §18: only allow-listed headers pass through).
-		if stream {
+		// Branch on whether a LIVE stream body exists, not on the
+		// client's stream flag: a stream request answered with a 2xx
+		// other than 200 is buffered (res.Body is nil) and is relayed
+		// as a normal response instead of being read as a stream (X4:
+		// reading a nil body from a spawned goroutine killed the
+		// process).
+		if res.Body != nil {
 			var usage accounting.Usage
 			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, &usage, injectedUsage)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
@@ -627,6 +633,16 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		}
 		ch := make(chan evResult, 1)
 		go func() {
+			// Panic containment (PLAN §5.1 robustness envelope): a
+			// misbehaving backend body must never take the process
+			// down. This goroutine is spawned by the handler, so
+			// net/http's per-connection recover cannot reach it; a
+			// panic here is converted into a stream error instead.
+			defer func() {
+				if rec := recover(); rec != nil {
+					ch <- evResult{err: errStreamPanic}
+				}
+			}()
 			out, err := parser.nextEvent()
 			ch <- evResult{out: out, err: err}
 		}()
@@ -850,6 +866,11 @@ var (
 	errModelNotString = errors.New("model not a string")
 	errCapExceeded    = errors.New("output limit exceeds policy cap")
 	errNotJSONObject  = errors.New("body is not a JSON object")
+	// errStreamPanic is the sentinel a recovered pump-goroutine panic
+	// becomes: the client already has committed stream headers, so the
+	// only honest outcome is a truncated stream classified as an
+	// upstream error (never a process kill).
+	errStreamPanic = errors.New("stream reader panicked")
 )
 
 // prepareOutbound applies the generative output cap (PLAN §36) and, for
