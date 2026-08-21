@@ -176,7 +176,10 @@ func (r *Router) Select(publicModel string, exclude []string) (Target, error) {
 		r.rrMu.Unlock()
 		pick = cands[int(n)%len(cands)]
 	case "weighted-round-robin":
-		pick = cands[r.nextWRR(publicModel, entry, cands)]
+		// nextWRR returns a replica index (drawn from cands); unlike
+		// "round-robin" it is not a position within cands, so no outer
+		// indexing is applied here.
+		pick = r.nextWRR(publicModel, entry, cands)
 	case "least-inflight":
 		best := cands[0]
 		for _, i := range cands[1:] {

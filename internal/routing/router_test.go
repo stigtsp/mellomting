@@ -135,6 +135,62 @@ func TestSelectWeightedRoundRobin(t *testing.T) {
 	}
 }
 
+// TestSelectWeightedRoundRobinSparseCandidates is the regression test
+// for the double-index bug: once a replica is excluded or cooling, the
+// candidate slice is sparse (indices are not [0..n-1]) and WRR must
+// neither panic nor return an excluded replica (PLAN §19, §23).
+func TestSelectWeightedRoundRobinSparseCandidates(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Backends: map[string]config.Backend{
+			"back-a": {BaseURL: "http://127.0.0.1:8001", UpstreamModel: "Up/A"},
+			"back-b": {BaseURL: "http://127.0.0.1:8002", UpstreamModel: "Up/B"},
+			"back-c": {BaseURL: "http://127.0.0.1:8003", UpstreamModel: "Up/C"},
+		},
+		Models: map[string]config.Model{
+			"m": {Type: "generation", Strategy: "weighted-round-robin",
+				Backends: []config.BackendRef{
+					{Name: "back-a", Weight: 1},
+					{Name: "back-b", Weight: 1},
+					{Name: "back-c", Weight: 1},
+				}},
+		},
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exclude "back-b" every other call so the candidate slice becomes
+	// sparse; before the fix the outer cands[...] indexing panics.
+	for i := 0; i < 200; i++ {
+		var exclude []string
+		if i%2 == 1 {
+			exclude = []string{"back-b"}
+		}
+		tgt, err := r.Select("m", exclude)
+		if err != nil {
+			t.Fatalf("select %d: %v", i, err)
+		}
+		if excluded(exclude, tgt.Backend) {
+			t.Fatalf("select %d returned excluded backend %q", i, tgt.Backend)
+		}
+	}
+	// Every replica must be reachable when nothing is excluded.
+	seen := map[string]bool{}
+	for i := 0; i < 60; i++ {
+		tgt, err := r.Select("m", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[tgt.Backend] = true
+	}
+	for _, name := range []string{"back-a", "back-b", "back-c"} {
+		if !seen[name] {
+			t.Fatalf("replica %q never selected", name)
+		}
+	}
+}
+
 func TestSelectWeightedLeastInflight(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
