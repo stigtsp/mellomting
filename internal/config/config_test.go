@@ -287,6 +287,28 @@ models:
 			wantErr: "unknown backend",
 		},
 		{
+			name: "malformed backend_network cidr fails closed",
+			yaml: `
+version: 1
+` + minimalServer + `
+security:
+  backend_network:
+    mode: allowed-cidrs
+    cidrs:
+      - 10.0.0.0/8
+      - not-a-cidr
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends:
+      - qa
+`,
+			wantErr: "not a valid CIDR",
+		},
+		{
 			name: "unknown qualifier reference",
 			yaml: `
 version: 1
