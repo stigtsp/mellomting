@@ -3,10 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -506,6 +514,325 @@ models:
 // configListenUnix builds a unix listen config for listener tests.
 func configListenUnix(address, mode string) config.Listen {
 	return config.Listen{Network: "unix", Address: address, Mode: mode}
+}
+
+// writeSelfSignedTLS writes a self-signed certificate (CN localhost,
+// SAN localhost/127.0.0.1) and its key into dir (PLAN §67 tests).
+func writeSelfSignedTLS(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derKey, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	derCert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath = filepath.Join(dir, "cert.pem")
+	certOut, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derCert}); err != nil {
+		t.Fatal(err)
+	}
+	if err := certOut.Close(); err != nil {
+		t.Fatal(err)
+	}
+	keyPath = filepath.Join(dir, "key.pem")
+	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: derKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyOut.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
+
+// tlsHTTPClient returns an https client that trusts the test certificate.
+func tlsHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+}
+
+// TestServeStaticTLS runs the daemon on a TCP listener wrapped with the
+// configured static certificate (PLAN §67): /healthz answers over TLS,
+// the ready log records tls=true, and a plaintext client is rejected.
+func TestServeStaticTLS(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+
+	// Grab a free loopback port.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	pepperPath := filepath.Join(dir, "auth.pepper")
+	if err := os.WriteFile(pepperPath, []byte("e2e-tls-pepper-long-enough"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	usersPath := filepath.Join(dir, "users.yaml")
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash([]byte("e2e-tls-pepper-long-enough"), key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: tcp
+    address: %s
+  tls:
+    mode: files
+    cert_file: %s
+    key_file: %s
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, addr, certPath, keyPath, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := startServe(t, bin, cfgPath)
+
+	// Wait for readiness over TLS.
+	client := tlsHTTPClient()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("https://" + addr + "/readyz")
+		if err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	resp, body := getURL(t, client, "https://"+addr+"/healthz", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("healthz over TLS: %d %s", resp.StatusCode, body)
+	}
+
+	// An authenticated completion works end to end over TLS.
+	resp2, body2 := postJSON(t, client, "https://"+addr+"/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
+	if resp2.StatusCode != 200 {
+		t.Fatalf("chat over TLS: %d %s", resp2.StatusCode, body2)
+	}
+	if !strings.Contains(body2, `"id":"e2e-1"`) {
+		t.Fatalf("chat body = %s", body2)
+	}
+
+	// Plaintext against the TLS listener must not reach the app: the
+	// standard library answers with a 400 ("client sent an HTTP request
+	// to an HTTPS server") instead of serving anything.
+	plainReq, err := http.NewRequest(http.MethodGet, "http://"+addr+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainResp, err := (&http.Client{Timeout: 3 * time.Second}).Do(plainReq)
+	if err != nil {
+		return // rejected at the connection level
+	}
+	plainBody, _ := io.ReadAll(plainResp.Body)
+	plainResp.Body.Close()
+	if plainResp.StatusCode == 200 && strings.TrimSpace(string(plainBody)) == "ok" {
+		t.Fatal("plaintext client was served by the TLS listener")
+	}
+
+	// Clean shutdown (PLAN §74).
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+	}
+}
+
+// TestServeRejectsShelved verifies that serve fails closed when a shelved
+// feature is configured (PLAN §68, §96): ACME TLS and qualifiers.
+func TestServeRejectsShelved(t *testing.T) {
+	bin := buildCLI(t)
+	backend := fakeChatBackend(t)
+
+	t.Run("acme_tls", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:18080
+  tls:
+    mode: acme
+    hostname: llm.example.net
+    email: admin@example.net
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Up/Model
+
+models:
+  m:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "pepper"), backend.URL)
+		if err := assertServeRefused(t, bin, dir, cfg, "shelved"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("qualifier", func(t *testing.T) {
+		dir := t.TempDir()
+		sock := filepath.Join(dir, "mellomting.sock")
+		cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Up/Model
+
+qualifiers:
+  safety-audit:
+    backend: local-a
+    model: Up/Model
+    failure_policy: allow
+    input:
+      mode: audit
+    output:
+      mode: disabled
+
+models:
+  m:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+    qualifier: safety-audit
+`, sock, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "pepper"), backend.URL)
+		if err := assertServeRefused(t, bin, dir, cfg, "shelved"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// assertServeRefused writes cfg, runs serve, and asserts exit 1 with the
+// want marker in the combined output.
+func assertServeRefused(t *testing.T, bin, dir, cfg, want string) error {
+	t.Helper()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		return err
+	}
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	var outB, errB bytes.Buffer
+	cmd.Stdout = &outB
+	cmd.Stderr = &errB
+	runErr := cmd.Run()
+	exitCode := 0
+	if ee, ok := runErr.(*exec.ExitError); ok {
+		exitCode = ee.ExitCode()
+	} else if runErr != nil {
+		return fmt.Errorf("serve run: %w", runErr)
+	}
+	combined := outB.String() + errB.String()
+	if exitCode != 1 {
+		return fmt.Errorf("exit = %d (want 1); output: %q", exitCode, combined)
+	}
+	if !strings.Contains(combined, want) {
+		return fmt.Errorf("output lacks %q: %q", want, combined)
+	}
+	return nil
 }
 
 // sandboxTestConfig returns a minimal config for applySandbox tests.

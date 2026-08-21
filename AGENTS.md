@@ -163,7 +163,17 @@ continues (never a partial policy). MPTCP is explicitly disabled on every
 listener/dialer it owns (PLAN §61). `deploy/mellomting.service` ships the
 hardened systemd unit (PLAN §64).
 
-Known deferred work (later phases): SIGHUP key reload (PLAN §30 —
+Phase 6 adds static TLS (PLAN §97, §67): `internal/tlsconfig` loads the
+configured certificate/key before the sandbox is applied (PLAN §57 step 9),
+enforces a TLS 1.2 minimum, and the TCP ingress listener is wrapped with
+`tls.NewListener` before Landlock enforcement; certificate reload requires a
+process restart in v1.
+
+Shelved beyond the first release: the qualifier framework (PLAN §96) and
+native ACME (PLAN §68). The configuration schema stays forward-compatible,
+but `serve` refuses to start when a qualifier or `tls.mode: acme` is
+configured, so neither is ever a silent no-op.
+
+Remaining deferred work (later phases): SIGHUP key reload (PLAN §30 —
 the Landlock policy already grants the users file read); optional
-stickiness (PLAN §20); qualifier framework (PLAN §96); static-TLS
-convenience (PLAN §97); defence-in-depth review (PLAN §98).
+stickiness (PLAN §20); defence-in-depth review (PLAN §98).

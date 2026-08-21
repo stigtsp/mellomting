@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"mellomting/internal/accounting"
@@ -28,17 +30,19 @@ import (
 	"mellomting/internal/logging"
 	"mellomting/internal/proxy"
 	"mellomting/internal/routing"
+	"mellomting/internal/tlsconfig"
 	"mellomting/internal/version"
 )
 
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
-	cfg    *config.Config
-	log    *slog.Logger
-	api    *httpapi.Server
-	proxy  *proxy.Proxy
-	acc    *accounting.Writer // usage JSONL writer; nil when disabled
-	listen net.Listener
+	cfg       *config.Config
+	log       *slog.Logger
+	api       *httpapi.Server
+	proxy     *proxy.Proxy
+	acc       *accounting.Writer // usage JSONL writer; nil when disabled
+	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
+	listen    net.Listener
 }
 
 // serveCmd runs the proxy daemon.
@@ -63,6 +67,12 @@ func serveCmd(args []string) int {
 		return 1
 	}
 
+	if err := rejectShelvedFeatures(cfg); err != nil {
+		log.Error("startup rejected: shelved feature configured", "error_class", "configuration")
+		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
+		return 1
+	}
+
 	d, err := buildDaemon(cfg, log)
 	if err != nil {
 		log.Error("startup failed", "error_class", "startup")
@@ -75,6 +85,12 @@ func serveCmd(args []string) int {
 		log.Error("listener failed", "error_class", "listener", "network", cfg.Server.Listen.Network)
 		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
 		return 1
+	}
+	// Static TLS (PLAN §67): wrap the listener before the sandbox is
+	// applied. The certificate and key were already loaded with the rest
+	// of the startup secrets (PLAN §57 step 9).
+	if d.tlsConfig != nil {
+		ln = tls.NewListener(ln, d.tlsConfig)
 	}
 	d.listen = ln
 	defer os.Remove(d.listenAddr()) // best-effort socket cleanup
@@ -107,6 +123,7 @@ func serveCmd(args []string) int {
 		"version", version.String(),
 		"network", cfg.Server.Listen.Network,
 		"address", cfg.Server.Listen.Address,
+		"tls", d.tlsConfig != nil,
 		"backends", len(cfg.Backends),
 		"models", len(cfg.Models),
 	)
@@ -151,6 +168,25 @@ func serveCmd(args []string) int {
 // newDaemonLogger builds the structured logger per PLAN §43.
 func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 	return logging.New(os.Stdout, cfg.Logging.Level, cfg.Logging.Format)
+}
+
+// rejectShelvedFeatures fails closed on features that are shelved for the
+// first release (PLAN §68, §96). The configuration schema stays
+// forward-compatible, but serve refuses to start with them enabled so a
+// shelved feature is never silently disabled.
+func rejectShelvedFeatures(cfg *config.Config) error {
+	var shelved []string
+	if len(cfg.Qualifiers) > 0 {
+		shelved = append(shelved, "qualifiers (PLAN §96)")
+	}
+	if cfg.Server.TLS.Mode == "acme" {
+		shelved = append(shelved, `tls.mode "acme" (PLAN §68)`)
+	}
+	if len(shelved) > 0 {
+		return fmt.Errorf("%s are shelved for the first release: remove them from the configuration and retry",
+			strings.Join(shelved, " and "))
+	}
+	return nil
 }
 
 // applySandbox builds the post-startup policy from the validated
@@ -261,11 +297,16 @@ func mptcpOffListen(addr string) (net.Listener, error) {
 
 // safeUnixListen creates a pathname Unix socket per PLAN §8.3: it
 // refuses to replace a symlink or any non-socket file, removes a stale
-// socket, and applies the configured mode after bind.
+// socket, and applies the configured mode after bind. An empty mode takes
+// the PLAN §8.1 default (0660).
 func safeUnixListen(l config.Listen) (net.Listener, error) {
-	mode, err := strconv.ParseUint(l.Mode, 8, 16)
+	modeStr := l.Mode
+	if l.Mode == "" {
+		modeStr = config.DefaultUnixSocketMode
+	}
+	mode, err := strconv.ParseUint(modeStr, 8, 16)
 	if err != nil || mode == 0 || mode > 0o777 {
-		return nil, fmt.Errorf("unix socket mode %q must be octal (e.g. 0660)", l.Mode)
+		return nil, fmt.Errorf("unix socket mode %q must be octal (e.g. 0660)", modeStr)
 	}
 	if st, err := os.Lstat(l.Address); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
@@ -322,7 +363,9 @@ func buildNetworkPolicy(bn config.BackendNetwork) (backend.Policy, error) {
 
 // buildDaemon wires the key store, router, backend clients, proxy, and
 // HTTP surface from validated configuration. It performs no I/O beyond
-// reading the key store, pepper, and backend credential files.
+// reading the key store, pepper, backend credentials, and the static TLS
+// certificate and key (PLAN §57 step 9); all of those FDs are closed
+// before the sandbox is applied.
 func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	users, err := auth.LoadUsers(cfg.Auth.UsersFile)
 	if err != nil {
@@ -341,6 +384,23 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Static TLS (PLAN §57 step 9, §67): the certificate and key are
+	// loaded once, before the sandbox, and are reloaded only by a process
+	// restart in v1.
+	var tlsConfig *tls.Config
+	if cfg.Server.TLS.Mode == "files" {
+		tlsCfg, err := tlsconfig.Files(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig = tlsCfg
+		log.Info("static tls configured",
+			"cert_file", cfg.Server.TLS.CertFile,
+			"key_file", cfg.Server.TLS.KeyFile,
+		)
+	}
+
 	clients := make(map[string]*backend.Client, len(cfg.Backends))
 	for name, b := range cfg.Backends {
 		client, err := backend.New(backend.Options{
@@ -412,7 +472,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		"keys", len(users.Keys),
 		"accounting_enabled", cfg.Accounting.Enabled,
 	)
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, tlsConfig: tlsConfig}, nil
 }
 
 // listenAddr returns the listener address for logging/cleanup.

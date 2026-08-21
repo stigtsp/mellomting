@@ -2365,6 +2365,11 @@ Certificate reload can require process restart in v1.
 
 # 68. Optional ACME
 
+> **Status: shelved for the first release.** The configuration schema
+> (`tls.mode: acme` with `hostname` and `email`) stays validated and
+> forward-compatible, but v1 `serve` refuses to start when ACME is
+> configured. This design is retained for a later release.
+
 Native ACME is a convenience feature, not the recommended hardened deployment.
 
 If implemented, use Caddy's `certmagic` library rather than embedding the complete Caddy server.
@@ -3289,6 +3294,13 @@ The daemon begins accepting requests only after the effective sandbox is confirm
 
 # 96. Phase 5 — qualifier framework
 
+> **Status: shelved for the first release.** The qualifier framework is
+> deferred beyond v1. The design in §45–52 remains authoritative for a later
+> release, and the v1 configuration schema still validates qualifier
+> definitions (forward-compatible). Serve refuses to start when a qualifier
+> is configured, so qualification is never silently disabled; no request
+> pipeline hook exists in v1.
+
 Implement:
 
 - qualifier backend abstraction;
@@ -3310,13 +3322,16 @@ Do not implement streaming output block in this phase.
 
 # 97. Phase 6 — TLS convenience
 
+This phase ships static TLS only (PLAN §67). ACME is shelved for the first
+release (PLAN §68).
+
 Implement:
 
 - static certificate/key mode;
 - TLS tests;
 - secure TLS defaults.
 
-Only after that, evaluate:
+Shelved with ACME beyond the first release, to evaluate later:
 
 - CertMagic ACME;
 - persistent certificate storage;
@@ -3343,7 +3358,8 @@ Before a stable `1.0`:
 - slowloris tests;
 - load tests;
 - response-affinity abuse tests;
-- qualifier bypass/failure tests.
+- qualifier bypass/failure tests (only if a qualifier is enabled; shelved
+  for v1, see §96).
 
 Evaluate a small post-start seccomp deny policy.
 
@@ -3373,6 +3389,9 @@ hardened systemd unit
 ```
 
 The qualifier can arrive immediately after MVP if necessary, but its interface should be anticipated in the request pipeline.
+
+Decision for the first release: the qualifier is shelved (§96). Config stays
+forward-compatible, and `serve` fails closed when a qualifier is configured.
 
 ---
 

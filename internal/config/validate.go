@@ -97,6 +97,10 @@ func applyDefaults(c *Config) {
 		s.StreamWriteTimeout = Duration(defaultStreamWriteTimeout)
 	}
 
+	if c.Server.Listen.Network == "unix" && c.Server.Listen.Mode == "" {
+		c.Server.Listen.Mode = DefaultUnixSocketMode
+	}
+
 	if c.Security.BackendNetwork.Mode == "" {
 		c.Security.BackendNetwork.Mode = "loopback-only"
 	}
@@ -274,9 +278,7 @@ func validateServer(s *Server) []string {
 		if s.Listen.Address == "" {
 			errs = append(errs, "server.listen.address: required for network unix")
 		}
-		if s.Listen.Mode == "" {
-			errs = append(errs, `server.listen.mode: required for network unix, e.g. "0660"`)
-		} else if mode, err := strconv.ParseUint(s.Listen.Mode, 8, 16); err != nil || mode == 0 || mode > 0o777 {
+		if mode, err := strconv.ParseUint(s.Listen.Mode, 8, 16); err != nil || mode == 0 || mode > 0o777 {
 			errs = append(errs, fmt.Sprintf("server.listen.mode: %q must be an octal mode like 0660", s.Listen.Mode))
 		}
 	default:
@@ -315,6 +317,10 @@ func validateServer(s *Server) []string {
 	}
 	if s.StreamWriteTimeout.Duration() <= 0 {
 		errs = append(errs, "server.stream_write_timeout: must be > 0")
+	}
+
+	if s.Listen.Network == "unix" && s.TLS.Mode != "" {
+		errs = append(errs, "server.tls: only valid when listen network is tcp")
 	}
 
 	switch s.TLS.Mode {

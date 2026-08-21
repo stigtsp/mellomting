@@ -22,6 +22,9 @@ const (
 	DefaultPepperFile = "/etc/mellomting/auth.pepper"
 	// DefaultAccountingPath is the default usage JSONL path (PLAN §76).
 	DefaultAccountingPath = "/var/log/mellomting/usage.jsonl"
+	// DefaultUnixSocketMode is the default Unix socket mode (PLAN §8.1);
+	// listen.mode may be omitted and defaults to this.
+	DefaultUnixSocketMode = "0660"
 
 	// MaxFileBytes bounds the size of a configuration file (PLAN §28).
 	MaxFileBytes = 1 << 20
@@ -124,16 +127,21 @@ type Server struct {
 type Listen struct {
 	Network string `yaml:"network"` // "unix" or "tcp"
 	Address string `yaml:"address"`
-	// Mode is the Unix socket mode, e.g. "0660"; required for unix.
+	// Mode is the Unix socket mode, e.g. "0660". Optional; defaults to
+	// DefaultUnixSocketMode for network unix.
 	Mode string `yaml:"mode"`
 }
 
-// TLS is native listener TLS (PLAN §67, §68). Certificate loading lands
-// with Phase 6; the configuration is validated now.
+// TLS is native listener TLS (PLAN §67, §68). Mode "files" loads the
+// certificate and key before the sandbox is applied (PLAN §57 step 9) and
+// requires a restart to reload (PLAN §67). Mode "acme" is shelved for the
+// first release (PLAN §68): the fields stay validated and
+// forward-compatible, and serve refuses to start with it configured.
 type TLS struct {
-	Mode     string `yaml:"mode"` // "files" or "acme"
+	Mode     string `yaml:"mode"` // "files" or "acme" (acme shelved, PLAN §68)
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// Hostname and Email are only valid with the shelved acme mode.
 	Hostname string `yaml:"hostname"`
 	Email    string `yaml:"email"`
 }

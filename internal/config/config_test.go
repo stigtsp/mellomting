@@ -105,6 +105,31 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseUnixSocketModeDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(`
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`))
+	if err != nil {
+		t.Fatalf("Parse without listen.mode: %v", err)
+	}
+	if cfg.Server.Listen.Mode != DefaultUnixSocketMode {
+		t.Fatalf("listen.mode = %q, want default %q", cfg.Server.Listen.Mode, DefaultUnixSocketMode)
+	}
+}
+
 func TestParseRejectsInvalidConfig(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -465,7 +490,7 @@ models:
 			wantErr: "",
 		},
 		{
-			name: "unix socket without mode",
+			name: "unix socket without mode defaults",
 			yaml: `
 version: 1
 server:
@@ -480,7 +505,30 @@ models:
   m1:
     backends: [qa]
 `,
-			wantErr: "listen.mode: required",
+			wantErr: "",
+		},
+		{
+			name: "tls on unix listener rejected",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+  tls:
+    mode: files
+    cert_file: /etc/mellomting/tls/cert.pem
+    key_file: /etc/mellomting/tls/key.pem
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "only valid when listen network is tcp",
 		},
 		{
 			name: "bad socket mode",
