@@ -350,6 +350,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		if p.quota != nil {
 			ok, _ := p.quota.Admit(q.Key.ID, windowLimits(q.Key.Limits), reservation, time.Now())
 			if !ok {
+				// Every proxy 429 carries Retry-After (T-Q12). No window
+				// reset is computed here, so use a conservative default.
+				q.W.Header().Set("Retry-After", defaultRetryAfter)
 				fail(429, "rate_limit_error", "token_quota_exceeded",
 					"token quota exceeded for this window", "token_quota")
 				return
@@ -380,6 +383,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	retried := 0
 	var lastErr error
 	var lastFailed string
+	var lastRetryAfter string // upstream Retry-After on the final result (T-Q12)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if q.R.Context().Err() != nil {
 			out.bytesOut = 0
@@ -452,6 +456,14 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 			lastErr = err
 			lastFailed = backendName
+			// Remember any upstream-provided Retry-After so a terminal
+			// 429 can forward it (T-Q12). The 429 branch only fires
+			// when lastErr is that 429, whose result is this res.
+			if res != nil {
+				if ra := res.Header.Get("Retry-After"); ra != "" {
+					lastRetryAfter = ra
+				}
+			}
 			if retryableBackendError(err) {
 				// Connection-level failures poison the passive-health
 				// state for subsequent requests (PLAN §70).
@@ -537,6 +549,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		if errors.As(lastErr, &up) {
 			switch {
 			case up.Status == 429:
+				// Forward the upstream's Retry-After when it sent one,
+				// else a conservative default (T-Q12).
+				ra := lastRetryAfter
+				if ra == "" {
+					ra = defaultRetryAfter
+				}
+				q.W.Header().Set("Retry-After", ra)
 				fail(429, "rate_limit_error", "upstream_rate_limited",
 					"upstream is rate limited", "backend_429")
 			case up.Status >= 500:
@@ -1181,6 +1200,10 @@ func (p *Proxy) account(q *Req, o operation, model string, start time.Time, stat
 		})
 	}
 }
+
+// defaultRetryAfter is the Retry-After value used when a proxy 429 has
+// no computable or upstream-provided delay (T-Q12, PLAN §8.2).
+const defaultRetryAfter = "1"
 
 // writeError emits a sanitized OpenAI-shaped error (PLAN §72).
 func writeError(w http.ResponseWriter, status int, typ, code, msg string) {

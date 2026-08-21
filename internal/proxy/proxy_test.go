@@ -403,6 +403,27 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 		t.Fatalf("429 mapping: status = %d", rec.Code)
 	}
 	decodeErr(t, rec.Body.String(), 429)
+	// Every proxy 429 carries Retry-After (T-Q12); this upstream sent
+	// none, so the conservative default applies.
+	if ra := rec.Header().Get("Retry-After"); ra == "" {
+		t.Fatal("429 Retry-After header missing")
+	}
+
+	// An upstream that sends its own Retry-After has it forwarded on the
+	// proxy 429 (T-Q12).
+	f4 := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "17")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
+	})
+	p4 := newProxy(t, f4)
+	rec = run(t, p4, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+	if rec.Code != 429 {
+		t.Fatalf("429 forwarding: status = %d", rec.Code)
+	}
+	if ra := rec.Header().Get("Retry-After"); ra != "17" {
+		t.Fatalf("Retry-After = %q (want upstream value 17)", ra)
+	}
 
 	// A backend 400 (not 429, not >=500) maps to a client 400.
 	f3 := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mellomting/internal/accounting"
+	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
 	"mellomting/internal/routing"
@@ -193,6 +194,33 @@ func TestStreamUsageInjectedAndSwallowed(t *testing.T) {
 	}
 	if recs[0].TotalTokens != 15 || recs[0].UsageStatus != accounting.UsageExact {
 		t.Fatalf("record = %+v", recs[0])
+	}
+}
+
+// TestProxyQuota429RetryAfter is the T-Q12 check on the token-quota 429:
+// it must carry a Retry-After just like the httpapi rate-limit 429s.
+func TestProxyQuota429RetryAfter(t *testing.T) {
+	f := newFakeVLLM(t, okJSON)
+	quota := accounting.NewQuota()
+	writer, _ := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+
+	key := &auth.Key{
+		ID: "K1", Name: "t", Enabled: true, Models: []string{"gen-1"},
+		Limits: auth.KeyLimits{TokensPerHour: 10, TokensPerDay: 100},
+	}
+	quota.Settle("K1", 11, time.Now())
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, key)
+	if w.Code != 429 {
+		t.Fatalf("status = %d (want 429)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "token_quota_exceeded") {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Fatal("quota 429 Retry-After header missing")
 	}
 }
 
