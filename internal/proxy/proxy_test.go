@@ -448,6 +448,82 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 	decodeErr(t, rec.Body.String(), 400)
 }
 
+// TestUpstream502And503Sanitized (PLAN §84): upstream 502 and 503 both
+// map to a sanitized proxy 502, never relaying the backend body. Both
+// are on the PLAN §23 retry list, so they exercise the retry/fallback
+// decision path as well as the sanitization path.
+func TestUpstream502And503Sanitized(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		fn   http.HandlerFunc
+	}{
+		{"502", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte(`{"error":{"message":"secret 502 detail"}}`))
+		}},
+		{"503", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"error":{"message":"secret 503 detail"}}`))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeVLLM(t, tc.fn)
+			p := newProxy(t, f)
+			rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+			if rec.Code != 502 {
+				t.Fatalf("status = %d (want 502)", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "secret") {
+				t.Fatalf("backend body leaked: %s", rec.Body.String())
+			}
+			decodeErr(t, rec.Body.String(), 502)
+		})
+	}
+}
+
+// TestMalformedJSONRelayed (PLAN §84): a backend 200 whose body is not
+// valid JSON is relayed verbatim — the proxy is a shallow passthrough —
+// and the usage parser tolerates the malformed payload without erroring
+// or panicking.
+func TestMalformedJSONRelayed(t *testing.T) {
+	t.Parallel()
+	const malformed = `{"id":`
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(malformed))
+	})
+	p := newProxy(t, f)
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (want 200)", rec.Code)
+	}
+	if rec.Body.String() != malformed {
+		t.Fatalf("body = %q, want verbatim %q", rec.Body.String(), malformed)
+	}
+}
+
+// TestMalformedSSERelayed (PLAN §84): a backend stream whose bytes are
+// not valid SSE framing must not crash the pump; the client still
+// receives the raw bytes and the stream classifies as ok.
+func TestMalformedSSERelayed(t *testing.T) {
+	t.Parallel()
+	const garbage = "this is not sse at all\nneither is this\n"
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(garbage))
+	})
+	p := newProxy(t, f)
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1","stream":true}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (want 200)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "this is not sse") {
+		t.Fatalf("malformed SSE bytes not relayed: %q", rec.Body.String())
+	}
+}
+
 // TestPassthroughHeadersStripsSensitiveHeaders is the T-T1 regression
 // test for the PLAN §18 allow-list: only User-Agent and Accept are
 // end-to-end headers. Client auth/identity headers (Authorization,
