@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,6 +110,65 @@ func TestForwardInjectsBackendAuth(t *testing.T) {
 	}
 	if gotAuth != "Bearer backend-secret-123" {
 		t.Fatalf("Authorization = %q", gotAuth)
+	}
+}
+
+// Redirects are never followed (X3): the backend must not steer the
+// connection elsewhere, and the Authorization header must never be
+// re-sent to a redirect target.
+func TestForwardDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "backend.key")
+	if err := os.WriteFile(keyFile, []byte("backend-secret-123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The redirect target: if it is ever contacted, it records the
+	// fact and any credential it received.
+	var targetHits, targetAuth atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		if a := r.Header.Get("Authorization"); a != "" {
+			targetAuth.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"target":"reachable"}`))
+	}))
+	defer target.Close()
+
+	// The backend that answers with a redirect away from itself.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/metrics")
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte(`<a href="/metrics">moved</a>`))
+	}))
+	defer origin.Close()
+
+	o := testOptions(t, origin.URL)
+	o.Cfg.APIKeyFile = keyFile
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if err == nil {
+		t.Fatal("redirect: expected an upstream error, got nil")
+	}
+	var up *Upstream
+	if !errors.As(err, &up) || up.Status != http.StatusFound {
+		t.Fatalf("err = %v (want *Upstream{302})", err)
+	}
+	if res == nil || res.Status != http.StatusFound {
+		t.Fatalf("result = %+v (want status 302)", res)
+	}
+	// The redirect target must never have been contacted, so no
+	// credential could leak to it.
+	if n := targetHits.Load(); n != 0 {
+		t.Fatalf("redirect target was contacted %d times", n)
+	}
+	if n := targetAuth.Load(); n != 0 {
+		t.Fatalf("Authorization leaked to redirect target %d times", n)
 	}
 }
 

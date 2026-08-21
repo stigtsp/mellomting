@@ -186,10 +186,14 @@ func New(o Options) (*Client, error) {
 		requestTimeout:   o.Cfg.RequestTimeout.Duration(),
 		streamIdle:       o.Cfg.StreamIdleTimeout.Duration(),
 		maxResponseBytes: o.MaxResponseBytes,
-		http:             &http.Client{Transport: t},
-		queue:            make(chan struct{}, queueSize),
-		conc:             make(chan struct{}, maxConc),
-		queueTimeout:     o.Cfg.QueueTimeout.Duration(),
+		// Redirects are never followed (X3): the backend must not be
+		// able to steer the connection to another host/path, where the
+		// Authorization header and body would be re-sent. A 3xx is
+		// returned to Forward and classified as an upstream error.
+		http:         &http.Client{Transport: t, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }},
+		queue:        make(chan struct{}, queueSize),
+		conc:         make(chan struct{}, maxConc),
+		queueTimeout: o.Cfg.QueueTimeout.Duration(),
 	}, nil
 }
 
@@ -435,7 +439,12 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 			h.release()
 			return nil, bodyReadError(rerr)
 		}
-		if resp.StatusCode >= 400 {
+		// Any 3xx is an upstream error: with CheckRedirect set to
+		// ErrUseLastResponse the redirect was not followed, so the
+		// Location response (and never the redirect target) is what we
+		// hold; it must be surfaced as a sanitized error, never relayed
+		// as a success body (X3).
+		if resp.StatusCode >= 300 {
 			h.release()
 			return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, &Upstream{Status: resp.StatusCode}
 		}

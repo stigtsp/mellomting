@@ -369,6 +369,32 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 	decodeErr(t, rec.Body.String(), 400)
 }
 
+// TestRedirectNotRelayed is the X3 proxy-level check: a backend 3xx
+// must surface as a sanitized OpenAI error (never the redirect body),
+// and the redirect must not be followed toward /metrics or elsewhere.
+func TestRedirectNotRelayed(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/metrics")
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte(`<html><body>redirect target content</body></html>`))
+	})
+	p := newProxy(t, f)
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+	// 3xx maps to a sanitized client error; the redirect body must not
+	// reach the client and no second hop may be attempted.
+	if rec.Code != 400 {
+		t.Fatalf("status = %d, want 400 (3xx surfaced as sanitized error)", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "redirect target content") {
+		t.Fatalf("redirect body relayed to client: %s", rec.Body.String())
+	}
+	decodeErr(t, rec.Body.String(), 400)
+	if f.lastPath == "/metrics" {
+		t.Fatalf("redirect was followed to %q", f.lastPath)
+	}
+}
+
 // decodeErr asserts the response body is exactly one valid OpenAI-shaped
 // JSON error object carrying the given HTTP status.
 func decodeErr(t *testing.T, body string, status int) {
