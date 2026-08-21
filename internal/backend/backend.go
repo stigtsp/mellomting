@@ -319,27 +319,36 @@ type Request struct {
 
 // Result is the upstream response. Body is live only for 2xx stream
 // responses; everything else is fully buffered in BodyBytes and the
-// original stream is closed.
+// original stream is closed. For a live stream Body the admission slot
+// is held for the lifetime of the response: Close must be called to
+// release it (PLAN §22: per-backend concurrency bounds streams too).
 type Result struct {
 	Status    int
 	Header    http.Header
 	Body      io.ReadCloser
 	BodyBytes []byte
+	hold      *hold // admission slot; transferred to the Result for streams
 }
 
-// Close releases the stream, if any.
+// Close releases the stream, if any, and the admission slot that is
+// held for a live stream response. It is idempotent.
 func (r *Result) Close() {
 	if r.Body != nil {
 		r.Body.Close()
 	}
+	if r.hold != nil {
+		r.hold.release()
+		r.hold = nil
+	}
 }
 
-// hold is an admission slot (PLAN §22).
+// hold is an admission slot (PLAN §22): a queue token while waiting,
+// then a concurrency token once admitted. The queue token is released
+// at admission so Inflight counts each request exactly once.
 type hold struct{ c *Client }
 
 func (h *hold) release() {
 	<-h.c.conc
-	<-h.c.queue
 }
 
 // acquire implements PLAN §22 admission: a queue slot is taken
@@ -358,6 +367,10 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 	defer timer.Stop()
 	select {
 	case c.conc <- struct{}{}:
+		// Admitted: free the queue slot for other waiters so an
+		// active request holds exactly one token (Inflight counts
+		// queued + active, each once).
+		<-c.queue
 		return &hold{c: c}, nil
 	case <-ctx.Done():
 		<-c.queue
@@ -374,7 +387,6 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer h.release()
 
 	path := req.Path
 	if c.base.Path != "" {
@@ -391,6 +403,7 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 
 	outReq, err := http.NewRequestWithContext(fctx, req.Method, u.String(), bytes.NewReader(req.Body))
 	if err != nil {
+		h.release()
 		return nil, ErrConnect
 	}
 	for k, vs := range req.Headers {
@@ -404,6 +417,7 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 
 	resp, err := c.http.Do(outReq)
 	if err != nil {
+		h.release()
 		return nil, requestError(err)
 	}
 
@@ -412,22 +426,28 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 		defer resp.Body.Close()
 		data, rerr := io.ReadAll(io.LimitReader(resp.Body, int64(c.maxResponseBytes)+1))
 		if len(data) > c.maxResponseBytes {
+			h.release()
 			return nil, ErrTooLarge
 		}
 		if rerr != nil {
 			// Partial-body read failure: the buffered body cannot be
 			// trusted, so only the sanitized class comes back.
+			h.release()
 			return nil, bodyReadError(rerr)
 		}
 		if resp.StatusCode >= 400 {
+			h.release()
 			return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, &Upstream{Status: resp.StatusCode}
 		}
+		h.release()
 		return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, nil
 	}
 
-	// 2xx stream: keep live; the caller enforces stream idleness and
-	// must Close the body.
-	return &Result{Status: resp.StatusCode, Header: resp.Header, Body: resp.Body}, nil
+	// 2xx stream: keep live, and hold the admission slot for the
+	// lifetime of the response (PLAN §22 bounds streaming work per
+	// backend). The caller must Close the Result once the body has
+	// been fully drained.
+	return &Result{Status: resp.StatusCode, Header: resp.Header, Body: resp.Body, hold: h}, nil
 }
 
 // requestError classifies an http.Client.Do error (no response headers
@@ -479,8 +499,10 @@ func bodyReadError(err error) error {
 }
 
 // Inflight reports the current admission load: queued waiters plus
-// active requests (PLAN §19, §22). It is a snapshot for least-inflight
-// routing and is always >= 0.
+// active requests, each counted once (PLAN §19, §22). It is a snapshot
+// for least-inflight routing and is always >= 0. For live streams the
+// slot is held until Result.Close, so Inflight stays accurate for the
+// full generation, not just the header exchange.
 func (c *Client) Inflight() int {
 	return len(c.queue) + len(c.conc)
 }

@@ -223,6 +223,95 @@ func TestInflightSnapshot(t *testing.T) {
 	<-done
 }
 
+// PLAN §22: per-backend concurrency must bound live streams, not just
+// header exchange. The admission slot is held until the stream body is
+// closed, and Inflight stays accurate for the whole generation (X5).
+func TestStreamHoldsAdmissionUntilClosed(t *testing.T) {
+	t.Parallel()
+
+	streamStarted := make(chan struct{})
+	closeBody := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("no flusher")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		f.Flush()
+		close(streamStarted)
+		<-closeBody // hold the stream open until the test drains it
+		_, _ = w.Write([]byte("data: done\n\n"))
+		f.Flush()
+	}))
+	defer ts.Close()
+
+	o := testOptions(t, ts.URL)
+	o.Cfg.MaxConcurrency = 1
+	o.Cfg.QueueSize = 1
+	o.Cfg.QueueTimeout = config.Duration(30 * time.Millisecond)
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stream request 1: admitted, then the slot must stay held while
+	// the stream body is live.
+	stream1Done := make(chan struct{})
+	var res1 *Result
+	go func() {
+		defer close(stream1Done)
+		var err error
+		res1, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{"stream":true}`), Stream: true})
+		if err != nil {
+			t.Errorf("stream 1 Forward: %v", err)
+			return
+		}
+	}()
+
+	select {
+	case <-streamStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream 1 never started")
+	}
+
+	// While the stream body is open, the single concurrency slot is
+	// still held: Inflight must reflect the active stream, and a second
+	// request must be refused (queue full), not admitted.
+	if c.Inflight() != 1 {
+		t.Fatalf("Inflight = %d during live stream, want 1", c.Inflight())
+	}
+	_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("second request while stream live: err = %v, want ErrQueueFull", err)
+	}
+
+	// Draining and closing the stream body must release the slot.
+	close(closeBody)
+	select {
+	case <-stream1Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream 1 did not return")
+	}
+	res1.Close()
+
+	// The slot is now free: a fresh request is admitted.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
+		if err == nil && res != nil {
+			res.Close()
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-close request never admitted")
+	}
+}
+
 func TestForwardQueueFull(t *testing.T) {
 	t.Parallel()
 
@@ -242,11 +331,11 @@ func TestForwardQueueFull(t *testing.T) {
 	defer ts.Close()
 	defer close(release) // declared last, runs first: unblock the handler so Close can return.
 
-	// Concurrency 1 + queue 2: req1 holds the concurrency slot and one
-	// queue slot (admission holds both until completion); later probes
-	// take the free queue slot and fail with ErrQueueFull when the
-	// (short) queue_timeout elapses, or with context.Canceled if the
-	// caller gives up first.
+	// Concurrency 1 + queue 2: req1 holds the concurrency slot; its
+	// queue slot is freed at admission, so later probes take the free
+	// queue slot and fail with ErrQueueFull when the (short)
+	// queue_timeout elapses, or with context.Canceled if the caller
+	// gives up first.
 	o := testOptions(t, ts.URL)
 	o.Cfg.MaxConcurrency = 1
 	o.Cfg.QueueSize = 2
