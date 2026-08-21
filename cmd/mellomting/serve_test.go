@@ -1590,6 +1590,104 @@ models:
 	}
 }
 
+// T-L15: accepted connections are bounded by server.max_connections.
+// Excess connections are closed at accept time, so a client that dials
+// past the cap cannot complete a request on the over-cap connections.
+func TestServeMaxConnectionsEnforced(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+	sock := filepath.Join(dir, "mellomting.sock")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("conn-cap-pepper-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(usersPath, []byte("version: 1\nkeys: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+  max_connections: 2
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: M
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = startServe(t, bin, cfgPath)
+	_ = waitReady(t, sock)
+
+	const total = 6
+	conns := make([]net.Conn, 0, total)
+	for i := 0; i < total; i++ {
+		c, err := net.DialTimeout("unix", sock, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+	}
+	t.Cleanup(func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	// Let the server process the accepts and close the excess before
+	// probing which connections are still alive.
+	time.Sleep(500 * time.Millisecond)
+
+	const cap = 2
+	success := 0
+	for _, c := range conns {
+		if _, err := c.Write([]byte("GET /healthz HTTP/1.1\r\nHost: mellomting\r\nConnection: close\r\n\r\n")); err != nil {
+			continue
+		}
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 128)
+		n, err := c.Read(buf)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(string(buf[:n]), "HTTP/1.1 200") {
+			success++
+		}
+	}
+	if success > cap {
+		t.Fatalf("accepted %d connections, cap is %d (T-L15)", success, cap)
+	}
+	if success == 0 {
+		t.Fatal("no connection succeeded; cap probe is broken")
+	}
+}
+
 // TestServeSandboxRequiredApplies runs the daemon end to end with
 // landlock.mode=required on a kernel that can enforce it (PLAN §55,
 // §57): the daemon must begin accepting requests only after the policy

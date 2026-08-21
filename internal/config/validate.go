@@ -33,6 +33,10 @@ const (
 	defaultQueueTimeout     = 5 * time.Second
 	defaultMaxConcurrency   = 4
 
+	// defaultMaxConnections bounds concurrently accepted connections at
+	// the listener (T-L15, PLAN §9.1).
+	defaultMaxConnections = 1024
+
 	defaultQualifierTimeout     = 3 * time.Second
 	defaultQualifierConcurrency = 2
 	defaultQualifierQueueSize   = 4
@@ -88,6 +92,9 @@ func applyDefaults(c *Config) {
 	}
 	if s.MaxBufferedRequestBytes == 0 {
 		s.MaxBufferedRequestBytes = defaultMaxBufferedRequestBytes
+	}
+	if s.MaxConnections == 0 {
+		s.MaxConnections = defaultMaxConnections
 	}
 	if s.ReadHeaderTimeout == 0 {
 		s.ReadHeaderTimeout = Duration(defaultReadHeaderTimeout)
@@ -319,6 +326,9 @@ func validateServer(s *Server) []string {
 	}
 	if s.MaxBufferedRequestBytes <= 0 {
 		errs = append(errs, "server.max_buffered_request_bytes: must be > 0")
+	}
+	if s.MaxConnections <= 0 {
+		errs = append(errs, "server.max_connections: must be > 0")
 	}
 	if s.ReadHeaderTimeout.Duration() <= 0 {
 		errs = append(errs, "server.read_header_timeout: must be > 0")

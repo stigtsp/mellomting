@@ -29,6 +29,13 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2
 
+# Bound accepted connections (T-L15, PLAN §9.1): the in-process
+# max_connections gate closes excess sockets, and this limits the fd
+# ceiling (each connection costs at least one fd) so the daemon cannot
+# be driven into fd exhaustion. 1024 matches the in-process default;
+# raise both together if capacity is needed.
+LimitNOFILE=1024
+
 # Directories: runtime socket, state (future), and the accounting log.
 RuntimeDirectory=mellomting
 StateDirectory=mellomting

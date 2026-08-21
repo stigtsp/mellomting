@@ -111,6 +111,10 @@ type Server struct {
 	MaxResponseBytes        int    `yaml:"max_response_bytes"`
 	MaxInflightRequests     int    `yaml:"max_inflight_requests"`
 	MaxBufferedRequestBytes int    `yaml:"max_buffered_request_bytes"`
+	// MaxConnections caps concurrently accepted connections at the
+	// listener so a flood of idle sockets cannot exhaust fds (T-L15,
+	// PLAN §9.1). Excess connections are closed immediately.
+	MaxConnections int `yaml:"max_connections"`
 
 	ReadHeaderTimeout  Duration `yaml:"read_header_timeout"`
 	ReadBodyTimeout    Duration `yaml:"read_body_timeout"`

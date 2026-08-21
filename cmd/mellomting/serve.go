@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -411,7 +412,13 @@ func safeUnixListen(l config.Listen) (net.Listener, error) {
 // ReadTimeout bounds the full request read (headers + body) by the sum
 // of the header and body budgets, the closest available approximation.
 func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *http.Server {
-	return &http.Server{
+	// Bounded accepted connections (T-L15, PLAN §9.1): connections above
+	// the configured cap are closed at accept time so a flood of idle
+	// sockets cannot exhaust fds. StateHijacked/StateClosed release a
+	// slot; a hijacked SSE connection stays reserved until closed.
+	var active atomic.Int64
+	max := int64(cfg.Server.MaxConnections)
+	srv := &http.Server{
 		Handler: api.Handler(),
 		// Route net/http's own error output (TLS handshake failures,
 		// unexpected handler panics) through the structured pipeline so
@@ -422,6 +429,18 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 		ReadTimeout:       cfg.Server.ReadHeaderTimeout.Duration() + cfg.Server.ReadBodyTimeout.Duration(),
 		IdleTimeout:       cfg.Server.IdleTimeout.Duration(),
 	}
+	srv.ConnState = func(c net.Conn, s http.ConnState) {
+		switch s {
+		case http.StateNew:
+			if active.Add(1) > max {
+				active.Add(-1)
+				_ = c.Close()
+			}
+		case http.StateClosed, http.StateHijacked:
+			active.Add(-1)
+		}
+	}
+	return srv
 }
 
 // buildNetworkPolicy parses the backend egress policy (PLAN §16).

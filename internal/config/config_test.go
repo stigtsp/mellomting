@@ -67,6 +67,9 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 	if cfg.Server.MaxInflightRequests != 64 || cfg.Server.MaxBufferedRequestBytes != 67108864 {
 		t.Fatalf("server request limits not defaulted: %+v", cfg.Server)
 	}
+	if cfg.Server.MaxConnections != 1024 {
+		t.Fatalf("server.max_connections not defaulted: %+v", cfg.Server)
+	}
 	if cfg.Server.ReadHeaderTimeout.Duration() != 5*time.Second ||
 		cfg.Server.StreamIdleTimeout.Duration() != 120*time.Second {
 		t.Fatalf("server timeouts not defaulted: %+v", cfg.Server)
