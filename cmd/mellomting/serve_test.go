@@ -879,6 +879,203 @@ func TestEnforceSandboxModes(t *testing.T) {
 	}
 }
 
+// T-M10: systemctl reload must reach the graceful SIGHUP users reload
+// (PLAN §64), never a kill/restart.
+func TestSystemdUnitExecReload(t *testing.T) {
+	data, err := os.ReadFile("../../deploy/mellomting.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "ExecReload=") || !strings.Contains(s, "-HUP") {
+		t.Fatal("deploy/mellomting.service must ship ExecReload=/bin/kill -HUP $MAINPID so systemctl reload takes the graceful SIGHUP path")
+	}
+}
+
+// waitStatus polls until the request reaches the wanted status code,
+// tolerating the small window between a SIGHUP delivery and the daemon's
+// in-place store swap (PLAN §30).
+func waitStatus(t *testing.T, client *http.Client, method, url, key, body string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastCode int
+	var lastBody string
+	for time.Now().Before(deadline) {
+		var resp *http.Response
+		var b string
+		if method == http.MethodGet {
+			resp, b = getURL(t, client, url, key)
+		} else {
+			resp, b = postJSON(t, client, url, key, body)
+		}
+		lastCode, lastBody = resp.StatusCode, b
+		if resp.StatusCode == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s %s: got %d %q after deadline (want %d)", method, url, lastCode, lastBody, want)
+}
+
+// T-M10: SIGHUP must gracefully reload the users file. A disabled or
+// revoked key takes effect on the next request without a process restart,
+// unrelated keys keep working, a failed edit keeps the previous store
+// (fail closed), and the process survives SIGHUP (it no longer kills the
+// daemon).
+func TestServeSIGHUPReload(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("sighup-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newKey := func(name string) (raw, id string) {
+		t.Helper()
+		k, id, err := auth.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+			uf.Keys = append(uf.Keys, auth.Key{
+				ID: id, Name: name,
+				SecretHash: auth.FormatHashValue(auth.Hash(pepper, k)),
+				Enabled:    true, Models: []string{"qwen-coder"},
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k, id
+	}
+	keyA, idA := newKey("a")
+	keyB, idB := newKey("b")
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := startServe(t, bin, cfgPath)
+	client := waitReady(t, sock)
+	chatURL := "http://mellomting/v1/chat/completions"
+	chatBody := `{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`
+
+	// Both keys work initially.
+	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 200)
+	waitStatus(t, client, http.MethodPost, chatURL, keyB, chatBody, 200)
+
+	// Disable key A via the CLI, then SIGHUP: key A is rejected on the
+	// next request without a restart, key B is unaffected, the process
+	// survives.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "disable", "-config", cfgPath, "-id", idA); code != 0 {
+		t.Fatalf("key disable exit = %d stderr=%q", code, errOut)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 401)
+	waitStatus(t, client, http.MethodPost, chatURL, keyB, chatBody, 200)
+	if _, body := postJSON(t, client, chatURL, keyB, chatBody); !strings.Contains(body, `"id":"e2e-1"`) {
+		t.Fatalf("key B chat after reload = %s", body)
+	}
+
+	// Re-enable key A and reload again: the change applies again.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "enable", "-config", cfgPath, "-id", idA); code != 0 {
+		t.Fatalf("key enable exit = %d stderr=%q", code, errOut)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 200)
+
+	// Revoke key B and reload: key B is rejected live, key A still works.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfgPath, "-id", idB); code != 0 {
+		t.Fatalf("key revoke B exit = %d stderr=%q", code, errOut)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, client, http.MethodPost, chatURL, keyB, chatBody, 401)
+	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 200)
+
+	// Revoke the last key and reload: the daemon survives and fails
+	// closed (every request is 401) until an operator adds a key again.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfgPath, "-id", idA); code != 0 {
+		t.Fatalf("key revoke last exit = %d stderr=%q", code, errOut)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 401)
+	if resp, body := getURL(t, client, "http://mellomting/readyz", ""); resp.StatusCode != 200 || body != "ready" {
+		t.Fatalf("daemon not ready after revoking all keys: %d %q", resp.StatusCode, body)
+	}
+
+	// A failed edit (malformed file) leaves the previous store in effect:
+	// fail closed, never a silent empty/widened store.
+	if err := os.WriteFile(usersPath, []byte("version: 99\nkeys: not-a-list"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	if resp, body := getURL(t, client, "http://mellomting/readyz", ""); resp.StatusCode != 200 || body != "ready" {
+		t.Fatalf("daemon not ready after failed reload: %d %q", resp.StatusCode, body)
+	}
+	if resp, body := getURL(t, client, "http://mellomting/v1/models", keyA); resp.StatusCode != 401 {
+		t.Fatalf("failed reload changed auth state: %d %q", resp.StatusCode, body)
+	}
+
+	// The process is still the same one: SIGTERM shuts it down cleanly.
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait after reloads: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM following SIGHUP reloads")
+	}
+}
+
 // TestServeSandboxRequiredApplies runs the daemon end to end with
 // landlock.mode=required on a kernel that can enforce it (PLAN §55,
 // §57): the daemon must begin accepting requests only after the policy

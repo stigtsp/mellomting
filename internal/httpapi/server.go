@@ -28,7 +28,7 @@ import (
 type Server struct {
 	cfg         *config.Config
 	log         *slog.Logger
-	store       *auth.Store
+	store       atomic.Pointer[auth.Store] // swapped atomically on SIGHUP reload (PLAN §30)
 	router      *routing.Router
 	proxy       *proxy.Proxy
 	inflight    chan struct{}
@@ -59,10 +59,9 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 	if err != nil {
 		panic("httpapi: invalid global rate limit: " + err.Error())
 	}
-	return &Server{
+	s := &Server{
 		cfg:         cfg,
 		log:         log,
-		store:       store,
 		router:      router,
 		proxy:       p,
 		inflight:    make(chan struct{}, size),
@@ -70,7 +69,14 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		keyLimits:   limiter.NewRegistry(),
 		startedUnix: time.Now().Unix(),
 	}
+	s.store.Store(store)
+	return s
 }
+
+// ReloadStore atomically swaps the key store (SIGHUP reload, PLAN §30).
+// In-flight requests keep serving against the store they looked up, so a
+// reload never severs an active stream (PLAN §74).
+func (s *Server) ReloadStore(st *auth.Store) { s.store.Store(st) }
 
 // SetReady flips readiness (PLAN §69 /readyz).
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
@@ -329,7 +335,7 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 	default:
 		return nil, errAuth
 	}
-	rec, err := s.store.Lookup(rawKey)
+	rec, err := s.store.Load().Lookup(rawKey)
 	if err != nil {
 		// All key failures read identically to the client (no oracle);
 		// the cause is an operator concern, not a client one.

@@ -162,6 +162,33 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 }
 
+// T-M10: revoking the last key must succeed so a single-key deployment can
+// revoke through the CLI; the resulting empty users file stays valid and
+// key list reports "no keys".
+func TestKeyRevokeLastKey(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, out, _ := runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "solo", "-models", "qwen-coder")
+	if code != 0 {
+		t.Fatalf("create exit = %d", code)
+	}
+	key := keyRe.FindString(out)
+	if key == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+	id := key[4:12]
+
+	// Revoking the only key must not fail with "at least one key".
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
+		t.Fatalf("revoke last key exit = %d stderr=%q", code, errOut)
+	}
+	if code, out, _ := runCLI(t, bin, dir, "key", "list", "-config", cfg); code != 0 || !strings.Contains(out, "no keys") {
+		t.Fatalf("list after revoking last key: exit=%d out=%q", code, out)
+	}
+}
+
 // T-X8: key create records per-key limits flags in the users file, and
 // rejects negative limit values.
 func TestKeyCreateLimits(t *testing.T) {

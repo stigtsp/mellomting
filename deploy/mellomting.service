@@ -22,6 +22,10 @@ User=mellomting
 Group=mellomting
 Type=simple
 ExecStart=/usr/local/bin/mellomting serve -config /etc/mellomting/config.yaml
+# systemctl reload == SIGHUP == graceful in-place users-file reload
+# (PLAN §30, T-M10): the daemon reloads the key store without killing the
+# process or severing in-flight streams, unlike a restart.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2
 

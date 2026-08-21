@@ -41,6 +41,7 @@ type daemon struct {
 	api       *httpapi.Server
 	proxy     *proxy.Proxy
 	acc       *accounting.Writer // usage JSONL writer; nil when disabled
+	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
 	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
 	listen    net.Listener
 }
@@ -128,17 +129,31 @@ func serveCmd(args []string) int {
 		"models", len(cfg.Models),
 	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Signals: SIGINT/SIGTERM start the graceful drain (PLAN §74).
+	// SIGHUP reloads the users file in place (PLAN §30, T-M10) instead of
+	// killing the daemon; the default terminate disposition is suppressed
+	// while the signal is registered, so SIGHUP can never kill the
+	// process.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
 
-	select {
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped", "error_class", "server")
-			return 1
+	var received os.Signal
+	for received == nil {
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("server stopped", "error_class", "server")
+				return 1
+			}
+			return 0
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP {
+				d.reloadUsers()
+				continue
+			}
+			received = sig
 		}
-		return 0
-	case <-ctx.Done():
 	}
 
 	log.Info("shutting down", "grace_period", cfg.Shutdown.GracePeriod.Duration().String())
@@ -472,7 +487,35 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		"keys", len(users.Keys),
 		"accounting_enabled", cfg.Accounting.Enabled,
 	)
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, tlsConfig: tlsConfig}, nil
+	if len(users.Keys) == 0 {
+		log.Warn("users file has no keys; every request will be rejected until a key is added")
+	}
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, pepper: pepper, tlsConfig: tlsConfig}, nil
+}
+
+// reloadUsers reloads the users file and atomically swaps the running key
+// store (SIGHUP, PLAN §30). Fail closed: on any error the previous store
+// stays in effect, so a malformed edit can never widen or empty access.
+// The pepper is reused from memory, so the reload needs no file access
+// beyond the users file — the only secret read the Landlock policy grants
+// after startup (PLAN §30, §58). In-flight requests are unaffected; they
+// keep serving against the store they looked up (PLAN §74).
+func (d *daemon) reloadUsers() {
+	users, err := auth.LoadUsers(d.cfg.Auth.UsersFile)
+	if err != nil {
+		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
+		return
+	}
+	store, err := auth.NewStore(users, d.pepper)
+	if err != nil {
+		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
+		return
+	}
+	d.api.ReloadStore(store)
+	d.log.Info("users reloaded", "keys", len(users.Keys))
+	if len(users.Keys) == 0 {
+		d.log.Warn("users file has no keys; every request will be rejected until a key is added")
+	}
 }
 
 // listenAddr returns the listener address for logging/cleanup.

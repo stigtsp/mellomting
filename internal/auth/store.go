@@ -103,9 +103,10 @@ func validateUsers(uf *UsersFile) error {
 	if uf.Version != 1 {
 		return fmt.Errorf("users file version %d is not supported (want 1)", uf.Version)
 	}
-	if len(uf.Keys) == 0 {
-		return fmt.Errorf("users file needs at least one key")
-	}
+	// An empty key list is valid (T-M10): a single-key deployment must be
+	// able to revoke its last key through the CLI. An empty store serves
+	// no keys at all, so the daemon fails closed (every request is 401)
+	// until an operator adds a key again.
 	seen := make(map[string]bool, len(uf.Keys))
 	for i := range uf.Keys {
 		k := &uf.Keys[i]
