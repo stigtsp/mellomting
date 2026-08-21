@@ -468,7 +468,26 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		q.W.Header().Set("Content-Type", ct)
 		q.W.WriteHeader(res.Status)
-		_, _ = q.W.Write(res.BodyBytes)
+		// Bound client write-idle on the non-streaming path too (X9).
+		// A client that reads the headers then stops reading must not
+		// hold the inflight slot forever. stream_write_timeout is the
+		// same bound the streaming pump applies per event (PLAN §9.1);
+		// where unusable (e.g. HTTP/2, unsupported here in v1) the
+		// client context remains the disconnect signal.
+		ctrl := http.NewResponseController(q.W)
+		clientIdle := p.cfg.Server.StreamWriteTimeout.Duration()
+		deadlineOK := ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
+		_, werr := q.W.Write(res.BodyBytes)
+		// Clear the deadline only when the write completed, so it cannot
+		// leak into the next keep-alive request on this connection. When
+		// the write errored (stalled reader, deadline fired) the deadline
+		// is left expired: net/http's finishRequest flush then fails fast
+		// and the connection is closed instead of blocking forever on the
+		// full socket buffer, which would leak a goroutine and fd per
+		// stalled client (X9).
+		if deadlineOK && werr == nil {
+			_ = ctrl.SetWriteDeadline(time.Time{})
+		}
 		if o.capture {
 			if id := topLevelID(res.BodyBytes); id != "" {
 				p.affinity.Put(q.Key.ID, id, backendName)

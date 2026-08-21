@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -197,6 +200,73 @@ func TestStreamFlushesThroughWrapper(t *testing.T) {
 	// The wrapper's recover must not have tripped on the way out.
 	if rec.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("content type = %q", rec.Header().Get("Content-Type"))
+	}
+}
+
+// TestNonStreamingWriteDeadlineBounded is the T-X9 integration check: a
+// client that reads the response headers then stops reading a
+// non-streaming completion must have its write bounded by
+// stream_write_timeout (PLAN §9.1). The stalled write fills the socket
+// buffer, the deadline fires, the handler returns, and net/http closes
+// the connection with a truncated body instead of holding the goroutine
+// and connection forever. Service must recover once the stalled client
+// is gone.
+func TestNonStreamingWriteDeadlineBounded(t *testing.T) {
+	t.Parallel()
+	// Large enough that a fully-delivered body is unambiguous.
+	const big = 32 << 20
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(make([]byte, big))
+	}, func(c *config.Config) {
+		c.Server.MaxResponseBytes = 64 << 20
+		c.Server.StreamWriteTimeout = config.Duration(200 * time.Millisecond)
+	}, auth.KeyLimits{})
+
+	ts := httptest.NewUnstartedServer(e.srv.Handler())
+	ts.Start()
+	defer ts.Close()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	body := `{"model":"model-a","messages":[]}`
+	fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		e.key, len(body), body)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response headers: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	// Stop reading well past stream_write_timeout so the write deadline
+	// fires while the socket buffer is full. Then drain everything the
+	// server managed to deliver. If the write is bounded, the handler
+	// gave up at the deadline and closed the connection: the client
+	// receives only what was already buffered (a small fraction of
+	// `big`). If the write is unbounded, the server resumes once the
+	// client reads again and the full body is delivered.
+	time.Sleep(500 * time.Millisecond)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _ := io.Copy(io.Discard, conn)
+	// The bounded case delivers only the bytes that fit in the socket
+	// buffers before the deadline fired (a few MB here); the unbounded
+	// case delivers the whole body. Half the body size cleanly
+	// separates the two regardless of kernel buffer autotuning.
+	if n >= big/2 {
+		t.Fatalf("stalled non-streaming write was not bounded: received %d of %d-byte body", n, big)
+	}
+
+	// Service must recover: a normal request after the stall succeeds,
+	// proving resources were reclaimed rather than held forever.
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 200 {
+		t.Fatalf("post-stall request: %d %s", w.Code, w.Body.String())
 	}
 }
 
