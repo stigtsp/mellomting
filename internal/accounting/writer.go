@@ -87,13 +87,30 @@ func (w *Writer) Enqueue(r Record) {
 	case w.q <- r:
 	default:
 		w.dropped.Add(1)
-		if now := time.Now().Unix(); now >= w.lastAlert.Load() {
-			if w.lastAlert.CompareAndSwap(now, now+30) {
-				w.log.Error("accounting queue overflow; records dropped",
-					"dropped", w.dropped.Load())
-			}
+		if w.alertDue(time.Now().Unix()) {
+			w.log.Error("accounting queue overflow; records dropped",
+				"dropped", w.dropped.Load())
 		}
 	}
+}
+
+// alertCadence is the minimum gap between overflow alerts, in seconds
+// (PLAN §42).
+const alertCadence = 30
+
+// alertDue reports whether an overflow alert is due at Unix time now
+// and, if so, claims the next alert window. lastAlert starts at 0, so
+// the first drop fires an alert immediately; afterwards at most one
+// alert fires per alertCadence. The CompareAndSwap uses the previously
+// loaded value as the expected old value, so the first alert actually
+// matches (T-M6: the CAS previously expected `now`, which never equals
+// the initial 0, so the alert could never fire).
+func (w *Writer) alertDue(now int64) bool {
+	prev := w.lastAlert.Load()
+	if now < prev {
+		return false
+	}
+	return w.lastAlert.CompareAndSwap(prev, now+alertCadence)
 }
 
 // Dropped returns the cumulative number of dropped records.

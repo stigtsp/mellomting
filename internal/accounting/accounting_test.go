@@ -292,6 +292,48 @@ func TestWriterDropAndAlert(t *testing.T) {
 	_ = w.Close()
 }
 
+// TestOverflowAlertCadence reproduces the review's sim (T-M6): 200
+// simulated seconds of drops must produce alerts at the configured
+// cadence (not 0). lastAlert starts at 0 and the timestamps are real
+// Unix seconds (non-zero), so a CAS that expects `now` as the old value
+// would never match and the alert would never fire.
+func TestOverflowAlertCadence(t *testing.T) {
+	w := &Writer{}
+	base := time.Now().Unix()
+	var alerts int
+	for sec := 0; sec < 200; sec += 5 {
+		if w.alertDue(base + int64(sec)) {
+			alerts++
+		}
+	}
+	if alerts == 0 {
+		t.Fatal("overflow alert never fired (T-M6 regression)")
+	}
+	want := 200/alertCadence + 1 // alerts at 0, 30, ..., 180
+	if alerts != want {
+		t.Fatalf("alerts = %d, want %d (cadence %ds)", alerts, want, alertCadence)
+	}
+	// lastAlert must have advanced past the final alert.
+	if w.lastAlert.Load() < base+180+alertCadence {
+		t.Fatalf("lastAlert did not advance: %d", w.lastAlert.Load())
+	}
+}
+
+// TestOverflowAlertFirstDropFires is the minimal T-M6 regression: the
+// very first drop (lastAlert == 0) must fire an alert. Before the fix
+// the CompareAndSwap compared against `now`, which never equals the
+// initial 0, so the alert could never fire.
+func TestOverflowAlertFirstDropFires(t *testing.T) {
+	w := &Writer{}
+	if !w.alertDue(time.Now().Unix()) {
+		t.Fatal("first drop did not fire an alert (T-M6 regression)")
+	}
+	// Within the cadence no further alert fires.
+	if w.alertDue(time.Now().Unix()) {
+		t.Fatal("alert fired again within the cadence")
+	}
+}
+
 func TestWriterMissingDirFailsClosed(t *testing.T) {
 	if _, err := NewWriter(WriterConfig{Path: filepath.Join(t.TempDir(), "no", "such", "dir", "usage.jsonl")}); err == nil {
 		t.Fatal("expected error for missing directory")
