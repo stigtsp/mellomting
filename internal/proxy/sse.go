@@ -48,11 +48,6 @@ func newSSEParser(r io.Reader) *sseParser {
 // terminating blank line is still emitted (T-X13): the upstream closed
 // cleanly, so the buffered event must not be dropped.
 func (p *sseParser) nextEvent() ([]byte, error) {
-	if p.have {
-		out := append([]byte{}, p.event...)
-		p.reset()
-		return out, nil
-	}
 	for {
 		line, err := p.readLine()
 		if err != nil {

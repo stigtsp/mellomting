@@ -90,6 +90,46 @@ func TestSSEParserCRTerminatorsEquivalent(t *testing.T) {
 	}
 }
 
+// TestSSEParserEventsTerminatedExceptFinal asserts the T-Q8 invariant:
+// every event emitted before clean EOF carries its own terminating blank
+// line; only the final flush of a cleanly-closed stream may lack one
+// (T-X13). A parser bug that emitted a mid-stream event without its
+// terminator (the deleted unreachable `have` fast path) would trip it.
+func TestSSEParserEventsTerminatedExceptFinal(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"data: a\n\ndata: b\n\n",
+		"data: a\r\n\r\ndata: b\r\n\r\n",
+		"data: a\r\rdata: b\r\r",
+		"data: a\n\ndata: b",
+		"data: a\ndata: b\n\n",
+		"data: a\r\ndata: b\r\r",
+		"data: a\n\n\ndata: b\n\n",
+	}
+	for _, s := range cases {
+		p := newSSEParser(strings.NewReader(s))
+		var events [][]byte
+		for {
+			ev, err := p.nextEvent()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("%q: %v", s, err)
+			}
+			events = append(events, ev)
+		}
+		if len(events) == 0 {
+			t.Fatalf("%q: no events", s)
+		}
+		for i, ev := range events {
+			if i < len(events)-1 && !bytes.HasSuffix(ev, []byte("\n\n")) {
+				t.Fatalf("%q: event %d lacks its terminating blank line: %q", s, i, ev)
+			}
+		}
+	}
+}
+
 // FuzzSSEParser feeds arbitrary bytes to the parser (PLAN §80, T-X13):
 // it must never panic, only surface bounded framing errors, never emit an
 // empty event, and stay idempotent after a clean EOF.
