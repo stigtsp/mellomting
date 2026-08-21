@@ -327,6 +327,95 @@ func TestValidateUsersRejectsNegativeLimits(t *testing.T) {
 	}
 }
 
+// T-T9: every remaining validateUsers rejection branch must be pinned:
+// unsupported version, invalid/empty key id, missing name, malformed
+// secret_hash, and an empty models list all fail closed at the key-store
+// boundary.
+func TestValidateUsersRejectsMalformedKeys(t *testing.T) {
+	t.Parallel()
+	goodHash := FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx"))
+	base := Key{ID: "AAAAAA1A", Name: "a", SecretHash: goodHash, Enabled: true, Models: []string{"*"}}
+
+	cases := []struct {
+		name   string
+		mutate func(k *Key)
+		want   string
+	}{
+		{
+			name: "unsupported version",
+			mutate: func(k *Key) {
+				_ = k
+			},
+			want: "version",
+		},
+		{
+			name: "empty id",
+			mutate: func(k *Key) {
+				k.ID = ""
+			},
+			want: "invalid id",
+		},
+		{
+			name: "invalid id characters",
+			mutate: func(k *Key) {
+				k.ID = "AAAAAA1A!"
+			},
+			want: "invalid id",
+		},
+		{
+			name: "duplicate id",
+			mutate: func(k *Key) {
+				_ = k
+			},
+			want: "duplicate key id",
+		},
+		{
+			name: "missing name",
+			mutate: func(k *Key) {
+				k.Name = ""
+			},
+			want: "name is required",
+		},
+		{
+			name: "malformed secret_hash",
+			mutate: func(k *Key) {
+				k.SecretHash = "hmac-sha256:!!!not-base64!!!"
+			},
+			want: "secret_hash",
+		},
+		{
+			name: "empty models list",
+			mutate: func(k *Key) {
+				k.Models = nil
+			},
+			want: "models list must not be empty",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			key := base
+			tc.mutate(&key)
+			uf := &UsersFile{Version: 1, Keys: []Key{key}}
+			if tc.name == "duplicate id" {
+				uf.Keys = []Key{key, key}
+			}
+			if tc.name == "unsupported version" {
+				uf.Version = 2
+			}
+			err := validateUsers(uf)
+			if err == nil {
+				t.Fatalf("validateUsers accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // T-X8: a key with no limits block gets the conservative per-key concurrency
 // default at the store boundary, so one key cannot occupy every inflight slot
 // by default.

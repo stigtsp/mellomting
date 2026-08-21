@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -1064,5 +1065,102 @@ func TestKeyConcurrencyLimit429(t *testing.T) {
 	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
 	if w.Code != 200 {
 		t.Fatalf("other key: %d (want 200)", w.Code)
+	}
+}
+
+// T-T9: the remaining allow-listed inference endpoints (/v1/completions and
+// /v1/embeddings) must be routed through the real HTTP surface, apply the
+// model rewrite, and enforce per-key model ACL the same way chat does.
+func TestCompletionsAndEmbeddingsRoutes(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var saw []string
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var env struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &env)
+		mu.Lock()
+		saw = append(saw, r.URL.Path+" "+env.Model)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"cmpl-9"}`))
+		}
+	}, nil, auth.KeyLimits{})
+
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/completions", `{"model":"model-a","prompt":"hi"}`},
+		{"/v1/embeddings", `{"model":"model-a","input":"hi"}`},
+	} {
+		w := e.do(t, http.MethodPost, tc.path, "bearer", tc.body)
+		if w.Code != 200 {
+			t.Fatalf("%s: status = %d body = %s", tc.path, w.Code, w.Body.String())
+		}
+		// Per-key ACL applies to these endpoints too.
+		w = e.do(t, http.MethodPost, tc.path, "bearer", `{"model":"model-b"}`)
+		if w.Code != 404 || !strings.Contains(w.Body.String(), "model_not_found_or_not_allowed") {
+			t.Fatalf("%s ACL: %d %s", tc.path, w.Code, w.Body.String())
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(saw) != 2 {
+		t.Fatalf("backend saw %d requests (want 2): %v", len(saw), saw)
+	}
+	for _, entry := range saw {
+		if !strings.HasSuffix(entry, " Up/Model") {
+			t.Fatalf("model rewrite missing on %q (all=%v)", entry, saw)
+		}
+	}
+}
+
+// T-T9: responsesID / isSafeSegment are the only response-path parsing the
+// route table relies on; pin their contract directly (safe id, cancel
+// suffix, and the unsafe forms: dot segments, separators, oversized ids).
+func TestResponsesIDAndSafeSegment(t *testing.T) {
+	t.Parallel()
+	s := &Server{}
+	newReq := func(path string) *http.Request {
+		return &http.Request{URL: &url.URL{Path: path}}
+	}
+
+	// responsesID: a plain safe id is a retrieve; the /cancel suffix flags
+	// a cancel; an unsafe segment yields ok=false.
+	rec, cancel, ok := s.responsesID(newReq("/v1/responses/resp_AbC123_x"))
+	if !ok || cancel || rec != "resp_AbC123_x" {
+		t.Fatalf("plain id: rec=%q cancel=%v ok=%v", rec, cancel, ok)
+	}
+	rec, cancel, ok = s.responsesID(newReq("/v1/responses/resp_123/cancel"))
+	if !ok || !cancel || rec != "resp_123" {
+		t.Fatalf("cancel: rec=%q cancel=%v ok=%v", rec, cancel, ok)
+	}
+	for _, bad := range []string{
+		"/v1/responses/",
+		"/v1/responses/resp.x",
+		"/v1/responses/a/../b",
+		"/v1/responses/%2e%2e/cancel",
+		"/v1/responses/" + strings.Repeat("a", 257),
+		"/v1/responses/resp id",
+	} {
+		if _, _, ok := s.responsesID(newReq(bad)); ok {
+			t.Fatalf("responsesID accepted unsafe path %q", bad)
+		}
+	}
+
+	// isSafeSegment: only [A-Za-z0-9_-], non-empty, at most 256 bytes.
+	for _, good := range []string{"resp_x", "AbC123", "a-b_c0", "r" + strings.Repeat("e", 255)} {
+		if !isSafeSegment(good) {
+			t.Fatalf("isSafeSegment rejected %q", good)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a.b", "a/b", "a b", "a~b", "a*b", strings.Repeat("a", 257)} {
+		if isSafeSegment(bad) {
+			t.Fatalf("isSafeSegment accepted %q", bad)
+		}
 	}
 }

@@ -315,6 +315,49 @@ func TestForwardUpstreamErrors(t *testing.T) {
 	}
 }
 
+// T-T9: a non-streaming upstream body that exceeds the configured
+// MaxResponseBytes bound must fail closed with ErrTooLarge (PLAN §22):
+// the oversized payload is never trusted or relayed.
+func TestForwardMaxResponseBytesTooLarge(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"big":"` + strings.Repeat("x", 8192) + `"}`))
+	}))
+	defer ts.Close()
+
+	opts := testOptions(t, ts.URL)
+	opts.MaxResponseBytes = 1024
+	c, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v (want ErrTooLarge), res = %+v", err, res)
+	}
+	if res != nil {
+		t.Fatalf("res must be nil on ErrTooLarge, got %+v", res)
+	}
+
+	// An in-bounds body still succeeds on the same client.
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer ts2.Close()
+	opts2 := testOptions(t, ts2.URL)
+	opts2.MaxResponseBytes = 1024
+	c2, err := New(opts2)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res2, err := c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if err != nil || res2.Status != 200 || string(res2.BodyBytes) != `{"id":"ok"}` {
+		t.Fatalf("in-bounds body: err=%v res=%+v", err, res2)
+	}
+}
+
 // PLAN §23: a dead port is a connection failure (retryable class), and
 // a silent server is a header timeout, kept distinct from total/body
 // timeouts.

@@ -30,6 +30,7 @@ import (
 
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
+	"mellomting/internal/httpapi"
 	"mellomting/internal/landlock"
 )
 
@@ -2091,5 +2092,59 @@ models:
 	}
 	if !strings.Contains(string(logData), "backend_network.mode is") {
 		t.Fatalf("mode:any startup warning missing: %q", string(logData))
+	}
+}
+
+// T-T9: the server's MaxHeaderBytes bound is wired into newHTTPServer and
+// must yield a 431 (never a proxy attempt) when a client exceeds it. A
+// plain /healthz on the same server proves the bound is not rejecting
+// normal requests.
+func TestServeMaxHeaderBytesRejected(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{
+		Server: config.Server{
+			MaxHeaderBytes:    1024,
+			MaxConnections:    16,
+			ReadHeaderTimeout: config.Duration(5 * time.Second),
+			ReadBodyTimeout:   config.Duration(5 * time.Second),
+			IdleTimeout:       config.Duration(30 * time.Second),
+		},
+	}
+	api := httpapi.New(cfg, log, nil, nil, nil)
+	srv := newHTTPServer(cfg, api, log)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-done
+	})
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// A normal request is served by the real handler (healthz needs no key).
+	resp, body := getURL(t, client, "http://"+ln.Addr().String()+"/healthz", "")
+	if resp.StatusCode != 200 || body != "ok" {
+		t.Fatalf("healthz: %d %q", resp.StatusCode, body)
+	}
+
+	// An oversized header is rejected by net/http with 431 before any
+	// handler runs. The enforced bound is MaxHeaderBytes plus net/http's
+	// 4096-byte bufio slop, so the header must exceed both.
+	req, err := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Big", strings.Repeat("a", 20000))
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("oversized header request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("oversized header: status = %d (want 431)", resp.StatusCode)
 	}
 }

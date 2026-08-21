@@ -674,6 +674,56 @@ func TestResponsesAffinityOversizedIDSkipped(t *testing.T) {
 	}
 }
 
+// T-T9: the affinity table's bounded-evil eviction (PLAN §21.4) must
+// actually evict: a full table evicts the entry with the oldest expiry,
+// expired records drop on access, and expired records are swept before a
+// Put adds to an at-capacity table.
+func TestAffinityEviction(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0)
+	a := newAffinity(time.Second, 2)
+	a.now = func() time.Time { return now }
+
+	// A third Put past the bound evicts the oldest (resp_1).
+	a.Put("K1", "resp_1", "b1")
+	now = now.Add(100 * time.Millisecond)
+	a.Put("K1", "resp_2", "b2")
+	now = now.Add(100 * time.Millisecond)
+	a.Put("K1", "resp_3", "b1")
+	if _, ok := a.Get("K1", "resp_1"); ok {
+		t.Fatal("resp_1 was not evicted when the table exceeded its bound")
+	}
+	if _, ok := a.Get("K1", "resp_2"); !ok {
+		t.Fatal("resp_2 was wrongly evicted")
+	}
+
+	// TTL expiry on access: after the TTL passes, a record is not found.
+	now = now.Add(2 * time.Second)
+	if _, ok := a.Get("K1", "resp_2"); ok {
+		t.Fatal("resp_2 still present after TTL expiry")
+	}
+	if _, ok := a.Get("K1", "resp_3"); ok {
+		t.Fatal("resp_3 still present after TTL expiry")
+	}
+
+	// Sweep-on-Put: fill the table again, let both records expire, then
+	// Put — the expired entries are swept before the new record lands.
+	a.Put("K1", "resp_4", "b1")
+	now = now.Add(100 * time.Millisecond)
+	a.Put("K1", "resp_5", "b2")
+	now = now.Add(2 * time.Second)
+	a.Put("K1", "resp_6", "b1")
+	if _, ok := a.Get("K1", "resp_4"); ok {
+		t.Fatal("expired resp_4 not swept on Put")
+	}
+	if _, ok := a.Get("K1", "resp_5"); ok {
+		t.Fatal("expired resp_5 not swept on Put")
+	}
+	if b, ok := a.Get("K1", "resp_6"); !ok || b != "b1" {
+		t.Fatalf("fresh Put after sweep: ok=%v b=%q", ok, b)
+	}
+}
+
 // TestNullBodyNoNilMapPanic covers the T-L6 hardening: a JSON `null`
 // body must never reach a nil-map write, and the dispatch must return a
 // clean 400 rather than crash the process.
