@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -356,21 +356,46 @@ func TestWriterOverflowKnobGoverns(t *testing.T) {
 	}
 }
 
-func TestWriterDroppedCounterAtomic(t *testing.T) {
-	w := &Writer{}
-	var n int64
+// T-T6: the dropped counter must be exercised through the real Enqueue
+// path (queue-full drops), not by poking w.dropped directly, which only
+// re-tests sync/atomic. Race many Enqueues against a tiny queue and
+// assert the accounting invariant: every record is either written to the
+// file or counted dropped — never lost.
+func TestWriterDroppedCounterRealPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	w, err := NewWriter(WriterConfig{Path: path, QueueSize: 2, FSync: "never"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	const total = 2000
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := 0; i < total; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w.dropped.Add(1)
-			atomic.AddInt64(&n, 1)
+			w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
 		}()
 	}
 	wg.Wait()
-	if w.Dropped() != n {
-		t.Fatalf("dropped=%d want %d", w.Dropped(), n)
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written int64
+	for _, ln := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if ln != "" {
+			written++
+		}
+	}
+	dropped := w.Dropped()
+	if dropped == 0 {
+		t.Fatal("expected some records dropped through the real queue-full path")
+	}
+	if written+dropped != total {
+		t.Fatalf("written(%d)+dropped(%d) = %d, want %d (accounting lost records)", written, dropped, written+dropped, total)
 	}
 }
 
