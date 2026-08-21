@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -68,6 +69,18 @@ func usageOnlyJSON(w http.ResponseWriter, _ *http.Request) {
 			`data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}` + "\n\n" +
 			`data: [DONE]` + "\n\n",
 	))
+}
+
+// streamWithTrailer serves a content event followed by a usage-only chunk
+// whose terminator is exactly trailer: the T-X13 shape where the final
+// event lacks a terminating blank line.
+func streamWithTrailer(trailer string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		content := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n"
+		usage := `data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+		_, _ = w.Write([]byte(content + usage + trailer))
+	}
 }
 
 func usageJSON(w http.ResponseWriter, _ *http.Request) {
@@ -197,6 +210,47 @@ func TestClientRequestedUsageNotSwallowed(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"total_tokens":15`) {
 		t.Fatalf("client-requested usage chunk should be relayed: %s", w.Body.String())
+	}
+}
+
+// TestStreamFinalEventNoBlankLineDelivered is the T-X13 regression test:
+// a stream whose final event lacks a terminating blank line (trailer="",
+// "\n" or "\r") must still deliver the final content event to the client
+// and settle accounting with the exact usage from the final usage-only
+// chunk, not the fallback reservation.
+func TestStreamFinalEventNoBlankLineDelivered(t *testing.T) {
+	for _, trailer := range []string{"", "\n", "\r"} {
+		trailer := trailer
+		t.Run(fmt.Sprintf("trailer=%q", trailer), func(t *testing.T) {
+			f := newFakeVLLM(t, streamWithTrailer(trailer))
+			quota := accounting.NewQuota()
+			writer, path := tmpWriter(t)
+			p := newAccountingProxy(t, f, quota, writer)
+
+			w := run(t, p, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+			if w.Code != 200 {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			// The final content event must reach the client.
+			if !strings.Contains(w.Body.String(), "Hi") {
+				t.Fatalf("final content event missing: %s", w.Body.String())
+			}
+			// The usage-only chunk was injected on the client's behalf, so
+			// it must not be relayed, but its usage must settle exactly.
+			if strings.Contains(w.Body.String(), `"total_tokens":10`) {
+				t.Fatalf("usage-only chunk leaked to client: %s", w.Body.String())
+			}
+			lim := accounting.WindowLimit{TokensPerHour: 9, TokensPerDay: 100}
+			if ok, _ := quota.Admit("K1", lim, 0, time.Now()); ok {
+				t.Fatal("expected reject: 10 settled tokens exceed hour limit 9 (usage lost)")
+			}
+			_ = writer.Close()
+			recs := readRecords(t, path)
+			if len(recs) != 1 || recs[0].TotalTokens != 10 || recs[0].UsageStatus != accounting.UsageExact {
+				t.Fatalf("records = %+v", recs)
+			}
+		})
 	}
 }
 

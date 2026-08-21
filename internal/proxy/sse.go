@@ -43,23 +43,44 @@ func newSSEParser(r io.Reader) *sseParser {
 
 // nextEvent returns the raw bytes of the next full event (including the
 // terminating blank line), re-serialized verbatim. It returns io.EOF
-// when the stream ends. Read errors that indicate the upstream stopped
-// mid-event surface as (nil, err).
+// when the stream ends cleanly. Read errors that indicate the upstream
+// stopped mid-event surface as (nil, err). A final event that lacks its
+// terminating blank line is still emitted (T-X13): the upstream closed
+// cleanly, so the buffered event must not be dropped.
 func (p *sseParser) nextEvent() ([]byte, error) {
 	if p.have {
 		out := append([]byte{}, p.event...)
-		p.event = nil
-		p.line = nil
-		p.have = false
+		p.reset()
 		return out, nil
 	}
 	for {
 		line, err := p.readLine()
 		if err != nil {
-			if len(p.event) > 0 {
-				// A partial event at EOF is malformed framing.
-				return nil, err
+			if err == io.EOF {
+				if len(line) > 0 {
+					// A final line without any line terminator: it is
+					// the last data line of a cleanly-closed stream.
+					if len(p.event)+len(line)+2 > maxSSEEvent {
+						p.reset()
+						return nil, ErrSSEEventTooLarge
+					}
+					p.line = line
+					p.have = true
+					p.event = append(p.event, line...)
+				}
+				if len(p.event) > 0 {
+					// Clean EOF with a buffered partial event: flush it
+					// rather than discarding it, so the final data line
+					// and its usage chunk are relayed (PLAN §24).
+					out := append([]byte{}, p.event...)
+					p.reset()
+					return out, nil
+				}
+				return nil, io.EOF
 			}
+			// Real read error mid-stream: report it and never flush a
+			// possibly-corrupt partial event.
+			p.reset()
 			return nil, err
 		}
 		p.line = line
@@ -72,9 +93,7 @@ func (p *sseParser) nextEvent() ([]byte, error) {
 			}
 			p.event = append(p.event, '\n')
 			out := append([]byte{}, p.event...)
-			p.event = nil
-			p.line = nil
-			p.have = false
+			p.reset()
 			return out, nil
 		}
 		if len(p.event)+len(p.line)+2 > maxSSEEvent {
@@ -94,8 +113,10 @@ func (p *sseParser) reset() {
 	p.have = false
 }
 
-// readLine reads one \n-terminated line (a trailing \r is dropped).
-// Lines are bounded by maxSSELine with a byte-wise scan.
+// readLine reads one line terminated by \n, \r, or \r\n (a trailing \r
+// is dropped in all cases; a lone \r is a spec-legal CR terminator,
+// T-X13). Lines are bounded by maxSSELine with a byte-wise scan. The
+// final unterminated line is returned with io.EOF.
 func (p *sseParser) readLine() ([]byte, error) {
 	var line []byte
 	for {
@@ -118,6 +139,16 @@ func (p *sseParser) readLine() ([]byte, error) {
 		if b == '\n' {
 			if len(line) > 0 && line[len(line)-1] == '\r' {
 				return line[:len(line)-1], nil
+			}
+			return line, nil
+		}
+		if b == '\r' {
+			// CR is a spec-legal line terminator. Consume a following
+			// \n for CRLF, otherwise the lone CR terminates the line.
+			if next, perr := p.br.Peek(1); perr == nil && next[0] == '\n' {
+				if _, rerr := p.br.ReadByte(); rerr != nil {
+					return line, rerr
+				}
 			}
 			return line, nil
 		}
