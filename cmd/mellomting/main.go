@@ -307,7 +307,7 @@ func keyState(c *keyFlags) (cfg *config.Config, usersPath, pepperPath string, ex
 }
 
 func keyCreate(c *keyFlags) int {
-	_, usersPath, pepperPath, exit := keyState(c)
+	cfg, usersPath, pepperPath, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
@@ -324,6 +324,17 @@ func keyCreate(c *keyFlags) int {
 	}
 
 	models := splitModels(c.models)
+	// A model not present in the loaded config is legal (an ACL may
+	// name a model about to be added), but the operator should hear
+	// about it (T-L4).
+	for _, m := range models {
+		if m == "*" {
+			continue
+		}
+		if _, ok := cfg.Models[m]; !ok {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
+		}
+	}
 	var exp *time.Time
 	if c.expires != "" {
 		t, err := time.Parse(time.RFC3339, c.expires)

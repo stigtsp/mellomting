@@ -162,6 +162,33 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 }
 
+// T-L4: key create --models naming a model absent from the config still
+// succeeds (an ACL may legitimately name a model about to be added), but
+// prints a warning referencing the missing model.
+func TestKeyCreateUnknownModelWarns(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, _, errOut := runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "ahead", "-models", "does-not-exist")
+	if code != 0 {
+		t.Fatalf("create with unknown model exit = %d (want 0)", code)
+	}
+	if !strings.Contains(errOut, "does-not-exist") || !strings.Contains(errOut, "warning") {
+		t.Fatalf("no warning for unknown model: stderr=%q", errOut)
+	}
+
+	// Control: a known model produces no warning.
+	code, _, errOut = runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "known", "-models", "qwen-coder")
+	if code != 0 {
+		t.Fatalf("create with known model exit = %d", code)
+	}
+	if strings.Contains(errOut, "warning") {
+		t.Fatalf("unexpected warning for known model: stderr=%q", errOut)
+	}
+}
+
 // T-M10: revoking the last key must succeed so a single-key deployment can
 // revoke through the CLI; the resulting empty users file stays valid and
 // key list reports "no keys".
