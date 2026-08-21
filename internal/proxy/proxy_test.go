@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -878,6 +879,106 @@ func TestPumpPanicContained(t *testing.T) {
 	}
 	if cls != "backend_stream_error" {
 		t.Fatalf("class = %q, want backend_stream_error", cls)
+	}
+}
+
+// errWriteTimeout is the synthetic write error a stalled client socket
+// yields once the conn write deadline fires.
+var errWriteTimeout = errors.New("write tcp: i/o timeout")
+
+// stallWriter simulates a client whose socket accepts `limit` writes and
+// then fills: further writes block until the armed conn write deadline
+// (stream_write_timeout) fires, then fail. When no deadline is armed the
+// write blocks unboundedly (the bug the deadline exists to prevent).
+type stallWriter struct {
+	hdr      http.Header
+	code     int
+	mu       sync.Mutex
+	deadline time.Time
+	writes   int
+	limit    int
+}
+
+func (s *stallWriter) Header() http.Header { return s.hdr }
+func (s *stallWriter) WriteHeader(c int)   { s.code = c }
+
+func (s *stallWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	if s.writes < s.limit {
+		s.writes++
+		s.mu.Unlock()
+		return len(p), nil
+	}
+	dl := s.deadline
+	s.mu.Unlock()
+	if dl.IsZero() {
+		time.Sleep(10 * time.Second) // no deadline armed: the write is unbounded
+		return 0, errWriteTimeout
+	}
+	time.Sleep(time.Until(dl) + 10*time.Millisecond)
+	return 0, errWriteTimeout
+}
+
+func (s *stallWriter) Flush() {}
+
+// SetWriteDeadline is found by http.ResponseController via Unwrap and
+// records the conn write deadline the pump arms before each event write.
+func (s *stallWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.deadline = t
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *stallWriter) Unwrap() http.ResponseWriter { return s }
+
+// TestPumpClientWriteDeadlineBounded is the streaming half of T-X9 at the
+// pump level: once a stalled client's socket fills, the next event write
+// must block at most stream_write_timeout and then fail, which the pump
+// must treat as terminal (client_write_error) while cancelling the
+// upstream (PLAN §9.1, §24). It is deterministic: the stalled socket is
+// a controllable writer, not kernel buffer timing.
+func TestPumpClientWriteDeadlineBounded(t *testing.T) {
+	t.Parallel()
+	p := newProxy(t, newFakeVLLM(t, okJSON))
+	p.cfg.Server.StreamWriteTimeout = config.Duration(100 * time.Millisecond)
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	go func() {
+		ev := "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\n"
+		for i := 0; i < 5; i++ {
+			if _, err := pw.Write([]byte(ev)); err != nil {
+				return
+			}
+		}
+		_ = pw.Close()
+	}()
+
+	sw := &stallWriter{hdr: http.Header{}, limit: 1} // first event fits, then the socket fills
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gen-1","stream":true}`))
+	q := &Req{W: sw, R: r, Key: testKey(), RequestID: "req_test", Remote: "127.0.0.1"}
+	res := &backend.Result{Status: http.StatusOK, Body: pr}
+	cancelled := false
+	cancel := func() { cancelled = true }
+
+	start := time.Now()
+	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if cls != "client_write_error" {
+		t.Fatalf("class = %q, want client_write_error", cls)
+	}
+	if !cancelled {
+		t.Fatal("upstream was not cancelled after the stalled client write")
+	}
+	if bytesOut == 0 {
+		t.Fatal("expected at least the first event to reach the client")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stalled client write was not bounded by stream_write_timeout: elapsed = %v", elapsed)
 	}
 }
 

@@ -299,6 +299,76 @@ func TestNonStreamingWriteDeadlineBounded(t *testing.T) {
 	}
 }
 
+// TestClientDisconnectCancelsUpstream proves a client that disconnects
+// mid-stream cancels the upstream request (PLAN §24): no goroutine or
+// inflight slot may outlive the client. The backend emits heartbeats so
+// the pump keeps waking up and notices the vanished client promptly;
+// once it does, the upstream request context is cancelled and the
+// backend handler is released.
+func TestClientDisconnectCancelsUpstream(t *testing.T) {
+	t.Parallel()
+	upstreamCancelled := make(chan struct{})
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(reqBody), `"stream":true`) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-n","choices":[]}`))
+			return
+		}
+		go func() {
+			<-r.Context().Done()
+			close(upstreamCancelled)
+		}()
+		w.Header().Set("Content-Type", "text/event-stream")
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				if _, err := w.Write([]byte(":hb\n\n")); err != nil {
+					return
+				}
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}, nil, auth.KeyLimits{})
+
+	ts := httptest.NewUnstartedServer(e.srv.Handler())
+	ts.Start()
+	defer ts.Close()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	body := `{"model":"model-a","stream":true,"messages":[]}`
+	fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\nConnection: keep-alive\r\n\r\n%s",
+		e.key, len(body), body)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response headers: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	// Client goes away: close the connection without draining the body.
+	conn.Close()
+
+	select {
+	case <-upstreamCancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client disconnect did not cancel the upstream within 3s")
+	}
+}
+
 func TestAuthMatrix(t *testing.T) {
 	t.Parallel()
 	// Disabled and expired keys are 401 like any other bad key; they are
