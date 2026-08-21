@@ -160,7 +160,9 @@ func (r *Registry) build(key *auth.Key) *KeyState {
 			}
 		}
 		b, err := NewBucket(key.Limits.RequestsPerSecond, burst)
-		if err != nil { // validated at the key-store boundary; fail closed
+		if err != nil { // unreachable for store-validated keys: negative rates are
+			// rejected at the key-store boundary (auth.validateLimits), so this
+			// is a defensive fallback only; fail open rather than panic
 			ks.Bucket = nil
 			return ks
 		}

@@ -514,6 +514,70 @@ func TestInflightLimit(t *testing.T) {
 	}
 }
 
+// PLAN §35 + T-X8: a key with no limits block must not be able to occupy
+// every global inflight slot and starve other keys. The key store applies
+// the conservative per-key concurrency default (auth.DefaultConcurrentRequests),
+// so one key is capped below the global inflight bound and a sibling key is
+// still served while the first is saturated.
+func TestKeyDefaultConcurrencyNoStarve(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	defer close(release)
+	arrived := make(chan struct{}, auth.DefaultConcurrentRequests+4)
+	var e *env
+	e = buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		// The aggressor key is identified by its passthrough User-Agent
+		// (client Authorization is stripped before forwarding, PLAN §17).
+		if r.UserAgent() == "tx8-aggressor" {
+			arrived <- struct{}{}
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}, func(c *config.Config) {
+		// Global inflight well above the per-key default, so a single
+		// key could fill it if the default were not applied.
+		c.Server.MaxInflightRequests = 16
+		b := c.Backends["b1"]
+		b.MaxConcurrency = 16
+		b.QueueSize = 16
+		b.QueueTimeout = config.Duration(30 * time.Second)
+		c.Backends["b1"] = b
+	}, auth.KeyLimits{})
+
+	// The no-limits key holds exactly DefaultConcurrentRequests in flight.
+	for i := 0; i < auth.DefaultConcurrentRequests; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+		req.Header.Set("Authorization", "Bearer "+e.key)
+		req.Header.Set("User-Agent", "tx8-aggressor")
+		rr := httptest.NewRecorder()
+		go func() { e.srv.Handler().ServeHTTP(rr, req) }()
+	}
+	by := time.Now().Add(5 * time.Second)
+	for i := 0; i < auth.DefaultConcurrentRequests; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(time.Until(by)):
+			t.Fatalf("admitted %d < %d by deadline", i, auth.DefaultConcurrentRequests)
+		}
+	}
+
+	// One more from the same key is rejected at its per-key concurrency
+	// bound (429), proving the default was applied.
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 {
+		t.Fatalf("no-limits key beyond default: %d (want 429)", w.Code)
+	}
+
+	// A sibling key is still served while the first is saturated.
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("sibling key starved: %d (want 200)", w.Code)
+	}
+}
+
 // PLAN §34: global request-rate exhaustion returns 429 with a
 // Retry-After, before per-key limits are even consulted.
 func TestGlobalRateLimit429(t *testing.T) {

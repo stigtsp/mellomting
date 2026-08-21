@@ -161,3 +161,45 @@ func TestKeyLifecycle(t *testing.T) {
 		t.Fatalf("unknown subcommand exit = %d (want 2)", code)
 	}
 }
+
+// T-X8: key create records per-key limits flags in the users file, and
+// rejects negative limit values.
+func TestKeyCreateLimits(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, out, _ := runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "limited",
+		"-models", "qwen-coder",
+		"-concurrent-requests", "2", "-requests-per-second", "5", "-burst", "10")
+	if code != 0 {
+		t.Fatalf("create with limits exit = %d", code)
+	}
+	if !strings.Contains(out, "concurrent_requests: 2") || !strings.Contains(out, "requests_per_second: 5") {
+		t.Fatalf("limits not echoed in output: %q", out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "users.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "concurrent_requests: 2") ||
+		!strings.Contains(string(data), "requests_per_second: 5") ||
+		!strings.Contains(string(data), "burst: 10") {
+		t.Fatalf("limits block missing from users file:\n%s", data)
+	}
+
+	// Negative limits fail closed at the CLI.
+	for _, args := range [][]string{
+		{"-concurrent-requests", "-1"},
+		{"-requests-per-second", "-1"},
+		{"-burst", "-1"},
+	} {
+		code, _, _ := runCLI(t, bin, dir, append([]string{
+			"key", "create", "-config", cfg, "-name", "neg", "-models", "x",
+		}, args...)...)
+		if code != 2 {
+			t.Fatalf("negative limit %v exit = %d (want 2)", args, code)
+		}
+	}
+}

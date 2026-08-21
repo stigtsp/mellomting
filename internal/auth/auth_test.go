@@ -220,3 +220,67 @@ func mustKey(t *testing.T) string {
 	}
 	return k
 }
+
+// T-X8: negative per-key limits must fail closed at the key-store boundary
+// instead of becoming "unlimited" limiters.
+func TestValidateUsersRejectsNegativeLimits(t *testing.T) {
+	t.Parallel()
+	base := Key{
+		ID: "AAAAAA1A", Name: "a",
+		SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")),
+		Enabled:    true, Models: []string{"*"},
+	}
+	cases := []KeyLimits{
+		{ConcurrentRequests: -1},
+		{RequestsPerSecond: -1},
+		{Burst: -1},
+		{TokensPerHour: -1},
+		{TokensPerDay: -1},
+	}
+	for _, lim := range cases {
+		uf := &UsersFile{Version: 1, Keys: []Key{base}}
+		uf.Keys[0].Limits = lim
+		if err := validateUsers(uf); err == nil {
+			t.Fatalf("validateUsers accepted limits %+v", lim)
+		}
+	}
+	// Zero and positive limits are accepted.
+	uf := &UsersFile{Version: 1, Keys: []Key{base}}
+	uf.Keys[0].Limits = KeyLimits{ConcurrentRequests: 4, RequestsPerSecond: 5, Burst: 10}
+	if err := validateUsers(uf); err != nil {
+		t.Fatalf("validateUsers rejected valid limits: %v", err)
+	}
+}
+
+// T-X8: a key with no limits block gets the conservative per-key concurrency
+// default at the store boundary, so one key cannot occupy every inflight slot
+// by default.
+func TestNewStoreAppliesDefaultConcurrency(t *testing.T) {
+	t.Parallel()
+	uf := &UsersFile{Version: 1, Keys: []Key{
+		{ID: "AAAAAA1A", Name: "a", SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")), Enabled: true, Models: []string{"*"}},
+		{ID: "BBBBBB2B", Name: "b", SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_BBBBBB2B_yyyyyyyyyyyyyyyyyyyyyyyyyy")), Enabled: true, Models: []string{"*"}, Limits: KeyLimits{ConcurrentRequests: 2}},
+	}}
+	store, err := NewStore(uf, []byte("pepper-pepper-xx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k1, err := store.Lookup("mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k1.Limits.ConcurrentRequests != DefaultConcurrentRequests {
+		t.Fatalf("no-limits key concurrency = %d, want default %d", k1.Limits.ConcurrentRequests, DefaultConcurrentRequests)
+	}
+	k2, err := store.Lookup("mtk_BBBBBB2B_yyyyyyyyyyyyyyyyyyyyyyyyyy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k2.Limits.ConcurrentRequests != 2 {
+		t.Fatalf("explicit limit lost: concurrency = %d, want 2", k2.Limits.ConcurrentRequests)
+	}
+	// The on-disk file must not have been rewritten by the default.
+	if uf.Keys[0].Limits.ConcurrentRequests != 0 {
+		t.Fatalf("store mutated the users file: %d", uf.Keys[0].Limits.ConcurrentRequests)
+	}
+}

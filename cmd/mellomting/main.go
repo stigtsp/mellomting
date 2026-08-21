@@ -206,11 +206,15 @@ func keyCmd(args []string) int {
 }
 
 type keyFlags struct {
-	configPath string
-	name       string
-	models     string
-	expires    string
-	id         string
+	configPath         string
+	name               string
+	models             string
+	expires            string
+	id                 string
+	concurrentRequests int
+	requestsPerSecond  float64
+	burst              int
+	limitsSet          bool
 }
 
 func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
@@ -221,6 +225,9 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 		fs.StringVar(&c.name, "name", "", "human-readable key name (required)")
 		fs.StringVar(&c.models, "models", "", "comma-separated model names, or * (required)")
 		fs.StringVar(&c.expires, "expires", "", "expiry as RFC3339 (optional)")
+		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "max simultaneous in-flight requests (0: apply default)")
+		fs.Float64Var(&c.requestsPerSecond, "requests-per-second", 0, "request rate limit (0: no rate limit)")
+		fs.IntVar(&c.burst, "burst", 0, "rate-limit burst (defaults to one second of rate)")
 	}
 	if sub == "enable" || sub == "disable" || sub == "revoke" {
 		fs.StringVar(&c.id, "id", "", "key id (required)")
@@ -231,6 +238,14 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: %s: unexpected arguments %q\n", sub, fs.Args())
 		return nil, 2
+	}
+	if sub == "create" {
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "concurrent-requests", "requests-per-second", "burst":
+				c.limitsSet = true
+			}
+		})
 	}
 
 	switch sub {
@@ -248,6 +263,21 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 				fmt.Fprintf(os.Stderr, "mellomting: key create: invalid --expires %q (want RFC3339)\n", c.expires)
 				return nil, 2
 			}
+		}
+		// Per-key limits fail closed on negative values (T-X8); the daemon
+		// rejects them at the key-store boundary, the CLI must not emit
+		// them in the first place.
+		if c.concurrentRequests < 0 {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: --concurrent-requests must be >= 0, got %d\n", c.concurrentRequests)
+			return nil, 2
+		}
+		if c.requestsPerSecond < 0 {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: --requests-per-second must be >= 0, got %v\n", c.requestsPerSecond)
+			return nil, 2
+		}
+		if c.burst < 0 {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: --burst must be >= 0, got %d\n", c.burst)
+			return nil, 2
 		}
 	case "list":
 		// no arguments
@@ -303,6 +333,11 @@ func keyCreate(c *keyFlags) int {
 		}
 		exp = &t
 	}
+	limits := auth.KeyLimits{
+		ConcurrentRequests: c.concurrentRequests,
+		RequestsPerSecond:  c.requestsPerSecond,
+		Burst:              c.burst,
+	}
 
 	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
 		uf.Keys = append(uf.Keys, auth.Key{
@@ -312,6 +347,7 @@ func keyCreate(c *keyFlags) int {
 			Enabled:    true,
 			ExpiresAt:  exp,
 			Models:     models,
+			Limits:     limits,
 		})
 		return nil
 	})
@@ -327,6 +363,11 @@ func keyCreate(c *keyFlags) int {
 	fmt.Printf("  models:            %s\n", strings.Join(models, ", "))
 	if exp != nil {
 		fmt.Printf("  expires:           %s\n", exp.Format(time.RFC3339))
+	}
+	if c.limitsSet {
+		fmt.Printf("  concurrent_requests: %d\n", c.concurrentRequests)
+		fmt.Printf("  requests_per_second: %v\n", c.requestsPerSecond)
+		fmt.Printf("  burst:               %d\n", c.burst)
 	}
 	fmt.Printf("  users file:        %s\n", usersPath)
 	fmt.Fprintln(os.Stdout, "Store the secret now; it is not retrievable later.")
@@ -448,7 +489,9 @@ commands:
 
 key subcommands (docs/PLAN.md §29):
   key create   --name NAME --models M[,M...] [--expires RFC3339]
-               create a key and print it once
+               [--concurrent-requests N] [--requests-per-second R] [--burst B]
+               create a key and print it once; without limits flags a
+               conservative per-key concurrency default applies at load
   key list                            list keys (id, name, models, status)
   key enable  --id ID                 re-enable a key
   key disable --id ID                 disable a key

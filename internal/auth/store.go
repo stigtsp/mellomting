@@ -35,6 +35,16 @@ type KeyLimits struct {
 	TokensPerDay       int64   `yaml:"tokens_per_day"`
 }
 
+// DefaultConcurrentRequests is the per-key in-flight bound applied to a key
+// that sets no concurrency limit. PLAN §35 requires that a single key cannot
+// occupy the whole process, so "no limits block" must not mean "may hold every
+// inflight slot". The default is deliberately far below the global
+// max_inflight_requests default (64) so one key can starve nobody by default;
+// an operator wanting effectively-unbounded concurrency sets an explicit high
+// value. 0 is treated as "unset" because the YAML field uses omitempty and
+// cannot distinguish an explicit 0 from an absent block.
+const DefaultConcurrentRequests = 8
+
 // Key is one record of the users file (PLAN §26).
 type Key struct {
 	ID         string     `yaml:"id"`
@@ -108,6 +118,33 @@ func validateUsers(uf *UsersFile) error {
 		if len(k.Models) == 0 {
 			return fmt.Errorf("key %s: models list must not be empty", k.ID)
 		}
+		if err := validateLimits(&k.Limits); err != nil {
+			return fmt.Errorf("key %s: %v", k.ID, err)
+		}
+	}
+	return nil
+}
+
+// validateLimits rejects malformed per-key limits. Limits fail closed at the
+// key-store boundary: a negative value is a configuration error (0 and above
+// are the only valid inputs), never a signal to drop or weaken a bound. In
+// particular a negative requests_per_second must never flow into
+// limiter.NewBucket as an "unlimited" bucket (T-X8).
+func validateLimits(l *KeyLimits) error {
+	if l.ConcurrentRequests < 0 {
+		return fmt.Errorf("limits.concurrent_requests must be >= 0, got %d", l.ConcurrentRequests)
+	}
+	if l.RequestsPerSecond < 0 {
+		return fmt.Errorf("limits.requests_per_second must be >= 0, got %v", l.RequestsPerSecond)
+	}
+	if l.Burst < 0 {
+		return fmt.Errorf("limits.burst must be >= 0, got %d", l.Burst)
+	}
+	if l.TokensPerHour < 0 {
+		return fmt.Errorf("limits.tokens_per_hour must be >= 0, got %d", l.TokensPerHour)
+	}
+	if l.TokensPerDay < 0 {
+		return fmt.Errorf("limits.tokens_per_day must be >= 0, got %d", l.TokensPerDay)
 	}
 	return nil
 }
@@ -145,7 +182,16 @@ func NewStore(uf *UsersFile, pepper []byte) (*Store, error) {
 		now:    time.Now,
 	}
 	for i := range uf.Keys {
-		s.byID[uf.Keys[i].ID] = &uf.Keys[i]
+		k := uf.Keys[i] // copy: normalization must not rewrite the on-disk file
+		if k.Limits.ConcurrentRequests == 0 {
+			// No concurrency limit set: apply the conservative default
+			// so a single key cannot occupy every inflight slot (PLAN
+			// §35, T-X8). The store is the boundary between the file and
+			// enforcement, so both the daemon and direct callers observe
+			// the default.
+			k.Limits.ConcurrentRequests = DefaultConcurrentRequests
+		}
+		s.byID[k.ID] = &k
 	}
 	// A per-process random dummy hash equalises timing for unknown key
 	// IDs (PLAN §27 step: "perform a dummy HMAC operation").
