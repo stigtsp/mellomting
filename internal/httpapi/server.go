@@ -315,8 +315,10 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 // means the path is not allow-listed at all.
 func (s *Server) allowFor(path string) string {
 	switch {
-	case path == "/v1/models", path == "/v1/responses":
-		return "GET, POST"
+	case path == "/v1/models":
+		return "GET"
+	case path == "/v1/responses":
+		return "POST"
 	case path == "/v1/chat/completions", path == "/v1/completions",
 		path == "/v1/embeddings", path == "/healthz", path == "/readyz":
 		if path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/embeddings" {

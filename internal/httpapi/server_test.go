@@ -378,6 +378,40 @@ func TestDuplicateXApiKeyRejected(t *testing.T) {
 	}
 }
 
+// TestAllowHeadersConsistent asserts the 405 Allow header agrees with
+// the route method guards (T-L2): GET /v1/responses must not advertise
+// POST, POST /v1/models must not advertise GET, etc.
+func TestAllowHeadersConsistent(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1"}`))
+	}, nil, auth.KeyLimits{})
+	cases := []struct {
+		method, path, allow string
+	}{
+		{http.MethodPost, "/v1/models", "GET"},
+		{http.MethodGet, "/v1/responses", "POST"},
+		{http.MethodGet, "/v1/chat/completions", "POST"},
+		{http.MethodGet, "/v1/completions", "POST"},
+		{http.MethodGet, "/v1/embeddings", "POST"},
+		{http.MethodPost, "/v1/responses/xyz", "GET"},
+		{http.MethodPut, "/v1/responses/xyz/cancel", "POST"},
+	}
+	for _, tc := range cases {
+		r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+e.key)
+		rr := httptest.NewRecorder()
+		e.srv.Handler().ServeHTTP(rr, r)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s: status = %d (want 405)", tc.method, tc.path, rr.Code)
+		}
+		if got := rr.Header().Get("Allow"); got != tc.allow {
+			t.Fatalf("%s %s: Allow = %q (want %q)", tc.method, tc.path, got, tc.allow)
+		}
+	}
+}
+
 func TestModelsACLFiltering(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
