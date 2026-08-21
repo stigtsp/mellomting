@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"mellomting/internal/config"
 	"mellomting/internal/securefile"
 )
 
@@ -79,6 +80,12 @@ func LoadUsers(path string) (*UsersFile, error) {
 	data, err := securefile.Read(path, 1<<20)
 	if err != nil {
 		return nil, err
+	}
+	// The users file gets the same alias/anchor/merge-key rejection as the
+	// config file (T-M9): a wildcard ACL must be explicit and easy to spot
+	// in review, not hidden inside a `<<:` merge key (PLAN §77).
+	if err := config.CheckYAMLTree(data); err != nil {
+		return nil, fmt.Errorf("users file: %v", err)
 	}
 	var uf UsersFile
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))

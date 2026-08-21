@@ -57,7 +57,7 @@ func Parse(data []byte) (*Config, error) {
 	if err := checkShape(data); err != nil {
 		return nil, wrapYAML(err)
 	}
-	if err := checkNodes(data); err != nil {
+	if err := CheckYAMLTree(data); err != nil {
 		return nil, wrapYAML(err)
 	}
 
@@ -100,9 +100,11 @@ func checkShape(data []byte) error {
 	return nil
 }
 
-// checkNodes walks the full YAML tree and rejects aliases/anchors and
-// non-standard tags (PLAN §28).
-func checkNodes(data []byte) error {
+// CheckYAMLTree walks the full YAML tree and rejects aliases/anchors and
+// non-standard tags (PLAN §28). It is the shared strictness check used by
+// both the config loader and the auth users-file loader, so a wildcard
+// ACL hidden inside a `<<:` merge key cannot evade review (T-M9).
+func CheckYAMLTree(data []byte) error {
 	var root yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&root); err != nil {

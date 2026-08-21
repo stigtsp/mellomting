@@ -3,6 +3,7 @@ package auth
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,6 +255,35 @@ func TestLoadPepperRejectsWorldReadable(t *testing.T) {
 	}
 	if _, err := LoadPepper(path); err != nil {
 		t.Fatalf("0600 pepper rejected: %v", err)
+	}
+}
+
+func TestLoadUsersRejectsAnchorsAndMergeKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "users.yaml")
+	pepper := []byte("pepper-pepper-xx")
+	raw1, id1, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw2, id2, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := "version: 1\nkeys:\n  - &tpl\n    id: " + id1 + "\n    name: a\n    secret_hash: " +
+		FormatHashValue(Hash(pepper, raw1)) + "\n    enabled: true\n    models: [\"*\"]\n" +
+		"  - <<: *tpl\n    id: " + id2 + "\n    name: b\n    secret_hash: " +
+		FormatHashValue(Hash(pepper, raw2)) + "\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUsers(path); err == nil {
+		t.Fatal("merge-key hidden wildcard accepted (T-M9)")
+	} else if !strings.Contains(err.Error(), "aliases") && !strings.Contains(err.Error(), "anchors") &&
+		!strings.Contains(err.Error(), "merge") && !strings.Contains(err.Error(), "disallowed") {
+		t.Fatalf("unexpected error (want alias/anchor/merge rejection): %v", err)
 	}
 }
 
