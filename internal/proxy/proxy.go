@@ -192,6 +192,28 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"only identity request encoding is supported", "bad_request")
 			return
 		}
+		// Reserve the byte budget for the body BEFORE it is read and decoded
+		// (T-X12, PLAN §12.1): a body whose known size cannot fit the budget
+		// is rejected with a clean 503 before a single byte is allocated, and
+		// the reservation (budgetWeight × bytes) covers the shallow-parse /
+		// rewrite decode+re-encode peak, so the aggregate bound
+		// (MaxBufferedRequestBytes × MaxInflightRequests) actually holds. An
+		// unknown-size (chunked) body is read up to MaxBodyBytes and then
+		// reserved before the costly decode.
+		var reserve int64
+		defer func() {
+			if reserve > 0 {
+				p.budget.Release(reserve)
+			}
+		}()
+		if cl := q.R.ContentLength; cl > 0 && cl <= int64(p.cfg.Server.MaxBodyBytes) {
+			if !p.budget.Acquire(cl) {
+				fail(503, "overload_error", "server_overloaded",
+					"server is overloaded", "overload")
+				return
+			}
+			reserve = cl
+		}
 		var rerr error
 		body, rerr = readBodyLimited(q.R, p.cfg.Server.MaxBodyBytes)
 		if errors.Is(rerr, errBodyTooLarge) {
@@ -204,13 +226,21 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"request body could not be read", "bad_request")
 			return
 		}
-		out.bytesIn = len(body)
-		if !p.budget.Acquire(int64(len(body))) {
-			fail(503, "overload_error", "server_overloaded",
-				"server is overloaded", "overload")
-			return
+		if n := int64(len(body)); n > reserve {
+			// Body larger than reserved (unknown-size request): reserve the
+			// remainder now, before the costly shallow parse.
+			if !p.budget.Acquire(n - reserve) {
+				fail(503, "overload_error", "server_overloaded",
+					"server is overloaded", "overload")
+				return
+			}
+			reserve = n
+		} else if n < reserve {
+			// Reservation was based on Content-Length; release the excess.
+			p.budget.Release(reserve - n)
+			reserve = n
 		}
-		defer p.budget.Release(int64(len(body)))
+		out.bytesIn = len(body)
 	}
 
 	// 3. Shallow parse, model resolution, ACL (PLAN §12, §13, §31).

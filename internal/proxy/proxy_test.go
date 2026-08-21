@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -695,6 +696,98 @@ func TestDrainingRejectsNewInference(t *testing.T) {
 	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
 	if rec.Code != 503 {
 		t.Fatalf("draining: status = %d (want 503)", rec.Code)
+	}
+}
+
+// --- T-X12: byte budget reserved before the body is read ----------------
+
+// TestBudgetWeightsAndOverload pins the weighted byte-budget semantics
+// (T-X12): per-request cap, aggregate cap, and Release restoring capacity.
+func TestBudgetWeightsAndOverload(t *testing.T) {
+	t.Parallel()
+	b := newBudget(64 * 1024 * budgetWeight)
+	for i := 0; i < 16; i++ {
+		if !b.Acquire(4 * 1024) {
+			t.Fatalf("acquire %d: unexpected overload", i)
+		}
+	}
+	if b.Acquire(4 * 1024) {
+		t.Fatal("aggregate overload not detected")
+	}
+	b.Release(4 * 1024)
+	if !b.Acquire(4 * 1024) {
+		t.Fatal("release did not restore budget capacity")
+	}
+	if b.Acquire(128 * 1024) {
+		t.Fatal("per-request cap not enforced (bodyBytes > total/budgetWeight)")
+	}
+}
+
+// panicReader fails the test if the body is ever read.
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) {
+	panic("body was read despite the budget rejecting the request")
+}
+
+// TestBodyBudgetRejectsBeforeRead is the T-X12 regression test: a request
+// whose known body size cannot fit the budget must receive a clean 503
+// before a single body byte is read or decoded, and must never reach the
+// backend.
+func TestBodyBudgetRejectsBeforeRead(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	p := newProxy(t, f) // MaxBufferedRequestBytes=1MiB × 8 inflight → per-request cap 512KiB
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.ContentLength = 1 << 20 // 1 MiB: over the 512 KiB per-request budget cap
+	r.Body = io.NopCloser(panicReader{})
+	w := httptest.NewRecorder()
+	p.ChatCompletions(&Req{W: w, R: r, Key: testKey(), RequestID: "req_t", Remote: "x"})
+
+	if w.Code != 503 {
+		t.Fatalf("status = %d (want 503)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "server_overloaded") {
+		t.Fatalf("body = %q", w.Body.String())
+	}
+	if f.lastPath != "" {
+		t.Fatalf("backend saw request (path %q) despite budget rejection", f.lastPath)
+	}
+}
+
+// TestManyShortKeysBodyRejected reproduces the T-X12 finding: a body of
+// many short keys (whose decode+re-encode peaks at ~13× body) is rejected
+// by the pre-read budget with a clean 503 before the costly decode, and
+// never reaches the backend.
+func TestManyShortKeysBodyRejected(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	p := newProxy(t, f)
+
+	var b strings.Builder
+	b.WriteString(`{"model":"gen-1","messages":[{"role":"user","content":"x"}]`)
+	for i := 0; i < 60000; i++ {
+		fmt.Fprintf(&b, ",\"k%d\":%d", i, i)
+	}
+	b.WriteString("}")
+	body := b.String()
+	if len(body) < 512*1024 {
+		t.Fatalf("test body too small (%d); budget cap is 512 KiB", len(body))
+	}
+	if len(body) > p.cfg.Server.MaxBodyBytes {
+		t.Fatalf("test body (%d) exceeds MaxBodyBytes (%d)", len(body), p.cfg.Server.MaxBodyBytes)
+	}
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", body, testKey())
+	if rec.Code != 503 {
+		t.Fatalf("status = %d (want 503); backend path=%q", rec.Code, f.lastPath)
+	}
+	if !strings.Contains(rec.Body.String(), "server_overloaded") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if f.lastPath != "" {
+		t.Fatal("many-short-keys body reached the backend")
 	}
 }
 
