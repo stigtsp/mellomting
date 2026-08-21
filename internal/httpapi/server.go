@@ -286,8 +286,18 @@ func (s *Server) allowFor(path string) string {
 		}
 		return "GET"
 	case strings.HasPrefix(path, "/v1/responses/"):
-		id := strings.TrimPrefix(path, "/v1/responses/")
-		if strings.HasSuffix(id, "/cancel") {
+		rest := strings.TrimPrefix(path, "/v1/responses/")
+		cancel := strings.HasSuffix(rest, "/cancel")
+		if cancel {
+			rest = strings.TrimSuffix(rest, "/cancel")
+		}
+		// Only a single safe segment is a known path; anything with a
+		// dot segment or extra separators is not allow-listed and 404s
+		// (T-M2, PLAN §11.3).
+		if !isSafeSegment(rest) {
+			return ""
+		}
+		if cancel {
 			return "POST"
 		}
 		return "GET"
@@ -368,7 +378,10 @@ func (s *Server) responsesID(r *http.Request) (string, bool) {
 }
 
 // isSafeSegment restricts one path segment to the same alphabet the
-// proxy enforces on response IDs.
+// proxy enforces on response IDs. Dot segments are rejected outright
+// (T-M2): `.` and `..` are path-normalizing, and the backend URL is built
+// with url.URL{Path: …}, which does not clean dot segments, so they must
+// never be allowed to reach the allow-listed outbound path verbatim.
 func isSafeSegment(seg string) bool {
 	if len(seg) == 0 || len(seg) > 256 {
 		return false
@@ -376,7 +389,7 @@ func isSafeSegment(seg string) bool {
 	for _, r := range seg {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '_' || r == '-' || r == '.':
+		case r == '_' || r == '-':
 		default:
 			return false
 		}

@@ -789,7 +789,10 @@ func rewriteModel(body []byte, upstream string) ([]byte, error) {
 }
 
 // isValidResponseID restricts a response ID to a safe alphabet and
-// length (never a path separator, never a control byte).
+// length (never a path separator, never a control byte). `.` is rejected
+// (T-M2): the ID becomes one path segment of the outbound URL, and dot
+// segments are not cleaned by url.URL{Path: …}, so `.`/`..` must never be
+// allowed to reach the backend verbatim.
 func isValidResponseID(id string) bool {
 	if len(id) == 0 || len(id) > 256 {
 		return false
@@ -799,7 +802,7 @@ func isValidResponseID(id string) bool {
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
-		case r == '_' || r == '-' || r == '.':
+		case r == '_' || r == '-':
 		default:
 			return false
 		}

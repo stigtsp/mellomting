@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -456,6 +457,89 @@ func TestResponsesCrossKeyIsolation(t *testing.T) {
 	rec = e.do(t, http.MethodGet, "/v1/responses/resp_OWNED", "bearer", "")
 	if rec.Code != 200 {
 		t.Fatalf("owner retrieve status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResponsesDotSegmentRejected(t *testing.T) {
+	t.Parallel()
+	// T-M2: a dot/.. segment in a response-ID path must be rejected and
+	// must never reach the backend verbatim. The backend records every
+	// path it sees so the test can prove nothing was forwarded.
+	var mu sync.Mutex
+	var paths []string
+	createID := "resp_x"
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":%q,"object":"response"}`, createID)
+	}, nil, auth.KeyLimits{})
+
+	// Register affinity entries that dot-segment IDs would need to reach
+	// the backend. Without them the proxy would fail closed on the
+	// affinity miss and the dot-segment rejection would be untestable.
+	for _, id := range []string{"..", "."} {
+		createID = id
+		rec := e.do(t, http.MethodPost, "/v1/responses", "bearer", `{"model":"model-a","input":"hi"}`)
+		if rec.Code != 200 {
+			t.Fatalf("create (id=%q) status = %d, want 200 (body=%s)", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	// dot-segment forms: literal .., percent-encoded %2e%2e, a lone .,
+	// and an embedded dot.
+	for _, path := range []string{
+		"/v1/responses/../cancel",
+		"/v1/responses/%2e%2e/cancel",
+		"/v1/responses/./cancel",
+		"/v1/responses/..",
+		"/v1/responses/.",
+		"/v1/responses/resp.123",
+		"/v1/responses/a/../b",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			rec := e.do(t, method, path, "bearer", "")
+			if rec.Code != 404 {
+				t.Fatalf("%s %s: status = %d, want 404 (body=%s)", method, path, rec.Code, rec.Body.String())
+			}
+		}
+	}
+
+	// The backend must not have seen any of the malicious paths.
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		for _, bad := range []string{"/../", "/./", "..", "/."} {
+			if strings.Contains(p, bad) {
+				t.Fatalf("dot segment reached backend: %s (all=%v)", p, paths)
+			}
+		}
+	}
+}
+
+func TestResponsesSingleSegmentStillRoutes(t *testing.T) {
+	t.Parallel()
+	// T-M2: allowed single-segment IDs keep working after the `.`
+	// character was removed from the response-ID alphabet.
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_x","object":"response"}`))
+	}, nil, auth.KeyLimits{})
+
+	// Create registers the response in the key's affinity so retrieve and
+	// cancel can route.
+	rec := e.do(t, http.MethodPost, "/v1/responses", "bearer", `{"model":"model-a","input":"hi"}`)
+	if rec.Code != 200 {
+		t.Fatalf("create status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	rec = e.do(t, http.MethodGet, "/v1/responses/resp_x", "bearer", "")
+	if rec.Code != 200 {
+		t.Fatalf("retrieve status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	rec = e.do(t, http.MethodPost, "/v1/responses/resp_x/cancel", "bearer", "")
+	if rec.Code != 200 {
+		t.Fatalf("cancel status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}
 }
 
