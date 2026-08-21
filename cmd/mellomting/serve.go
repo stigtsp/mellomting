@@ -102,6 +102,10 @@ func serveCmd(args []string) int {
 		log.Warn("plaintext non-loopback TCP listener is active (PLAN §8.2)")
 	}
 
+	if cfg.Security.BackendNetwork.Mode == "any" {
+		log.Warn("backend_network.mode is \"any\": outbound connections to inference backends are not restricted to loopback or allow-listed CIDRs (PLAN §16.3)")
+	}
+
 	// Landlock confinement (PLAN §55-63, §95). This is the last step
 	// before the listener accepts (PLAN §57 step 19): the policy is
 	// applied to every runtime thread and verified before any client

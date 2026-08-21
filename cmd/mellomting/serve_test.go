@@ -1407,3 +1407,107 @@ models:
 		t.Fatalf("startup warning missing: %q", string(logData))
 	}
 }
+
+// TestServeBackendNetworkAnyWarns proves that backend_network.mode: any
+// is accepted (config remains valid) but emits the PLAN §16.3 startup
+// warning, matching the other security-weakening warnings. A config
+// that opts into unrestricted outbound egress must be surfaced to the
+// operator, never a silent no-op (T-M12).
+func TestServeBackendNetworkAnyWarns(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("any-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  backend_network:
+    mode: any
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if cmd.Process != nil && !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	client := waitReady(t, sock)
+	if _, body := getURL(t, client, "http://mellomting/v1/models", key); !strings.Contains(body, "qwen-coder") {
+		t.Fatalf("models body = %s", body)
+	}
+
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+	killed = true
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "backend_network.mode is") {
+		t.Fatalf("mode:any startup warning missing: %q", string(logData))
+	}
+}
