@@ -51,7 +51,8 @@ func readBounded(path string) ([]byte, error) {
 // the result.
 //
 // Decoding is strict per PLAN §28: YAML aliases/anchors, custom tags,
-// unknown fields, and duplicate keys are all rejected.
+// unknown fields, and duplicate keys are all rejected, and multi-document
+// YAML (T-M7) is rejected so configuration is never silently discarded.
 func Parse(data []byte) (*Config, error) {
 	if err := checkShape(data); err != nil {
 		return nil, wrapYAML(err)
@@ -74,14 +75,25 @@ func Parse(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
-// checkShape ensures the document is a mapping with a single copy of each
-// top-level key.
+// checkShape ensures the document is a single mapping with a single copy
+// of each top-level key. Multi-document YAML is rejected outright (fail
+// closed): the strict decode below reads only the first document, so any
+// content after a `---` marker would otherwise be silently discarded —
+// e.g. an appended override file or a `security:` block — while config
+// check reports valid.
 func checkShape(data []byte) error {
 	var m map[string]yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&m); err != nil {
 		if err == io.EOF {
 			return fmt.Errorf("empty configuration document")
+		}
+		return err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multi-document YAML configuration is not allowed")
 		}
 		return err
 	}

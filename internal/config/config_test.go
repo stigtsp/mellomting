@@ -140,6 +140,28 @@ func TestParseRejectsInvalidConfig(t *testing.T) {
 		{name: "scalar root", yaml: "42", wantErr: "cannot unmarshal"},
 		{name: "duplicate top-level key", yaml: "version: 1\nversion: 2", wantErr: "already defined"},
 		{
+			name: "multi-document config rejected",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+---
+security:
+  something: bad
+`,
+			wantErr: "multi-document",
+		},
+		{
 			name: "duplicate nested key",
 			yaml: `
 version: 1
