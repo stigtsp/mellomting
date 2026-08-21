@@ -286,14 +286,16 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Responses retrieve/cancel (PLAN §11.1, §21): /v1/responses/{id},
-	// /v1/responses/{id}/cancel.
+	// /v1/responses/{id}/cancel. The /cancel suffix is POST-only, so a
+	// GET on it falls through to the 405 below rather than retrieving
+	// (T-Q10).
 	if strings.HasPrefix(r.URL.Path, "/v1/responses/") {
-		if id, ok := s.responsesID(r); ok {
+		if id, cancel, ok := s.responsesID(r); ok {
 			switch {
-			case r.Method == http.MethodGet:
+			case r.Method == http.MethodGet && !cancel:
 				s.proxy.ResponsesRetrieve(q, id)
 				return
-			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			case r.Method == http.MethodPost && cancel:
 				s.proxy.ResponsesCancel(q, id)
 				return
 			}
@@ -428,19 +430,19 @@ func classifyAuthError(err error) string {
 	return "auth_unknown"
 }
 
-// responsesID extracts a safe {id} from a /v1/responses/... path.
-func (s *Server) responsesID(r *http.Request) (string, bool) {
+// responsesID extracts a safe {id} from a /v1/responses/... path and
+// whether the path targeted the POST-only /cancel suffix (T-Q10): the
+// suffix must govern routing so a GET on it 405s instead of retrieving.
+func (s *Server) responsesID(r *http.Request) (id string, cancel, ok bool) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/responses/")
-	cancel := false
 	if strings.HasSuffix(rest, "/cancel") {
 		rest = strings.TrimSuffix(rest, "/cancel")
 		cancel = true
 	}
 	if !isSafeSegment(rest) {
-		return "", false
+		return "", false, false
 	}
-	_ = cancel
-	return rest, true
+	return rest, cancel, true
 }
 
 // isSafeSegment restricts one path segment to the same alphabet the

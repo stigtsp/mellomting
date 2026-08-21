@@ -495,6 +495,7 @@ func TestAllowHeadersConsistent(t *testing.T) {
 		{http.MethodGet, "/v1/embeddings", "POST"},
 		{http.MethodPost, "/v1/responses/xyz", "GET"},
 		{http.MethodPut, "/v1/responses/xyz/cancel", "POST"},
+		{http.MethodGet, "/v1/responses/xyz/cancel", "POST"},
 	}
 	for _, tc := range cases {
 		r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
