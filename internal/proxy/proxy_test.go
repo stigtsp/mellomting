@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -593,6 +594,31 @@ func TestResponsesAffinityOversizedIDSkipped(t *testing.T) {
 	}
 	if b, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
 		t.Fatalf("legitimate affinity lost after oversized id: ok=%v b=%q", ok, b)
+	}
+}
+
+// TestNullBodyNoNilMapPanic covers the T-L6 hardening: a JSON `null`
+// body must never reach a nil-map write, and the dispatch must return a
+// clean 400 rather than crash the process.
+func TestNullBodyNoNilMapPanic(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	p := newProxy(t, f)
+
+	// Dispatch-level: `null` is not a JSON object; shallow-parse rejects
+	// it with missing_model (400), never a nil-map panic.
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `null`, testKey())
+	if rec.Code != 400 {
+		t.Fatalf("null body: status = %d (want 400)", rec.Code)
+	}
+
+	// Unit-level: the normalize helpers must fail closed on `null`
+	// rather than write to a nil map (T-L6).
+	if _, _, _, err := prepareOutbound([]byte("null"), opChat, 0, false, false, 0); !errors.Is(err, errNotJSONObject) {
+		t.Fatalf("prepareOutbound(null): err = %v (want errNotJSONObject)", err)
+	}
+	if _, err := rewriteModel([]byte("null"), "Up/Model"); err == nil {
+		t.Fatalf("rewriteModel(null) returned a nil error")
 	}
 }
 

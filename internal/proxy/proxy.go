@@ -822,6 +822,12 @@ func rewriteModel(body []byte, upstream string) ([]byte, error) {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, err
 	}
+	// A JSON `null` unmarshals into a nil map without error; writing
+	// to it would panic. Guard so the nil-map path cannot crash the
+	// process even if the shallow-parse guard upstream changes (T-L6).
+	if fields == nil {
+		return nil, errNotJSONObject
+	}
 	enc, err := json.Marshal(upstream)
 	if err != nil {
 		return nil, err
@@ -985,6 +991,13 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, 0, false, errNotJSONObject
+	}
+	// A JSON `null` unmarshals into a nil map without error; writing
+	// to it would panic. Guard it so the nil-map path can never crash
+	// the process even if the shallow-parse guard upstream changes
+	// (T-L6).
+	if fields == nil {
 		return nil, 0, false, errNotJSONObject
 	}
 
