@@ -2,9 +2,11 @@
 // request and its upstream model name (PLAN §13, §19, §70, §93).
 //
 // Strategies (PLAN §19): single, round-robin, weighted-round-robin,
-// least-inflight, weighted-least-inflight. Selection is deterministic
-// for a given state (backend names, inflight counts, health state) and
-// there is no latency learning in v1.
+// least-inflight, weighted-least-inflight. single/round-robin/WRR are
+// deterministic for a given configuration; the least-inflight variants
+// pick by live admission load, which changes with concurrent traffic, so
+// their selection order is not deterministic across calls. There is no
+// latency learning in v1.
 //
 // Passive health (PLAN §70): a backend that fails at the connection
 // level is marked temporarily unavailable with an exponentially growing
