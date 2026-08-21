@@ -718,6 +718,42 @@ models:
 			wantErr: "overflow",
 		},
 		{
+			name: "accounting negative reservation",
+			yaml: `
+version: 1
+` + minimalServer + `
+accounting:
+  enabled: true
+  unknown_usage_reservation: -5
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "unknown_usage_reservation",
+		},
+		{
+			name: "accounting reservation set while disabled",
+			yaml: `
+version: 1
+` + minimalServer + `
+accounting:
+  enabled: false
+  unknown_usage_reservation: 50
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "must be empty when enabled is false",
+		},
+		{
 			name: "bad landlock mode",
 			yaml: `
 version: 1

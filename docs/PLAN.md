@@ -1643,7 +1643,8 @@ Example:
   "output_tokens": 921,
   "total_tokens": 19343,
   "usage_status": "exact",
-  "retries": 0
+  "retries": 0,
+  "charged_tokens": 19343
 }
 ```
 

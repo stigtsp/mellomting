@@ -188,6 +188,11 @@ type Accounting struct {
 	Overflow          string   `yaml:"overflow"`
 	FSync             string   `yaml:"fsync"`
 	FSyncInterval     Duration `yaml:"fsync_interval"`
+	// UnknownUsageReservation is the fixed token charge applied to a
+	// successful request whose usage is unknown (PLAN §39). It is a
+	// conservative total (covers input and output). 0 falls back to the
+	// model's configured output cap.
+	UnknownUsageReservation int64 `yaml:"unknown_usage_reservation"`
 }
 
 // Limits holds the global admission limits (PLAN §34).

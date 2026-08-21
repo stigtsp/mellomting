@@ -245,9 +245,11 @@ func TestNonStreamAccountingExact(t *testing.T) {
 	}
 }
 
-func TestStreamUnknownUsageChargesReservation(t *testing.T) {
+func TestStreamUnknownUsageChargesConfiguredReservation(t *testing.T) {
 	// A stream that ends without any usage chunk: quota is charged the
-	// reserved output capacity (PLAN §39).
+	// configured reservation (PLAN §39). The client's own max_completion_tokens
+	// must NOT shrink the charge — here the client asks for 1 token but the
+	// model cap (50) is reserved.
 	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(`data: {"id":"c","choices":[{"delta":{"content":"x"}}]}` + "\n\n" + `data: [DONE]` + "\n\n"))
@@ -268,19 +270,70 @@ func TestStreamUnknownUsageChargesReservation(t *testing.T) {
 	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, writer)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
-		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	// The injected cap (50) is reserved; unknown usage charges it.
+	// The configured cap (50) is reserved, not the client's 1.
 	lim := accounting.WindowLimit{TokensPerHour: 40, TokensPerDay: 100}
 	if ok, _ := quota.Admit("K1", lim, 0, time.Now()); ok {
 		t.Fatal("expected reject: 50 reservation charged exceeds hour limit 40")
 	}
 	_ = writer.Close()
 	recs := readRecords(t, path)
-	if len(recs) != 1 || recs[0].UsageStatus != accounting.UsageUnknown {
-		t.Fatalf("records = %+v", recs)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
+	if recs[0].UsageStatus != accounting.UsageUnknown {
+		t.Fatalf("usage_status = %s, want unknown", recs[0].UsageStatus)
+	}
+	if recs[0].ChargedTokens != 50 || recs[0].TotalTokens != 0 {
+		t.Fatalf("record = %+v: want charged_tokens 50, total_tokens 0", recs[0])
+	}
+}
+
+func TestStreamUnknownUsageChargesExplicitReservation(t *testing.T) {
+	// accounting.unknown_usage_reservation overrides the model cap and
+	// covers input and output conservatively. The charge must equal the
+	// configured value, not the client's max_completion_tokens.
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"c","choices":[{"delta":{"content":"x"}}]}` + "\n\n" + `data: [DONE]` + "\n\n"))
+	})
+	quota := accounting.NewQuota()
+	writer, path := tmpWriter(t)
+	cfg := testConfig(f.server.URL)
+	cfg.Accounting.UnknownUsageReservation = 40
+	cfg.Models["gen-1"] = config.Model{
+		Type: "generation", Strategy: "single",
+		Policy:   config.ModelPolicy{MaxOutputTokens: 50},
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	router, _ := routing.New(cfg, nil)
+	client, _ := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+	})
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, writer)
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	// The configured reservation (40) is charged, not the cap (50) or the
+	// client's 1.
+	lim := accounting.WindowLimit{TokensPerHour: 39, TokensPerDay: 100}
+	if ok, _ := quota.Admit("K1", lim, 0, time.Now()); ok {
+		t.Fatal("expected reject: 40 reservation charged exceeds hour limit 39")
+	}
+	_ = writer.Close()
+	recs := readRecords(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
+	if recs[0].ChargedTokens != 40 || recs[0].TotalTokens != 0 {
+		t.Fatalf("record = %+v: want charged_tokens 40, total_tokens 0", recs[0])
 	}
 }
 

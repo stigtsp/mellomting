@@ -298,7 +298,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			cap = m.Policy.MaxOutputTokens
 		}
 		var perr error
-		prepared, reservation, injectedUsage, perr = prepareOutbound(body, o, cap, stream, p.ensureUsage)
+		prepared, reservation, injectedUsage, perr = prepareOutbound(body, o, cap, stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
 		switch {
 		case errors.Is(perr, errCapExceeded):
 			fail(400, "invalid_request_error", "output_limit_exceeded",
@@ -900,14 +900,18 @@ var (
 // prepareOutbound applies the generative output cap (PLAN §36) and, for
 // streams, injects stream_options.include_usage (PLAN §38). ensureUsage
 // selects whether stream-usage injection is enabled for this deployment.
-// It returns the transformed body, the effective output capacity to
-// reserve against quota, whether usage was injected on the client's
-// behalf, or an error if the client asked for more output than the
-// configured cap.
+// It returns the transformed body, the configured token reservation to
+// charge when usage is unknown (PLAN §39), whether usage was injected on
+// the client's behalf, or an error if the client asked for more output
+// than the configured cap. configuredReservation is
+// accounting.unknown_usage_reservation; when 0 the model's configured
+// output cap is the reservation. The reservation is never the client's
+// own output limit, so a small max_tokens cannot shrink the conservative
+// charge.
 //
 // The model field is left untouched here; rewriteModel still overrides it
 // per-attempt because the upstream model can differ across backends.
-func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool) (out []byte, reservation int64, injectedUsage bool, err error) {
+func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool, configuredReservation int64) (out []byte, reservation int64, injectedUsage bool, err error) {
 	if o.capField == "" && !(stream && ensureUsage) {
 		// Neither the output cap nor stream-usage injection applies
 		// (e.g. embeddings, or usage injection disabled).
@@ -945,7 +949,10 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 			clientLimit = int64(cap)
 		}
 	}
-	reservation = clientLimit
+	reservation = int64(cap)
+	if configuredReservation > 0 {
+		reservation = configuredReservation
+	}
 
 	// Stream usage injection (PLAN §38): known OpenAI-compatible
 	// Chat/Completions requests. Responses API emits usage in-band, so no
@@ -1041,8 +1048,9 @@ func windowLimits(l auth.KeyLimits) accounting.WindowLimit {
 
 // account settles token quota and (when enabled) enqueues a JSONL record
 // for one completed request (PLAN §39, §41, §42). Unknown usage on a
-// successful request conservatively charges the reserved output capacity;
-// errors settle nothing.
+// successful request conservatively charges the configured reservation;
+// the charged amount is recorded in charged_tokens so replay restores it
+// (PLAN §40). Errors settle nothing.
 func (p *Proxy) account(q *Req, o operation, model string, start time.Time, status int, backendName string, usage accounting.Usage, usageStatus accounting.UsageStatus, retries int, reservation int64) {
 	if p.quota == nil && p.acc == nil {
 		return
@@ -1075,6 +1083,7 @@ func (p *Proxy) account(q *Req, o operation, model string, start time.Time, stat
 			ReasoningTokens: usage.Reasoning,
 			UsageStatus:     usageStatus,
 			Retries:         retries,
+			ChargedTokens:   total,
 		})
 	}
 }

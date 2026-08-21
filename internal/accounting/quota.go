@@ -161,13 +161,20 @@ func (q *Quota) scanLines(br *bufio.Reader, now time.Time) error {
 }
 
 // replayLine aggregates one record into the current windows. Malformed
-// lines are skipped so a torn write never poisons replay.
+// lines are skipped so a torn write never poisons replay. The charged
+// amount (charged_tokens, falling back to total_tokens for legacy
+// records) is what counts toward quota, so conservatively-charged unknown
+// usage is restored on restart (PLAN §39, §40).
 func (q *Quota) replayLine(line []byte, now time.Time) {
 	var r Record
 	if err := json.Unmarshal(line, &r); err != nil {
 		return
 	}
-	if r.KeyID == "" || r.TotalTokens <= 0 {
+	tokens := r.ChargedTokens
+	if tokens == 0 {
+		tokens = r.TotalTokens
+	}
+	if r.KeyID == "" || tokens <= 0 {
 		return
 	}
 	q.mu.Lock()
@@ -175,10 +182,10 @@ func (q *Quota) replayLine(line []byte, now time.Time) {
 	// A record from an earlier window does not count toward the current
 	// window.
 	if hourKey(r.Time) == st.hourKey {
-		st.hour += r.TotalTokens
+		st.hour += tokens
 	}
 	if dayKey(r.Time) == st.dayKey {
-		st.day += r.TotalTokens
+		st.day += tokens
 	}
 	q.mu.Unlock()
 }

@@ -46,6 +46,12 @@ type Record struct {
 	ReasoningTokens int64       `json:"reasoning_tokens"`
 	UsageStatus     UsageStatus `json:"usage_status"`
 	Retries         int         `json:"retries"`
+	// ChargedTokens is the token count actually settled against quota
+	// (PLAN §39): for exact usage it equals total_tokens; for unknown
+	// usage it is the configured reservation charged. Replay reconstructs
+	// quota from this field so conservatively-charged records survive a
+	// restart (PLAN §40).
+	ChargedTokens int64 `json:"charged_tokens"`
 }
 
 // Usage holds the backend-reported token usage (PLAN §37).
@@ -207,9 +213,12 @@ func UnmarshalRecord(line []byte) (Record, error) {
 }
 
 // SettledTokens returns the total tokens that count toward quota for this
-// record. Unknown usage contributes nothing here; the caller decides how
-// to reserve for unknown usage (PLAN §39).
+// record. New records carry the actual charged amount; legacy records fall
+// back to total_tokens (PLAN §39).
 func (r Record) SettledTokens() int64 {
+	if r.ChargedTokens > 0 {
+		return r.ChargedTokens
+	}
 	return r.TotalTokens
 }
 

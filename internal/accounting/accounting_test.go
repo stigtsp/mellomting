@@ -143,6 +143,31 @@ func TestQuotaReplay(t *testing.T) {
 	}
 }
 
+func TestQuotaReplayChargedTokens(t *testing.T) {
+	// A conservatively-charged unknown-usage record (total_tokens 0 but
+	// charged_tokens set) must replay to the same settled state so a
+	// restart does not reset the quota (PLAN §39, §40).
+	now := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	b, _ := json.Marshal(Record{Time: now, KeyID: "k", TotalTokens: 0, ChargedTokens: 40})
+	f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+
+	q := &Quota{clock: func() time.Time { return now }}
+	if err := q.Replay(path, 1<<20); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	// 40 charged settled: an hour limit below 40 must reject.
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerHour: 39}, 0, now); ok {
+		t.Fatal("expected reject: 40 charged settled exceeds hour limit 39")
+	}
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerHour: 41}, 0, now); !ok {
+		t.Fatal("expected admit within remaining hour")
+	}
+}
+
 func TestQuotaReplayMissingFile(t *testing.T) {
 	q := &Quota{}
 	if err := q.Replay(filepath.Join(t.TempDir(), "nope.jsonl"), 1<<20); err != nil {

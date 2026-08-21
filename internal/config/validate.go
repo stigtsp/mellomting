@@ -408,7 +408,8 @@ func validateAccounting(a *Accounting) []string {
 
 	if !a.Enabled {
 		set := a.Path != "" || a.EnsureStreamUsage != nil || a.ReplayOnStart != nil ||
-			a.ReplayMaxBytes != 0 || a.QueueSize != 0 || a.Overflow != "" || a.FSync != "" || a.FSyncInterval != 0
+			a.ReplayMaxBytes != 0 || a.QueueSize != 0 || a.Overflow != "" || a.FSync != "" ||
+			a.FSyncInterval != 0 || a.UnknownUsageReservation != 0
 		if set {
 			errs = append(errs, "accounting: remaining fields must be empty when enabled is false")
 		}
@@ -423,6 +424,9 @@ func validateAccounting(a *Accounting) []string {
 	}
 	if a.ReplayMaxBytes < 0 {
 		errs = append(errs, "accounting.replay_max_bytes: must be >= 0")
+	}
+	if a.UnknownUsageReservation < 0 {
+		errs = append(errs, "accounting.unknown_usage_reservation: must be >= 0")
 	}
 	switch a.Overflow {
 	case "drop-and-alert":
