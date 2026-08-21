@@ -754,6 +754,158 @@ models:
 	}
 }
 
+// TestServeTLSHandshakeErrorsStructured proves that net/http's own error
+// output (here a failed TLS handshake) is routed through the structured
+// slog pipeline as a JSON ERROR record, never to raw stderr (T-L10).
+func TestServeTLSHandshakeErrorsStructured(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	pepperPath := filepath.Join(dir, "auth.pepper")
+	if err := os.WriteFile(pepperPath, []byte("e2e-tls-pepper-long-enough"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usersPath := filepath.Join(dir, "users.yaml")
+	if err := os.WriteFile(usersPath, []byte("version: 1\nkeys: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: tcp
+    address: %s
+  tls:
+    mode: files
+    cert_file: %s
+    key_file: %s
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, addr, certPath, keyPath, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if cmd.Process != nil && !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	client := tlsHTTPClient()
+	deadline := time.Now().Add(15 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("https://" + addr + "/readyz")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		logData, _ := os.ReadFile(logPath)
+		t.Fatalf("TLS daemon never became ready:\n%s", logData)
+	}
+
+	// A plaintext client against the TLS listener forces a failed TLS
+	// handshake, which net/http reports through Server.ErrorLog.
+	plainReq, err := http.NewRequest(http.MethodGet, "http://"+addr+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, _ := (&http.Client{Timeout: 3 * time.Second}).Do(plainReq)
+	if resp != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	// Give the server a moment to write the handshake error record.
+	time.Sleep(500 * time.Millisecond)
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+	}
+	killed = true
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(logData), "\n")
+	matched := false
+	for _, ln := range lines {
+		if ln == "" {
+			continue
+		}
+		if !json.Valid([]byte(ln)) {
+			t.Fatalf("non-JSON log line escaped the pipeline (T-L10): %q", ln)
+		}
+		if strings.Contains(ln, "TLS handshake") && strings.Contains(ln, `"level":"ERROR"`) {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("no structured TLS handshake ERROR record found:\n%s", logData)
+	}
+}
+
 // TestServeRejectsShelved verifies that serve fails closed when a shelved
 // feature is configured (PLAN §68, §96): ACME TLS and qualifiers.
 func TestServeRejectsShelved(t *testing.T) {

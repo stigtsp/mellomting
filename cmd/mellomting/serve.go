@@ -126,7 +126,7 @@ func serveCmd(args []string) int {
 		return 1
 	}
 
-	srv := newHTTPServer(cfg, d.api)
+	srv := newHTTPServer(cfg, d.api, d.log)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
 
@@ -410,9 +410,13 @@ func safeUnixListen(l config.Listen) (net.Listener, error) {
 // PLAN §9.1); per-stream idle bounds are enforced in the proxy.
 // ReadTimeout bounds the full request read (headers + body) by the sum
 // of the header and body budgets, the closest available approximation.
-func newHTTPServer(cfg *config.Config, api *httpapi.Server) *http.Server {
+func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *http.Server {
 	return &http.Server{
-		Handler:           api.Handler(),
+		Handler: api.Handler(),
+		// Route net/http's own error output (TLS handshake failures,
+		// unexpected handler panics) through the structured pipeline so
+		// no plaintext message bypasses it (T-L10).
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
 		ReadTimeout:       cfg.Server.ReadHeaderTimeout.Duration() + cfg.Server.ReadBodyTimeout.Duration(),
