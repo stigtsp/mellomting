@@ -359,8 +359,82 @@ func TestForwardTimeoutClassification(t *testing.T) {
 	if !errors.Is(err, ErrHeaderTimeout) {
 		t.Fatalf("silent server (stream): err = %v (want ErrHeaderTimeout)", err)
 	}
-	if errors.Is(err, ErrTimeout) {
-		t.Fatal("header timeout misclassified as total timeout")
+	// T-T5: ErrHeaderTimeout and ErrTimeout are distinct bare sentinels,
+	// so a negation of errors.Is(err, ErrTimeout) right after the
+	// ErrHeaderTimeout assertion above is a tautology and proved
+	// nothing. The meaningful classification is asserted directly in
+	// TestRequestErrorClassification below.
+}
+
+// timeoutErr implements net.Error with Timeout() true, standing in for
+// the net/http client's response-header deadline so requestError can be
+// tested without a live silent server.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// TestRequestErrorClassification pins the requestError/bodyReadError
+// taxonomy (T-T5): a streaming request's header bound is its own class
+// (ErrHeaderTimeout), distinct from the non-streaming total deadline
+// (ErrTimeout), so the proxy can apply different retry rules (PLAN
+// §23). Testing the classification functions directly with
+// representative errors makes the assertion meaningful — it fails when
+// a classification is wrong, unlike the old tautological errors.Is
+// negation between two unrelated bare sentinels.
+func TestRequestErrorClassification(t *testing.T) {
+	t.Parallel()
+	timedOut := &net.OpError{Err: timeoutErr{}}
+	cases := []struct {
+		name   string
+		fn     func(error, bool) error
+		stream bool
+		err    error
+		want   error
+	}{
+		{"streaming header bound", requestError, true, timedOut, ErrHeaderTimeout},
+		{"streaming deadline is still a header bound", requestError, true, context.DeadlineExceeded, ErrHeaderTimeout},
+		{"non-streaming total deadline", requestError, false, context.DeadlineExceeded, ErrTimeout},
+		{"non-streaming net timeout", requestError, false, timedOut, ErrTimeout},
+		{"canceled", requestError, false, context.Canceled, context.Canceled},
+		{"plain connect", requestError, false, errors.New("boom"), ErrConnect},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.fn(tc.err, tc.stream); got != tc.want {
+				t.Fatalf("%s(%v, stream=%v) = %v, want %v", tc.name, tc.err, tc.stream, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBodyReadErrorClassification pins bodyReadError: any timeout while
+// draining a buffered body is the total/body timeout class (ErrTimeout),
+// never the header bound, and a dropped connection stays ErrConnect
+// (PLAN §23).
+func TestBodyReadErrorClassification(t *testing.T) {
+	t.Parallel()
+	timedOut := &net.OpError{Err: timeoutErr{}}
+	cases := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"deadline", context.DeadlineExceeded, ErrTimeout},
+		{"net timeout", timedOut, ErrTimeout},
+		{"dropped connection", errors.New("boom"), ErrConnect},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := bodyReadError(tc.err); got != tc.want {
+				t.Fatalf("bodyReadError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -415,6 +489,37 @@ func TestNonStreamingLongerThanHeaderTimeoutSucceeds(t *testing.T) {
 	}
 	if _, err := c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true}); !errors.Is(err, ErrHeaderTimeout) {
 		t.Fatalf("streaming header bound: err = %v (want ErrHeaderTimeout)", err)
+	}
+}
+
+// T-T5: a non-streaming request that exceeds request_timeout is the
+// total-deadline class (ErrTimeout), NOT the streaming header bound
+// (ErrHeaderTimeout). The http client surfaces both bounds as a net.Error
+// timeout (context.DeadlineExceeded implements net.Error), so the
+// classification depends on the request being non-streaming; this is the
+// end-to-end check that the corrected classification is observable.
+func TestNonStreamingTotalTimeoutClassified(t *testing.T) {
+	t.Parallel()
+
+	hold := make(chan struct{})
+	defer close(hold)
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(silent.Close)
+
+	o := testOptions(t, silent.URL)
+	o.Cfg.RequestTimeout = config.Duration(200 * time.Millisecond)
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("non-streaming total timeout: err = %v (want ErrTimeout)", err)
 	}
 }
 

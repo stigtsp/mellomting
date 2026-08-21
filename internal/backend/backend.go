@@ -526,7 +526,7 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	resp, err := httpClient.Do(outReq)
 	if err != nil {
 		h.release()
-		return nil, requestError(err)
+		return nil, requestError(err, req.Stream)
 	}
 	streamBody := req.Stream && resp.StatusCode == http.StatusOK
 	if !streamBody {
@@ -565,8 +565,14 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 // requestError classifies an http.Client.Do error (no response headers
 // observed) into a sanitized class (PLAN §43, §23). Mellomting's own
 // dialer sentinels pass through unchanged so their retry semantics
-// survive the http.Client's url.Error wrapping.
-func requestError(err error) error {
+// survive the http.Client's url.Error wrapping. The http client
+// surfaces both its header bound and the request context deadline as a
+// net.Error with Timeout() true (context.DeadlineExceeded itself
+// implements net.Error), so the stream flag selects the correct class:
+// a streaming request's header bound (ResponseHeaderTimeout =
+// header_timeout) is ErrHeaderTimeout, while a non-streaming request's
+// total deadline (request_timeout) is ErrTimeout (T-T5).
+func requestError(err error, stream bool) error {
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
 	}
@@ -576,14 +582,12 @@ func requestError(err error) error {
 	var ne net.Error
 	if errors.As(err, &ne) {
 		if ne.Timeout() {
-			// No headers within the ResponseHeaderTimeout bound (the
-			// request-total deadline surfaces without a net.Error).
-			return ErrHeaderTimeout
+			if stream {
+				return ErrHeaderTimeout
+			}
+			return ErrTimeout
 		}
 		return ErrConnect
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return ErrTimeout
 	}
 	return ErrConnect
 }
