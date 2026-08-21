@@ -365,3 +365,93 @@ func readRecords(t *testing.T, path string) []accounting.Record {
 	}
 	return recs
 }
+
+// T-M1: the generative output cap must not be bypassable. Negative,
+// malformed (float/exponent/overflow), and over-cap limits are rejected
+// fail-closed on both endpoints, an over-cap value in the alternate field
+// is caught even when the primary field is present, and an explicit 0 is
+// forwarded unchanged rather than silently raised to the cap.
+func TestOutputCapCannotBeBypassed(t *testing.T) {
+	const cap = 100
+	for _, endpoint := range []string{"/v1/chat/completions", "/v1/completions"} {
+		f := newFakeVLLM(t, okJSON)
+		cfg := testConfig(f.server.URL)
+		cfg.Models["gen-1"] = config.Model{
+			Type: "generation", Strategy: "single",
+			Policy:   config.ModelPolicy{MaxOutputTokens: cap},
+			Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+		}
+		router, err := routing.New(cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, err := backend.New(backend.Options{
+			Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+			MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Run(endpoint, func(t *testing.T) {
+			cases := []struct {
+				name string
+				body string
+				want int
+			}{
+				{"negative", `{"model":"gen-1","max_tokens":-5}`, 400},
+				{"exponent", `{"model":"gen-1","max_tokens":1e9}`, 400},
+				{"float", `{"model":"gen-1","max_tokens":1000000.0}`, 400},
+				{"over-cap", `{"model":"gen-1","max_tokens":5000}`, 400},
+				{"over-cap-alt-with-primary", `{"model":"gen-1","max_completion_tokens":10,"max_tokens":5000}`, 400},
+				{"zero-not-raised", `{"model":"gen-1","max_tokens":0}`, 200},
+				{"in-cap-forwarded", `{"model":"gen-1","max_tokens":50}`, 200},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					f.lastBody = nil
+					w := run(t, p, http.MethodPost, endpoint, tc.body, testKey())
+					if w.Code != tc.want {
+						t.Fatalf("status = %d, want %d (body %s)", w.Code, tc.want, w.Body.String())
+					}
+					if tc.want == 400 {
+						if len(f.lastBody) != 0 {
+							t.Fatalf("backend must not be reached on rejection, got %s", f.lastBody)
+						}
+						return
+					}
+					var body map[string]json.RawMessage
+					if err := json.Unmarshal(f.lastBody, &body); err != nil {
+						t.Fatalf("backend body: %v", err)
+					}
+					assertFieldAtOrBelow(t, body, "max_tokens", cap)
+					assertFieldAtOrBelow(t, body, "max_completion_tokens", cap)
+				})
+			}
+		})
+	}
+}
+
+// assertFieldAtOrBelow fails if body[name] is present and exceeds cap.
+func assertFieldAtOrBelow(t *testing.T, body map[string]json.RawMessage, name string, cap int) {
+	t.Helper()
+	raw, ok := body[name]
+	if !ok {
+		return
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err != nil {
+		t.Fatalf("%s present but not a number: %s", name, raw)
+	}
+	v, err := n.Int64()
+	if err != nil {
+		t.Fatalf("%s not an integer: %s", name, raw)
+	}
+	if v > int64(cap) {
+		t.Fatalf("%s = %d exceeds cap %d", name, v, cap)
+	}
+}

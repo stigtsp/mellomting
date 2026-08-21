@@ -304,6 +304,10 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			fail(400, "invalid_request_error", "output_limit_exceeded",
 				"requested output tokens exceed the model policy cap", "bad_request")
 			return
+		case errors.Is(perr, errCapInvalid):
+			fail(400, "invalid_request_error", "invalid_output_limit",
+				"output limit must be a non-negative integer", "bad_request")
+			return
 		case errors.Is(perr, errNotJSONObject):
 			fail(400, "invalid_request_error", "invalid_json",
 				"request body is not a valid JSON object", "bad_request")
@@ -889,6 +893,7 @@ var (
 	errMissingModel   = errors.New("missing model")
 	errModelNotString = errors.New("model not a string")
 	errCapExceeded    = errors.New("output limit exceeds policy cap")
+	errCapInvalid     = errors.New("output limit must be a non-negative integer")
 	errNotJSONObject  = errors.New("body is not a JSON object")
 	// errStreamPanic is the sentinel a recovered pump-goroutine panic
 	// becomes: the client already has committed stream headers, so the
@@ -927,26 +932,32 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 
 	// Output cap (PLAN §36): never silently raise a client limit; reject
 	// when the client asks for more than the configured cap; inject the
-	// cap when the client supplied no output limit.
-	var clientLimit int64
+	// cap when the client supplied no output limit. Both the primary and
+	// the alternate field are validated independently (T-M1), so an
+	// over-cap value in either is caught; a negative or malformed limit
+	// fails closed (errCapInvalid); an explicit 0 is forwarded unchanged
+	// rather than silently raised.
+	var limitSet bool
 	if o.capField != "" && cap > 0 {
-		if v, ok := intField(fields, o.capField); ok {
-			clientLimit = v
-			if v > int64(cap) {
-				return nil, 0, false, errCapExceeded
+		present, _, terr := tokenLimit(fields, o.capField, cap)
+		if terr != nil {
+			return nil, 0, false, terr
+		}
+		if present {
+			limitSet = true
+		}
+		if o.altCapField != "" {
+			present, _, terr := tokenLimit(fields, o.altCapField, cap)
+			if terr != nil {
+				return nil, 0, false, terr
 			}
-		} else if o.altCapField != "" {
-			if v, ok := intField(fields, o.altCapField); ok {
-				clientLimit = v
-				if v > int64(cap) {
-					return nil, 0, false, errCapExceeded
-				}
+			if present {
+				limitSet = true
 			}
 		}
-		if clientLimit == 0 {
+		if !limitSet {
 			enc, _ := json.Marshal(int64(cap))
 			fields[o.capField] = enc
-			clientLimit = int64(cap)
 		}
 	}
 	reservation = int64(cap)
@@ -974,21 +985,33 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 	return bd, reservation, injectedUsage, nil
 }
 
-// intField extracts a top-level integer field.
-func intField(fields map[string]json.RawMessage, name string) (int64, bool) {
+// tokenLimit reads and validates one generative output-limit field
+// (T-M1). absent → (false, 0, nil); present and a non-negative integer at
+// or below cap → (true, v, nil); present but negative, malformed
+// (non-integer, float, exponent, overflowing), or above cap → an error.
+// A malformed or negative limit fails closed with errCapInvalid rather
+// than being treated as absent, which could otherwise let an over-cap
+// value slip past the cap.
+func tokenLimit(fields map[string]json.RawMessage, name string, cap int) (present bool, v int64, err error) {
 	raw, ok := fields[name]
 	if !ok {
-		return 0, false
+		return false, 0, nil
 	}
-	var v json.Number
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return 0, false
+	var num json.Number
+	if uerr := json.Unmarshal(raw, &num); uerr != nil {
+		return true, 0, errCapInvalid
 	}
-	n, err := v.Int64()
-	if err != nil {
-		return 0, false
+	n, ierr := num.Int64()
+	if ierr != nil {
+		return true, 0, errCapInvalid
 	}
-	return n, true
+	if n < 0 {
+		return true, 0, errCapInvalid
+	}
+	if n > int64(cap) {
+		return true, 0, errCapExceeded
+	}
+	return true, n, nil
 }
 
 // clientRequestedUsage reports whether the client asked for a stream
