@@ -395,6 +395,36 @@ func TestRedirectNotRelayed(t *testing.T) {
 	}
 }
 
+// TestRetryAndHealthClassification is the X6 amplifier check: a header
+// timeout is a latency/capacity signal, so it must neither poison the
+// passive-health state (which is keyed by backend name and would
+// cascade a cooldown across every model/key on that backend) nor be
+// blindly retried (re-issuing a full generation that cannot succeed
+// within the header bound). Connection failures remain both retryable
+// and health-poisoning.
+func TestRetryAndHealthClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		err    error
+		retry  bool
+		poison bool
+	}{
+		{backend.ErrConnect, true, true},
+		{backend.ErrDialTimeout, true, true},
+		{backend.ErrHeaderTimeout, false, false},
+		{backend.ErrTimeout, false, false},
+		{backend.ErrQueueFull, true, false},
+	}
+	for _, tc := range cases {
+		if got := retryableBackendError(tc.err); got != tc.retry {
+			t.Errorf("retryableBackendError(%v) = %v, want %v", tc.err, got, tc.retry)
+		}
+		if got := connectionLevelError(tc.err); got != tc.poison {
+			t.Errorf("connectionLevelError(%v) = %v, want %v", tc.err, got, tc.poison)
+		}
+	}
+}
+
 // decodeErr asserts the response body is exactly one valid OpenAI-shaped
 // JSON error object carrying the given HTTP status.
 func decodeErr(t *testing.T, body string, status int) {

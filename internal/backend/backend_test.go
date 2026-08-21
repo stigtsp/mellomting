@@ -218,7 +218,10 @@ func TestForwardTimeoutClassification(t *testing.T) {
 		t.Fatalf("dead port: err = %v (want ErrConnect)", err)
 	}
 
-	// Accepted, but no headers within header_timeout.
+	// Accepted, but no headers within header_timeout. header_timeout
+	// is the streaming header bound (X6: non-streaming headers arrive
+	// at completion and are bounded by request_timeout instead), so
+	// this must be a streaming request.
 	never := make(chan struct{})
 	defer close(never)
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,19 +237,72 @@ func TestForwardTimeoutClassification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	_, err = c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true})
 	if !errors.Is(err, ErrHeaderTimeout) {
-		t.Fatalf("silent server: err = %v (want ErrHeaderTimeout)", err)
+		t.Fatalf("silent server (stream): err = %v (want ErrHeaderTimeout)", err)
 	}
 	if errors.Is(err, ErrTimeout) {
 		t.Fatal("header timeout misclassified as total timeout")
 	}
 }
 
+// X6: a non-streaming generation that takes longer than header_timeout
+// but within request_timeout must SUCCEED (headers arrive only at
+// completion, so header_timeout must not truncate it), while the same
+// backend as a streaming request still respects header_timeout.
+func TestNonStreamingLongerThanHeaderTimeoutSucceeds(t *testing.T) {
+	t.Parallel()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-slow","object":"chat.completion"}`))
+	}))
+	defer slow.Close()
+
+	o := testOptions(t, slow.URL)
+	o.Cfg.HeaderTimeout = config.Duration(200 * time.Millisecond) // 200ms header bound
+	o.Cfg.RequestTimeout = config.Duration(5 * time.Second)       // 5s completion bound
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("non-streaming > header_timeout: err = %v (want success within request_timeout)", err)
+	}
+	if res == nil || res.Status != 200 || !strings.Contains(string(res.BodyBytes), "chatcmpl-slow") {
+		t.Fatalf("res = %+v", res)
+	}
+
+	// The same backend as a streaming request must still hit the
+	// header bound (a silent stream is a header timeout). The handler
+	// is released via defer before the server is closed (cleanup), so
+	// Server.Close never waits on a parked handler.
+	silent := make(chan struct{})
+	defer close(silent)
+	never := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-silent:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(never.Close)
+	o2 := testOptions(t, never.URL)
+	o2.Cfg.HeaderTimeout = config.Duration(200 * time.Millisecond)
+	c2, err := New(o2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c2.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true}); !errors.Is(err, ErrHeaderTimeout) {
+		t.Fatalf("streaming header bound: err = %v (want ErrHeaderTimeout)", err)
+	}
+}
+
 // PLAN §19: Inflight reports admission load so least-inflight routing
 // can see queued and active requests.
 func TestInflightSnapshot(t *testing.T) {
-	t.Parallel()
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

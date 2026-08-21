@@ -116,10 +116,18 @@ type Client struct {
 	requestTimeout   time.Duration
 	streamIdle       time.Duration
 	maxResponseBytes int
-	http             *http.Client
-	queue            chan struct{}
-	conc             chan struct{}
-	queueTimeout     time.Duration
+	// http is used for streaming requests: it applies
+	// ResponseHeaderTimeout = header_timeout, because the first stream
+	// byte is expected promptly.
+	http *http.Client
+	// httpPlain is used for non-streaming requests: its header bound is
+	// the completion bound (request_timeout), because for non-streaming
+	// work headers arrive only when the whole completion is ready
+	// (X6: a 30s+ generation must not be truncated by header_timeout).
+	httpPlain    *http.Client
+	queue        chan struct{}
+	conc         chan struct{}
+	queueTimeout time.Duration
 }
 
 // New builds a validated backend client (PLAN §15.1, §16, §17).
@@ -173,8 +181,16 @@ func New(o Options) (*Client, error) {
 		IdleConnTimeout:   90 * time.Second,
 		DialContext:       policyDial(policy, o.Cfg.ConnectTimeout.Duration()),
 	}
-	// Header wait (first response byte) is bounded per PLAN §15.
-	t.ResponseHeaderTimeout = o.Cfg.HeaderTimeout.Duration()
+	// Streaming: the first stream byte is expected promptly, so the
+	// header wait is bounded by header_timeout (PLAN §15).
+	tStream := t.Clone()
+	tStream.ResponseHeaderTimeout = o.Cfg.HeaderTimeout.Duration()
+	// Non-streaming: headers arrive only when the completion is done
+	// (X6). Bounding that wait by header_timeout truncates legitimate
+	// long generations; the completion-appropriate bound is the total
+	// request_timeout (the context deadline applies the same bound).
+	tPlain := t.Clone()
+	tPlain.ResponseHeaderTimeout = o.Cfg.RequestTimeout.Duration()
 
 	return &Client{
 		name:             o.Name,
@@ -190,7 +206,18 @@ func New(o Options) (*Client, error) {
 		// able to steer the connection to another host/path, where the
 		// Authorization header and body would be re-sent. A 3xx is
 		// returned to Forward and classified as an upstream error.
-		http:         &http.Client{Transport: t, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }},
+		http: &http.Client{
+			Transport: tStream,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		httpPlain: &http.Client{
+			Transport: tPlain,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		queue:        make(chan struct{}, queueSize),
 		conc:         make(chan struct{}, maxConc),
 		queueTimeout: o.Cfg.QueueTimeout.Duration(),
@@ -419,12 +446,20 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 		outReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	resp, err := c.http.Do(outReq)
+	// Streaming requests expect the first byte promptly (header bound =
+	// header_timeout); non-streaming work's headers arrive at
+	// completion, so it uses the plain client whose header bound is the
+	// completion request_timeout (X6: a long non-streaming generation
+	// must not be truncated by header_timeout).
+	httpClient := c.http
+	if !req.Stream {
+		httpClient = c.httpPlain
+	}
+	resp, err := httpClient.Do(outReq)
 	if err != nil {
 		h.release()
 		return nil, requestError(err)
 	}
-
 	streamBody := req.Stream && resp.StatusCode == http.StatusOK
 	if !streamBody {
 		defer resp.Body.Close()

@@ -539,7 +539,6 @@ func retryableBackendError(err error) bool {
 	switch {
 	case errors.Is(err, backend.ErrConnect):
 	case errors.Is(err, backend.ErrDialTimeout):
-	case errors.Is(err, backend.ErrHeaderTimeout):
 	case errors.Is(err, backend.ErrQueueFull):
 	default:
 		return false
@@ -548,14 +547,15 @@ func retryableBackendError(err error) bool {
 }
 
 // connectionLevelError reports whether the failure poisons the passive
-// health state (PLAN §70): the backend refused or stalled the
-// connection. A 5xx response or a queue-full admission does not mean
-// the backend is down.
+// health state (PLAN §70): the backend refused or dropped the
+// connection. A 5xx response, a queue-full admission, or a header
+// timeout (a latency/capacity signal) does not mean the backend is down
+// — notably a header timeout must not cascade a cooldown across every
+// model/key sharing the backend (X6).
 func connectionLevelError(err error) bool {
 	switch {
 	case errors.Is(err, backend.ErrConnect):
 	case errors.Is(err, backend.ErrDialTimeout):
-	case errors.Is(err, backend.ErrHeaderTimeout):
 	default:
 		return false
 	}
