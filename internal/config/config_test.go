@@ -501,6 +501,24 @@ models:
 			wantErr: "allow_plaintext_non_loopback",
 		},
 		{
+			name: "plaintext localhost tcp rejected too",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: tcp
+    address: localhost:8080
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "allow_plaintext_non_loopback",
+		},
+		{
 			name: "non-loopback tcp accepted with opt-in",
 			yaml: `
 version: 1

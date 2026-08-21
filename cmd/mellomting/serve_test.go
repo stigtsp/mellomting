@@ -928,6 +928,121 @@ models:
 	}
 }
 
+// TestServePlaintextLocalhostWarns is the T-Q11 regression test: a
+// hostname listener (localhost) is treated like any other non-loopback
+// listener (matching config validation), so when the operator opts in
+// with allow_plaintext_non_loopback the §8.2 startup warning MUST fire.
+func TestServePlaintextLocalhostWarns(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	pepperPath := filepath.Join(dir, "auth.pepper")
+	if err := os.WriteFile(pepperPath, []byte("e2e-localhost-pepper-16b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usersPath := filepath.Join(dir, "users.yaml")
+	if err := os.WriteFile(usersPath, []byte("version: 1\nkeys: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: tcp
+    address: localhost:%s
+  allow_plaintext_non_loopback: true
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, strings.Split(addr, ":")[1], usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	// Wait for readiness over plaintext localhost.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://localhost:" + strings.Split(addr, ":")[1] + "/readyz")
+		if err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && !isExit(err, 0) {
+			t.Fatalf("serve wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+	}
+	killed = true
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "plaintext non-loopback TCP listener is active (PLAN §8.2)") {
+		t.Fatalf("§8.2 warning did not fire for localhost listener:\n%s", logData)
+	}
+}
+
 // TestServeRejectsShelved verifies that serve fails closed when a shelved
 // feature is configured (PLAN §68, §96): ACME TLS and qualifiers.
 func TestServeRejectsShelved(t *testing.T) {

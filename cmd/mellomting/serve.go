@@ -626,5 +626,9 @@ func isNonLoopbackListenAddr(addr string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return !ip.IsLoopback()
 	}
-	return host != "localhost"
+	// Any hostname — localhost included — is treated as potentially
+	// exposed, matching config.isNonLoopbackHost (T-Q11, PLAN §8.2):
+	// a hostname listener is refused without allow_plaintext_non_loopback
+	// and the §8.2 warning fires when the opt-in is set.
+	return true
 }
