@@ -523,7 +523,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			_ = ctrl.SetWriteDeadline(time.Time{})
 		}
 		if o.capture {
-			if id := topLevelID(res.BodyBytes); id != "" {
+			if id := topLevelID(res.BodyBytes); isValidResponseID(id) {
 				p.affinity.Put(q.Key.ID, id, backendName)
 			}
 		}
@@ -745,10 +745,13 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			continue
 		}
 
-		// Capture response IDs for affinity (PLAN §21.2).
+		// Capture response IDs for affinity (PLAN §21.2). A backend
+		// may return an unbounded or malformed id; only a bounded,
+		// safe ID can ever be retrieved/cancelled by a client, so
+		// anything else is skipped rather than stored whole (T-L5).
 		if o.capture && !captured {
 			if data, ok := dataField(ev); ok {
-				if id := responseIDFromData(data); id != "" {
+				if id := responseIDFromData(data); isValidResponseID(id) {
 					p.affinity.Put(q.Key.ID, id, backendName)
 					captured = true
 				}

@@ -554,6 +554,48 @@ func TestResponsesAffinityLifecycle(t *testing.T) {
 	}
 }
 
+// TestResponsesAffinityOversizedIDSkipped verifies a backend-supplied
+// response id that is unbounded is not stored in the affinity table and
+// cannot evict a legitimate record (T-L5).
+func TestResponsesAffinityOversizedIDSkipped(t *testing.T) {
+	t.Parallel()
+	bigID := "resp_" + strings.Repeat("x", 900*1024)
+	creates := 0
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			responsesJSON(w, r)
+			return
+		}
+		creates++
+		if creates == 1 {
+			_, _ = w.Write([]byte(`{"id":"` + bigID + `","object":"response","status":"completed"}`))
+			return
+		}
+		responsesJSON(w, r)
+	})
+	p := newProxy(t, f)
+	key := testKey()
+
+	// First create returns an oversized id: it must not be stored.
+	rec := run(t, p, http.MethodPost, "/v1/responses", `{"model":"gen-1","input":"hi"}`, key)
+	if rec.Code != 200 {
+		t.Fatalf("create status = %d", rec.Code)
+	}
+	if _, ok := p.affinity.Get(key.ID, bigID); ok {
+		t.Fatalf("oversized id was stored in the affinity table")
+	}
+
+	// A legitimate subsequent create still records normally (the
+	// oversized id did not evict or corrupt anything).
+	rec = run(t, p, http.MethodPost, "/v1/responses", `{"model":"gen-1","input":"hi"}`, key)
+	if rec.Code != 200 {
+		t.Fatalf("second create status = %d", rec.Code)
+	}
+	if b, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
+		t.Fatalf("legitimate affinity lost after oversized id: ok=%v b=%q", ok, b)
+	}
+}
+
 func TestResponsesStreamCapture(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, responsesSSE)
