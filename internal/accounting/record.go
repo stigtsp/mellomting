@@ -21,8 +21,6 @@ type UsageStatus string
 const (
 	// UsageExact means usage came from the backend response.
 	UsageExact UsageStatus = "exact"
-	// UsagePartial means only a portion of usage was known.
-	UsagePartial UsageStatus = "partial"
 	// UsageUnknown means no usage was obtained (e.g. a stream ended
 	// before usage was emitted); never invent exact counts (PLAN §38).
 	UsageUnknown UsageStatus = "unknown"
@@ -228,16 +226,6 @@ func UnmarshalRecord(line []byte) (Record, error) {
 		r.UsageStatus = UsageUnknown
 	}
 	return r, nil
-}
-
-// SettledTokens returns the total tokens that count toward quota for this
-// record. New records carry the actual charged amount; legacy records fall
-// back to total_tokens (PLAN §39).
-func (r Record) SettledTokens() int64 {
-	if r.ChargedTokens > 0 {
-		return r.ChargedTokens
-	}
-	return r.TotalTokens
 }
 
 // hourKey is the start of the fixed UTC hour window for a time.

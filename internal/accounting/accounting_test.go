@@ -340,6 +340,22 @@ func TestWriterMissingDirFailsClosed(t *testing.T) {
 	}
 }
 
+func TestWriterOverflowKnobGoverns(t *testing.T) {
+	// T-Q7: accounting.overflow is threaded from config into the writer
+	// and fails closed on a policy the writer does not implement, so the
+	// parsed knob actually governs the writer.
+	if _, err := NewWriter(WriterConfig{Path: filepath.Join(t.TempDir(), "u.jsonl"), Overflow: "panic"}); err == nil {
+		t.Fatal("unsupported overflow policy accepted")
+	}
+	w, err := NewWriter(WriterConfig{Path: filepath.Join(t.TempDir(), "u.jsonl"), Overflow: "drop-and-alert"})
+	if err != nil {
+		t.Fatalf("drop-and-alert writer: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWriterDroppedCounterAtomic(t *testing.T) {
 	w := &Writer{}
 	var n int64

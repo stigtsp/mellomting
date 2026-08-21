@@ -546,6 +546,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			QueueSize:     cfg.Accounting.QueueSize,
 			FSync:         cfg.Accounting.FSync,
 			FSyncInterval: cfg.Accounting.FSyncInterval.Duration(),
+			Overflow:      cfg.Accounting.Overflow,
 			Log:           log,
 		})
 		if err != nil {

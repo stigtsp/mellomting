@@ -15,10 +15,6 @@ import (
 	"mellomting/internal/version"
 )
 
-// plannedCommands exist in the CLI but are implemented in later phases
-// (PLAN §7, §91-98).
-var plannedCommands = map[string]bool{}
-
 func main() {
 	if len(os.Args) < 2 {
 		usage(os.Stderr)
@@ -48,9 +44,6 @@ func main() {
 }
 
 func describeUnknownCommand(cmd string) string {
-	if plannedCommands[cmd] {
-		return fmt.Sprintf("command %q is not implemented yet (see docs/PLAN.md)", cmd)
-	}
 	return fmt.Sprintf("unknown command %q", cmd)
 }
 

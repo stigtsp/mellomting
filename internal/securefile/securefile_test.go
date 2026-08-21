@@ -38,11 +38,6 @@ func TestReadRefusesSymlink(t *testing.T) {
 	if _, err := Read(link, 0); err == nil {
 		t.Fatal("symlink read succeeded")
 	}
-
-	mode, err := LStat(link)
-	if err == nil {
-		t.Fatalf("LStat symlink succeeded: %v", mode)
-	}
 }
 
 func TestReadRefusesDirectory(t *testing.T) {

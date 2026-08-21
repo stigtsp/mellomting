@@ -62,15 +62,6 @@ type Upstream struct{ Status int }
 
 func (e *Upstream) Error() string { return fmt.Sprintf("upstream status %d", e.Status) }
 
-// AsUpstream reports whether err is a *Upstream.
-func AsUpstream(err error) (*Upstream, bool) {
-	var u *Upstream
-	if errors.As(err, &u) {
-		return u, true
-	}
-	return nil, false
-}
-
 // Policy is the backend egress policy (PLAN §16).
 type Policy struct {
 	Mode  string // "loopback-only", "allowed-cidrs", or "any"
@@ -627,12 +618,6 @@ func bodyReadError(err error) error {
 func (c *Client) Inflight() int {
 	return len(c.queue) + len(c.conc)
 }
-
-// Name returns the configured backend name (safe to log).
-func (c *Client) Name() string { return c.name }
-
-// UpstreamModel returns the upstream model name (safe to log).
-func (c *Client) UpstreamModel() string { return c.upstream }
 
 // StreamIdleTimeout is the backend stream-idle bound (PLAN §24).
 func (c *Client) StreamIdleTimeout() time.Duration { return c.streamIdle }

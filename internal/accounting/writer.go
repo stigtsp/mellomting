@@ -41,7 +41,12 @@ type WriterConfig struct {
 	QueueSize     int
 	FSync         string // "interval", "every", or "never"
 	FSyncInterval time.Duration
-	Log           *slog.Logger
+	// Overflow is the queue-full policy (PLAN §42). "drop-and-alert"
+	// is the only supported mode; anything else fails closed. The knob
+	// is threaded from config so the writer is parameterized by the
+	// field that governs it (T-Q7), matching how config declares it.
+	Overflow string
+	Log      *slog.Logger
 }
 
 // NewWriter opens (or creates) the JSONL log in append mode and starts
@@ -52,6 +57,12 @@ func NewWriter(cfg WriterConfig) (*Writer, error) {
 	}
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 4096
+	}
+	if cfg.Overflow == "" {
+		cfg.Overflow = "drop-and-alert"
+	}
+	if cfg.Overflow != "drop-and-alert" {
+		return nil, fmt.Errorf("unsupported accounting overflow policy %q (only drop-and-alert)", cfg.Overflow)
 	}
 	fh, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 	if err != nil {

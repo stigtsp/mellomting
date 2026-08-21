@@ -52,19 +52,6 @@ func Read(path string, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-// LStat reports the mode of the final path component without following a
-// symlink. A symlink is an error, not a mode to report.
-func LStat(path string) (os.FileMode, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return 0, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return 0, fmt.Errorf("symlink not allowed")
-	}
-	return info.Mode(), nil
-}
-
 // WorldAccessible reports whether the (non-symlink) file has any
 // permission bit set for "others" (read, write, or execute). The exposure
 // is readability: a 0644/0666 secret file is rejected while 0600/0640 are
