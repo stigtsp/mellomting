@@ -143,6 +143,48 @@ func TestQuotaReplay(t *testing.T) {
 	}
 }
 
+func TestParseUsageClampsExtremes(t *testing.T) {
+	// A single bogus MaxInt64 total_tokens must be clamped, not accepted
+	// verbatim, so it can never wrap a quota window negative (T-X11).
+	body := []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":9223372036854775807}}`)
+	u := ParseUsage(body, "chat.completions")
+	if !u.Present {
+		t.Fatal("expected usage present")
+	}
+	if u.Total != maxUsageTokens {
+		t.Fatalf("total = %d, want clamped %d", u.Total, maxUsageTokens)
+	}
+	if u.Input != 1 || u.Output != 1 {
+		t.Fatalf("input/output mangled: %+v", u)
+	}
+	// Negative values are clamped to 0, not subtracted from quota.
+	neg := ParseUsage([]byte(`{"usage":{"prompt_tokens":-3,"completion_tokens":-2,"total_tokens":-5}}`), "")
+	if !neg.Present {
+		t.Fatal("expected usage present")
+	}
+	if neg.Input != 0 || neg.Output != 0 || neg.Total != 0 {
+		t.Fatalf("negatives not clamped: %+v", neg)
+	}
+}
+
+func TestQuotaMaxInt64DoesNotVoidWindow(t *testing.T) {
+	now := time.Now()
+	u := ParseUsage([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":9223372036854775807}}`), "chat.completions")
+	q := &Quota{}
+	q.Settle("k", u.Total, now)
+	lim := WindowLimit{TokensPerHour: 1000, TokensPerDay: 2000}
+	// The key must remain quota-bound: admission with a reservation must
+	// reject, never admit because an overflow wrapped the counter.
+	if ok, _ := q.Admit("k", lim, 1, now); ok {
+		t.Fatal("expected reject: clamped MaxInt64 exceeds window")
+	}
+	// A second settle saturates rather than wrapping negative.
+	q.Settle("k", u.Total, now)
+	if ok, _ := q.Admit("k", lim, 1, now); ok {
+		t.Fatal("expected reject after second settle: counter must not wrap")
+	}
+}
+
 func TestQuotaReplayChargedTokens(t *testing.T) {
 	// A conservatively-charged unknown-usage record (total_tokens 0 but
 	// charged_tokens set) must replay to the same settled state so a

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -36,10 +37,23 @@ type WindowLimit struct {
 	TokensPerDay  int64
 }
 
+// satAdd adds two non-negative token counts without wrapping: the result
+// saturates at MaxInt64 so overflow can never make a quota counter
+// negative or defeat a comparison (PLAN §39).
+func satAdd(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
 // Admit checks the settled usage against the key's configured windows,
 // optionally reserving extra output capacity. It returns false plus a
 // machine-readable reason ("tokens_per_hour" or "tokens_per_day") when
 // the key is clearly over quota (PLAN §39). A limit of 0 means unlimited.
+// The reservation comparison is written to avoid overflow: settled +
+// reservation > limit is checked as reservation > limit || settled >
+// limit - reservation.
 func (q *Quota) Admit(keyID string, limits WindowLimit, reservation int64, now time.Time) (ok bool, reason string) {
 	if limits.TokensPerHour <= 0 && limits.TokensPerDay <= 0 {
 		return true, ""
@@ -47,16 +61,18 @@ func (q *Quota) Admit(keyID string, limits WindowLimit, reservation int64, now t
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	st := q.stateFor(keyID, now)
-	if limits.TokensPerHour > 0 && st.hour+reservation > limits.TokensPerHour {
+	if limits.TokensPerHour > 0 && (reservation > limits.TokensPerHour || st.hour > limits.TokensPerHour-reservation) {
 		return false, "tokens_per_hour"
 	}
-	if limits.TokensPerDay > 0 && st.day+reservation > limits.TokensPerDay {
+	if limits.TokensPerDay > 0 && (reservation > limits.TokensPerDay || st.day > limits.TokensPerDay-reservation) {
 		return false, "tokens_per_day"
 	}
 	return true, ""
 }
 
 // Settle adds the settled usage to the key's current windows (PLAN §39).
+// Addition saturates so a single bogus value (or many large ones) cannot
+// wrap a window counter negative and void the quota.
 func (q *Quota) Settle(keyID string, tokens int64, now time.Time) {
 	if tokens <= 0 {
 		return
@@ -64,8 +80,8 @@ func (q *Quota) Settle(keyID string, tokens int64, now time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	st := q.stateFor(keyID, now)
-	st.hour += tokens
-	st.day += tokens
+	st.hour = satAdd(st.hour, tokens)
+	st.day = satAdd(st.day, tokens)
 }
 
 // stateFor returns (creating if needed) the key's quota state, resetting
@@ -182,10 +198,10 @@ func (q *Quota) replayLine(line []byte, now time.Time) {
 	// A record from an earlier window does not count toward the current
 	// window.
 	if hourKey(r.Time) == st.hourKey {
-		st.hour += tokens
+		st.hour = satAdd(st.hour, tokens)
 	}
 	if dayKey(r.Time) == st.dayKey {
-		st.day += tokens
+		st.day = satAdd(st.day, tokens)
 	}
 	q.mu.Unlock()
 }

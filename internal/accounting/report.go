@@ -52,10 +52,10 @@ func ReportFile(path string) (*Report, error) {
 					order = append(order, ku)
 				}
 				ku.Requests++
-				ku.InputTokens += rec.InputTokens
-				ku.OutputTokens += rec.OutputTokens
-				ku.TotalTokens += rec.TotalTokens
-				ku.CachedTokens += rec.CachedTokens
+				ku.InputTokens = satAdd(ku.InputTokens, rec.InputTokens)
+				ku.OutputTokens = satAdd(ku.OutputTokens, rec.OutputTokens)
+				ku.TotalTokens = satAdd(ku.TotalTokens, rec.TotalTokens)
+				ku.CachedTokens = satAdd(ku.CachedTokens, rec.CachedTokens)
 			}
 		}
 		if err != nil {

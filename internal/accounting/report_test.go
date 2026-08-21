@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,34 @@ func TestReportFileMissing(t *testing.T) {
 	}
 	if len(rep.Keys) != 0 {
 		t.Fatalf("want empty report, got %d keys", len(rep.Keys))
+	}
+}
+
+func TestReportFileDoesNotWrap(t *testing.T) {
+	// Summing extreme totals must saturate, never wrap negative (T-X11).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	f, _ := os.Create(path)
+	for i := 0; i < 2; i++ {
+		b, _ := json.Marshal(Record{KeyID: "k", TotalTokens: math.MaxInt64, InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64})
+		_, _ = f.Write(append(b, '\n'))
+	}
+	_ = f.Close()
+
+	rep, err := ReportFile(path)
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if len(rep.Keys) != 1 {
+		t.Fatalf("want 1 key, got %d", len(rep.Keys))
+	}
+	k := rep.Keys[0]
+	for _, v := range []int64{k.InputTokens, k.OutputTokens, k.TotalTokens} {
+		if v < 0 {
+			t.Fatalf("reported total wrapped negative: %d", v)
+		}
+	}
+	if k.TotalTokens != math.MaxInt64 {
+		t.Fatalf("total = %d, want saturated %d", k.TotalTokens, int64(math.MaxInt64))
 	}
 }

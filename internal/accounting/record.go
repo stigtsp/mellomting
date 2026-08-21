@@ -121,6 +121,24 @@ func ParseUsage(body []byte, endpoint string) Usage {
 	return Usage{}
 }
 
+// maxUsageTokens bounds a single backend-reported usage value. It is far
+// beyond any real model's token count, so a bogus extreme value cannot
+// wrap quota counters (PLAN §39).
+const maxUsageTokens int64 = 1 << 40
+
+// clampUsage bounds a single usage value to [0, maxUsageTokens] so a
+// malformed or malicious backend report cannot inject negatives or values
+// that overflow the quota windows (PLAN §39).
+func clampUsage(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	if v > maxUsageTokens {
+		return maxUsageTokens
+	}
+	return v
+}
+
 func fromUsageJSON(raw json.RawMessage) Usage {
 	// Decide the shape by the presence of shape-specific field names
 	// rather than by values, so a chat body is never misread as a
@@ -140,19 +158,19 @@ func fromUsageJSON(raw json.RawMessage) Usage {
 			return Usage{}
 		}
 		u := Usage{
-			Input:   ub.PromptTokens,
-			Output:  ub.CompletionTokens,
-			Total:   ub.TotalTokens,
+			Input:   clampUsage(ub.PromptTokens),
+			Output:  clampUsage(ub.CompletionTokens),
+			Total:   clampUsage(ub.TotalTokens),
 			Present: true,
 		}
 		if ub.PromptDetails != nil {
-			u.Cached = ub.PromptDetails.CachedTokens
+			u.Cached = clampUsage(ub.PromptDetails.CachedTokens)
 		}
 		if ub.CompletionDetails != nil {
-			u.Reasoning = ub.CompletionDetails.ReasoningTokens
+			u.Reasoning = clampUsage(ub.CompletionDetails.ReasoningTokens)
 		}
 		if u.Total == 0 {
-			u.Total = u.Input + u.Output
+			u.Total = satAdd(u.Input, u.Output)
 		}
 		return u
 	}
@@ -166,19 +184,19 @@ func fromUsageJSON(raw json.RawMessage) Usage {
 			return Usage{}
 		}
 		u := Usage{
-			Input:   ru.InputTokens,
-			Output:  ru.OutputTokens,
-			Total:   ru.TotalTokens,
+			Input:   clampUsage(ru.InputTokens),
+			Output:  clampUsage(ru.OutputTokens),
+			Total:   clampUsage(ru.TotalTokens),
 			Present: true,
 		}
 		if ru.InputDetails != nil {
-			u.Cached = ru.InputDetails.CachedTokens
+			u.Cached = clampUsage(ru.InputDetails.CachedTokens)
 		}
 		if ru.OutputDetails != nil {
-			u.Reasoning = ru.OutputDetails.ReasoningTokens
+			u.Reasoning = clampUsage(ru.OutputDetails.ReasoningTokens)
 		}
 		if u.Total == 0 {
-			u.Total = u.Input + u.Output
+			u.Total = satAdd(u.Input, u.Output)
 		}
 		return u
 	}
