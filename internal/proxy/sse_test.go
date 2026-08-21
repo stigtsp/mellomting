@@ -130,6 +130,35 @@ func TestSSEParserEventsTerminatedExceptFinal(t *testing.T) {
 	}
 }
 
+// T-T7: the aggregated event bound (ErrSSEEventTooLarge) and the
+// per-line bound (ErrSSELineTooLarge) are distinct and each must be
+// exercised. Many short data lines whose aggregate exceeds maxSSEEvent
+// must trip the event bound (not the line bound); a single line beyond
+// maxSSELine must trip the line bound.
+func TestSSEParserEventBound(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	for i := 0; i < 20; i++ {
+		buf.WriteString("data: ")
+		buf.WriteString(strings.Repeat("a", 64*1024))
+		buf.WriteString("\n")
+	}
+	p := newSSEParser(bytes.NewReader(buf.Bytes()))
+	_, err := p.nextEvent()
+	if !errors.Is(err, ErrSSEEventTooLarge) {
+		t.Fatalf("aggregated event: err = %v, want ErrSSEEventTooLarge", err)
+	}
+	if errors.Is(err, ErrSSELineTooLarge) {
+		t.Fatal("aggregated event tripped the line bound, not the event bound")
+	}
+
+	p2 := newSSEParser(strings.NewReader(strings.Repeat("a", maxSSELine+1) + "\n\n"))
+	if _, err := p2.nextEvent(); !errors.Is(err, ErrSSELineTooLarge) {
+		t.Fatalf("single oversized line: err = %v, want ErrSSELineTooLarge", err)
+	}
+}
+
 // FuzzSSEParser feeds arbitrary bytes to the parser (PLAN §80, T-X13):
 // it must never panic, only surface bounded framing errors, never emit an
 // empty event, and stay idempotent after a clean EOF.

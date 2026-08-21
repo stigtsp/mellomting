@@ -89,11 +89,20 @@ func upstream429(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
 }
 
+// bigSSEEvent writes many short data lines whose aggregate exceeds
+// maxSSEEvent (each line stays well under maxSSELine). Only the
+// aggregated event bound (ErrSSEEventTooLarge) can trip, not the
+// per-line bound — so TestHugeSSEEventBounded exercises the event-size
+// cap, not the line cap (T-T7).
 func bigSSEEvent(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	_, _ = w.Write([]byte("data: "))
-	_, _ = w.Write(make([]byte, maxSSEEvent))
-	_, _ = w.Write([]byte("\n\n"))
+	const line = 64 * 1024
+	for i := 0; i < 20; i++ {
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(make([]byte, line))
+		_, _ = w.Write([]byte("\n"))
+	}
+	_, _ = w.Write([]byte("\n"))
 }
 
 func testConfig(serverURL string) *config.Config {
@@ -711,7 +720,9 @@ func TestHugeSSEEventBounded(t *testing.T) {
 	rec := run(t, p, http.MethodPost, "/v1/responses",
 		`{"model":"gen-1","stream":true}`, testKey())
 	// 200 is committed before the oversized event is seen; the stream is
-	// truncated rather than buffered unboundedly.
+	// truncated rather than buffered unboundedly. The fixture's many short
+	// lines aggregate past maxSSEEvent, so the event bound (not the line
+	// bound) is what truncates the stream (T-T7).
 	if rec.Code != 200 {
 		t.Fatalf("status = %d", rec.Code)
 	}
