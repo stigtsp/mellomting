@@ -38,6 +38,57 @@ func newTestClient(t *testing.T, ts *httptest.Server) *Client {
 	return c
 }
 
+// TestAcquireQueueFullClassifiesDisconnect proves that a client
+// disconnect while the backend admission queue is full is reported as
+// the context error (disconnect), not ErrQueueFull (T-L14): the two
+// have different operational meanings for capacity planning. The second
+// acquire select races a ready timer (queue_full) against a ready
+// client-cancellation, and must report the disconnect.
+func TestAcquireQueueFullClassifiesDisconnect(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hold the handler open so the concurrency slot stays taken.
+		select {}
+	}))
+	defer ts.Close()
+
+	opts := testOptions(t, ts.URL)
+	opts.Cfg.MaxConcurrency = 1
+	opts.Cfg.QueueSize = 1
+	c, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Hold the single concurrency slot so every later acquire waits on
+	// the queue timeout.
+	h, err := c.acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire holder: %v", err)
+	}
+	defer h.release()
+
+	// A zero queue timeout makes the timer ready immediately, so each
+	// acquire's second select races the fired timer against the
+	// cancelled client context.
+	c.queueTimeout = 0
+
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := c.acquire(ctx); err == nil {
+			t.Fatalf("iteration %d: acquire succeeded with full queue, want error", i)
+		} else if errors.Is(err, context.Canceled) {
+			// correct: disconnect wins over queue_full
+		} else if errors.Is(err, ErrQueueFull) {
+			t.Fatalf("iteration %d: disconnect while queue full classified as queue_full (T-L14)", i)
+		} else {
+			t.Fatalf("iteration %d: unexpected error %v", i, err)
+		}
+	}
+}
+
 func TestForwardNonStream(t *testing.T) {
 	t.Parallel()
 

@@ -449,7 +449,17 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		return nil, ErrQueueFull
+		// Queue is full: still honour a cancelled context so a client
+		// disconnect while the queue is full is classified as a
+		// disconnect, not as queue exhaustion (T-L14) — the two have
+		// different operational meanings (capacity planning vs. client
+		// churn).
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			return nil, ErrQueueFull
+		}
 	}
 
 	timer := time.NewTimer(c.queueTimeout)
@@ -466,7 +476,16 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 		return nil, ctx.Err()
 	case <-timer.C:
 		<-c.queue
-		return nil, ErrQueueFull
+		// The timer (queue_full) and a client disconnect can fire in
+		// the same instant; Go's select picks randomly among ready
+		// cases, so re-check the context before reporting queue
+		// exhaustion (T-L14).
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			return nil, ErrQueueFull
+		}
 	}
 }
 
