@@ -74,7 +74,7 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 		t.Fatalf("auth paths not defaulted: %+v", cfg.Auth)
 	}
 	if cfg.Security.BackendNetwork.Mode != "loopback-only" ||
-		cfg.Security.Landlock.Mode != "required" || cfg.Security.Landlock.MinimumABI != 8 {
+		cfg.Security.Landlock.Mode != "required" || cfg.Security.Landlock.MinimumABI != 6 {
 		t.Fatalf("security defaults wrong: %+v", cfg.Security)
 	}
 	if cfg.Logging.Format != "json" || cfg.Logging.Level != "info" {

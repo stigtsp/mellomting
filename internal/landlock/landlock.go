@@ -20,8 +20,13 @@ var _ = landlock.V9
 // reviewed and upgraded.
 const MaxABI = 9
 
-// DefaultMinimumABI is the default configured minimum (PLAN §55).
-const DefaultMinimumABI = 8
+// DefaultMinimumABI is the default configured minimum (PLAN §55). ABI 6
+// is the floor this program needs: TCP connect (ABI 4) for backend
+// dialing and scoped IPC (ABI 6) for the PLAN §62 signal/abstract-UDS
+// confinement. ABI 8's TSYNC all-thread path is preferred when the
+// kernel offers it, but ABI 6 kernels are still fully confined via
+// go-landlock's all-thread prctl/restrict-self fallback.
+const DefaultMinimumABI = 6
 
 // Sandbox modes (PLAN §55).
 const (

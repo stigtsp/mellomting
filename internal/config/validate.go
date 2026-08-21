@@ -39,7 +39,7 @@ const (
 
 	defaultGlobalRPS       = 100.0
 	defaultGlobalBurst     = 200
-	defaultLandlockABI     = 8
+	defaultLandlockABI     = 6
 	defaultAccountingQueue = 4096
 	// defaultAccountingReplayMaxBytes bounds the JSONL tail replayed at
 	// startup (PLAN §40).

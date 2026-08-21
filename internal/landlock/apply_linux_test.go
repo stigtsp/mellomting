@@ -34,9 +34,12 @@ import (
 // the domain must be denied.
 func TestAllThreadsEnforced(t *testing.T) {
 	lltest.RunInSubprocess(t, func() {
-		// The all-thread TSYNC path (PLAN §56) requires ABI 8; that is
-		// also the configured default minimum (PLAN §55).
-		lltest.RequireABI(t, 8)
+		// ABI 6 is the configured default minimum (PLAN §55): it gives
+		// TCP connect (ABI 4) and scoped IPC (ABI 6), enough to prove
+		// filesystem, network, and signal confinement. On ABI 8+ the
+		// all-thread TSYNC path is exercised; below it go-landlock's
+		// all-thread prctl/restrict-self sequence is.
+		lltest.RequireABI(t, landlock.DefaultMinimumABI)
 		report := landlock.Check()
 		abi := report.KernelABI
 		if abi > landlock.MaxABI {
@@ -89,18 +92,24 @@ func TestAllThreadsEnforced(t *testing.T) {
 		// Go runtime pins it to a distinct OS thread.
 		const workers = 4
 		var spin, done atomic.Bool
-		results := make(chan error, workers*2+1)
+		// Each worker reports its forbidden-write and allowed-write
+		// results as one unit so the reader can pair them without
+		// depending on channel interleaving across workers. Workers
+		// push right after spin (not after done): done only releases
+		// their pinned OS thread once the main thread has collected
+		// and verified every result.
+		results := make(chan [2]error, workers+2)
 		for range workers {
 			go func() {
 				runtime.LockOSThread()
 				for !spin.Load() {
 					runtime.Gosched()
 				}
+				results <- [2]error{openForbiddenWrite(t, secret), appendFile(t, allowed)}
 				for !done.Load() {
 					runtime.Gosched()
 				}
-				results <- openForbiddenWrite(t, secret)
-				results <- appendFile(t, allowed)
+				runtime.UnlockOSThread()
 			}()
 		}
 
@@ -113,25 +122,27 @@ func TestAllThreadsEnforced(t *testing.T) {
 		// confined domain at clone time (PLAN §56).
 		for range 2 {
 			go func() {
-				results <- openForbiddenWrite(t, secret)
+				results <- [2]error{openForbiddenWrite(t, secret), nil}
 			}()
 		}
 
 		// 1. Every pinned thread: the forbidden write must be denied,
 		// the allowed write must succeed.
 		for range workers {
-			if err := <-results; !isLandlockDenial(err) {
-				t.Fatalf("pinned thread: write to %q: expected Landlock denial, got %v", secret, err)
+			pair := <-results
+			if !isLandlockDenial(pair[0]) {
+				t.Fatalf("pinned thread: write to %q: expected Landlock denial, got %v", secret, pair[0])
 			}
-			if err := <-results; err != nil {
-				t.Fatalf("pinned thread: write to %q failed: %v", allowed, err)
+			if pair[1] != nil {
+				t.Fatalf("pinned thread: write to %q failed: %v", allowed, pair[1])
 			}
 		}
 		// 2. Threads created after the confinement: the forbidden
 		// write must be denied.
 		for range 2 {
-			if err := <-results; !isLandlockDenial(err) {
-				t.Fatalf("post-apply thread: write to %q: expected Landlock denial, got %v", secret, err)
+			pair := <-results
+			if !isLandlockDenial(pair[0]) {
+				t.Fatalf("post-apply thread: write to %q: expected Landlock denial, got %v", secret, pair[0])
 			}
 		}
 		// Release the pinned workers; they exit and unlock their

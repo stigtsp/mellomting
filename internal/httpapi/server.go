@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -114,6 +115,29 @@ func (c *committedWriter) WriteHeader(code int) {
 func (c *committedWriter) Write(b []byte) (int, error) {
 	c.committed = true
 	return c.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController (and net/http's internal probing)
+// reach the underlying writer for Flush, SetWriteDeadline, and
+// SetReadDeadline on streaming responses.
+func (c *committedWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
+// Flush forwards flushing so SSE pumping and /healthz work through the
+// wrapper (PLAN §24, §69). It is a no-op when the underlying writer does
+// not support flushing, matching net/http's convention.
+func (c *committedWriter) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards connection hijacking for protocols that need the raw
+// connection (compatibility with net/http's optional interface).
+func (c *committedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := c.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
 }
 
 // sanitizePanic reduces a recovered panic value to a short, loggable

@@ -46,9 +46,11 @@ func Apply(abi int, pol Policy) error {
 
 	// Minimal post-startup rights (PLAN §58). No execute rights are
 	// granted anywhere; the policy denies everything else by
-	// construction of the V-n preset.
+	// construction of the V-n preset. AccessFSMakeReg is deliberately
+	// absent: the accounting writer only appends to an existing file
+	// (O_APPEND), so the right to *create* files is not needed.
 	readFile := ll.AccessFSSet(llsys.AccessFSReadFile)
-	writeFile := ll.AccessFSSet(llsys.AccessFSWriteFile | llsys.AccessFSMakeReg)
+	writeFile := ll.AccessFSSet(llsys.AccessFSWriteFile)
 
 	var rules []ll.Rule
 	for _, f := range pol.ReadFiles {

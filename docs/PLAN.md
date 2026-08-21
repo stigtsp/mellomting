@@ -2007,7 +2007,7 @@ Default configuration:
 security:
   landlock:
     mode: required
-    minimum_abi: 8
+    minimum_abi: 6
 ```
 
 Modes:
@@ -2024,12 +2024,17 @@ Production documentation should recommend:
 required
 ```
 
-Why minimum ABI 8:
+Why minimum ABI 6:
 
-- the service needs modern filesystem controls;
+- the service needs filesystem read/write controls (ABI 1+), which cover
+  the users file read and the accounting append;
 - TCP network restriction is available from ABI 4;
 - IPC scoping is available from ABI 6;
-- modern all-thread synchronization is particularly important for a Go service.
+- ABI 8+ adds the all-thread TSYNC path, which is preferred when the
+  kernel offers it (a Go service spawns threads at runtime); below ABI 8
+  the pinned go-landlock all-thread prctl/restrict-self sequence is
+  still applied, so ABI 6 kernels are fully confined, not silently
+  degraded.
 
 Implementation:
 
@@ -2622,7 +2627,7 @@ security:
 
   landlock:
     mode: required
-    minimum_abi: 8
+    minimum_abi: 6
 
 logging:
   format: json

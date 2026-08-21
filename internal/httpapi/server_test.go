@@ -162,6 +162,44 @@ func TestHealthEndpoints(t *testing.T) {
 	}
 }
 
+// TestStreamFlushesThroughWrapper proves the route layer's
+// committedWriter forwards http.Flusher (X4 defence-in-depth wrapper
+// must not break SSE streaming or the health endpoints, which call
+// Flush). Before the fix, /readyz panicked on the unguarded
+// w.(http.Flusher) and streaming through httpapi never flushed.
+func TestStreamFlushesThroughWrapper(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("data: {\"id\":\"1\"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}, nil, auth.KeyLimits{})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"model-a","stream":true}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+e.key)
+	rec := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rec, r)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !rec.Flushed {
+		t.Fatalf("streaming response never flushed through the committedWriter wrapper")
+	}
+	if !strings.Contains(rec.Body.String(), "data:") {
+		t.Fatalf("stream body = %q", rec.Body.String())
+	}
+	// The wrapper's recover must not have tripped on the way out.
+	if rec.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("content type = %q", rec.Header().Get("Content-Type"))
+	}
+}
+
 func TestAuthMatrix(t *testing.T) {
 	t.Parallel()
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {

@@ -425,12 +425,12 @@ func TestMPTCPListenersDisabled(t *testing.T) {
 // fail-closed when the sandbox cannot be enforced (non-Linux, no kernel
 // support, or ABI below the configured minimum): startup must fail with
 // exit 1 (PLAN §55, §57). On a kernel that can enforce the default
-// minimum ABI (8), required mode succeeds instead; that path is covered
-// by TestServeSandboxRequiredApplies.
+// minimum ABI, required mode succeeds instead; that path is covered by
+// TestServeSandboxRequiredApplies.
 func TestServeSandboxRequiredFails(t *testing.T) {
 	report := landlock.Check()
-	if report.Supported && report.KernelABI >= 8 {
-		t.Skip("landlock is available with ABI >= 8: required mode enforces the policy instead of failing; see TestServeSandboxRequiredApplies")
+	if report.Supported && report.KernelABI >= landlock.DefaultMinimumABI {
+		t.Skip("landlock is available at the default minimum ABI: required mode enforces the policy instead of failing; see TestServeSandboxRequiredApplies")
 	}
 	bin := buildCLI(t)
 	dir := t.TempDir()
@@ -848,7 +848,7 @@ func sandboxTestConfig(t *testing.T) *config.Config {
 			"b1": {BaseURL: "http://127.0.0.1:8001", UpstreamModel: "m"},
 		},
 		Security: config.Security{
-			Landlock: config.Landlock{Mode: landlock.ModeRequired, MinimumABI: 8},
+			Landlock: config.Landlock{Mode: landlock.ModeRequired, MinimumABI: landlock.DefaultMinimumABI},
 		},
 	}
 }
@@ -886,8 +886,8 @@ func TestEnforceSandboxModes(t *testing.T) {
 // afterwards (the policy allows the backend port).
 func TestServeSandboxRequiredApplies(t *testing.T) {
 	report := landlock.Check()
-	if !report.Supported || report.KernelABI < 8 {
-		t.Skipf("landlock unavailable or kernel ABI %d < 8; required-mode enforcement cannot be tested here", report.KernelABI)
+	if !report.Supported || report.KernelABI < landlock.DefaultMinimumABI {
+		t.Skipf("landlock unavailable or kernel ABI %d < default minimum %d; required-mode enforcement cannot be tested here", report.KernelABI, landlock.DefaultMinimumABI)
 	}
 
 	bin, cfgPath, sock, key := serveFixture(t, "required")
