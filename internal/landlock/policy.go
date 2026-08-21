@@ -64,10 +64,10 @@ func BackendPorts(baseURLs ...string) ([]uint16, error) {
 		}
 		port := u.Port()
 		if port == "" {
-			if u.Scheme == "https" {
-				port = "443"
-			} else {
-				port = "80"
+			var ok bool
+			port, ok = DefaultPortForScheme(u.Scheme)
+			if !ok {
+				return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", raw, u.Scheme)
 			}
 		}
 		n, err := strconv.ParseUint(port, 10, 16)

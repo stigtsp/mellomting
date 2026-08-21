@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"mellomting/internal/config"
+	"mellomting/internal/landlock"
 	"mellomting/internal/securefile"
 )
 
@@ -299,10 +300,9 @@ func parseBaseURL(raw string) (*url.URL, error) {
 func splitHostPort(u *url.URL) (string, string) {
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
-		port = "80"
-		if u.Scheme == "https" {
-			port = "443"
-		}
+		// Scheme default, shared with the Landlock sandbox so the two
+		// can never disagree about the granted port (T-Q6).
+		port, _ = landlock.DefaultPortForScheme(u.Scheme)
 		return u.Hostname(), port
 	}
 	return host, port

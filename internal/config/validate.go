@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mellomting/internal/landlock"
 )
 
 // Defaults follow PLAN §76 and the per-section suggested defaults;
@@ -51,7 +53,6 @@ const (
 	// the registry must be bounded to keep a flood of distinct
 	// addresses from growing memory without limit.
 	DefaultPreauthSources  = 4096
-	defaultLandlockABI     = 6
 	defaultAccountingQueue = 4096
 	// defaultAccountingReplayMaxBytes bounds the JSONL tail replayed at
 	// startup (PLAN §40).
@@ -120,10 +121,10 @@ func applyDefaults(c *Config) {
 		c.Security.BackendNetwork.Mode = "loopback-only"
 	}
 	if c.Security.Landlock.Mode == "" {
-		c.Security.Landlock.Mode = landlockModeRequired
+		c.Security.Landlock.Mode = landlock.ModeRequired
 	}
 	if c.Security.Landlock.MinimumABI == 0 {
-		c.Security.Landlock.MinimumABI = defaultLandlockABI
+		c.Security.Landlock.MinimumABI = landlock.DefaultMinimumABI
 	}
 
 	if c.Logging.Format == "" {
@@ -404,12 +405,12 @@ func validateSecurity(s *Security) []string {
 
 	l := s.Landlock
 	switch l.Mode {
-	case landlockModeRequired, landlockModeBestEffort, landlockModeDisabled:
+	case landlock.ModeRequired, landlock.ModeBestEffort, landlock.ModeDisabled:
 	default:
 		errs = append(errs, fmt.Sprintf("security.landlock.mode: %q must be required, best-effort, or disabled", l.Mode))
 	}
-	if l.MinimumABI < 1 || l.MinimumABI > MaxLandlockABI {
-		errs = append(errs, fmt.Sprintf("security.landlock.minimum_abi: %d out of range 1..%d", l.MinimumABI, MaxLandlockABI))
+	if l.MinimumABI < 1 || l.MinimumABI > landlock.MaxABI {
+		errs = append(errs, fmt.Sprintf("security.landlock.minimum_abi: %d out of range 1..%d", l.MinimumABI, landlock.MaxABI))
 	}
 
 	return errs
@@ -730,16 +731,6 @@ func validateModels(models map[string]Model, backends map[string]Backend, qualif
 
 	return errs
 }
-
-const (
-	landlockModeRequired   = "required"
-	landlockModeBestEffort = "best-effort"
-	landlockModeDisabled   = "disabled"
-)
-
-// MaxLandlockABI is the highest Landlock ABI supported by the pinned
-// go-landlock v0.9.0 release (PLAN §54).
-const MaxLandlockABI = 9
 
 func isLoopbackHost(host string) bool {
 	addr, err := netip.ParseAddr(host)

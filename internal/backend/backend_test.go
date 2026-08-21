@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +18,36 @@ import (
 	"time"
 
 	"mellomting/internal/config"
+	"mellomting/internal/landlock"
 )
+
+// TestDialerPortAgreesWithLandlock (T-Q6): for an omitted-port base
+// URL, the port the dialer derives for a scheme must be exactly the
+// port the Landlock sandbox grants for that scheme. Both now read
+// landlock.DefaultPortForScheme, so a drift here is a regression in the
+// single source of truth.
+func TestDialerPortAgreesWithLandlock(t *testing.T) {
+	for _, tc := range []struct{ scheme, want string }{
+		{"http", "80"},
+		{"https", "443"},
+	} {
+		u, err := url.Parse(tc.scheme + "://example.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, port := splitHostPort(u)
+		if port != tc.want {
+			t.Fatalf("%s: dialer default port = %q, want %q", tc.scheme, port, tc.want)
+		}
+		granted, err := landlock.BackendPorts(tc.scheme + "://example.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(granted) != 1 || strconv.Itoa(int(granted[0])) != tc.want {
+			t.Fatalf("%s: landlock granted ports %v, want [%s]", tc.scheme, granted, tc.want)
+		}
+	}
+}
 
 func testOptions(t *testing.T, base string) Options {
 	t.Helper()
