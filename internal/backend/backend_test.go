@@ -608,7 +608,7 @@ func TestMPTCPDisabledOnDialer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	dialer := policyDial(Policy{Mode: "loopback-only"}, time.Second)
+	dialer := policyDial(Policy{Mode: "loopback-only"}, time.Second, net.DefaultResolver)
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
@@ -620,6 +620,88 @@ func TestMPTCPDisabledOnDialer(t *testing.T) {
 		t.Fatalf("dial through policyDialer: %v", err)
 	}
 	defer conn.Close()
+}
+
+// hangingResolver blocks until its context is done, emulating a silent
+// resolver whose DNS response never arrives (T-M14).
+type hangingResolver struct{}
+
+func (hangingResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// errResolver returns a fixed error from LookupIPAddr.
+type errResolver struct{ err error }
+
+func (r errResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return nil, r.err
+}
+
+// TestForwardDNSHangBoundedByConnectTimeout is the T-M14 integration
+// test: a resolver that hangs must not pin an admission slot or pin the
+// caller indefinitely. The DNS lookup runs under the connect-timeout
+// deadline (even for streaming requests, whose request context carries
+// no deadline), fails bounded, and is classified as ErrDialTimeout —
+// never ErrConnect, which would misclassify the failure and poison
+// passive health. The admission slot must be released.
+func TestForwardDNSHangBoundedByConnectTimeout(t *testing.T) {
+	t.Parallel()
+	o := testOptions(t, "http://hang-resolver.invalid")
+	o.Cfg.ConnectTimeout = config.Duration(200 * time.Millisecond)
+	o.Resolver = hangingResolver{}
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true})
+	if errors.Is(err, ErrConnect) {
+		t.Fatalf("hanging resolver misclassified as ErrConnect: %v", err)
+	}
+	if !errors.Is(err, ErrDialTimeout) {
+		t.Fatalf("hanging resolver: err = %v (want ErrDialTimeout)", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("DNS hang not bounded by connect timeout: %v", elapsed)
+	}
+	if n := c.Inflight(); n != 0 {
+		t.Fatalf("admission slot not released after DNS timeout: inflight = %d", n)
+	}
+}
+
+// TestForwardResolverClassification pins the DNS error taxonomy (T-M14):
+// only genuine timeouts map to ErrDialTimeout; a not-found name stays a
+// connect failure so it can drive fallback/health as a hard error.
+func TestForwardResolverClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"dns timeout flag", &net.DNSError{Err: "i/o timeout", Name: "slow.invalid", IsTimeout: true}, ErrDialTimeout},
+		{"dns temporary", &net.DNSError{Err: "temporary failure", Name: "temp.invalid", IsTemporary: true}, ErrDialTimeout},
+		{"not found", &net.DNSError{Err: "no such host", Name: "nx.invalid", IsNotFound: true}, ErrConnect},
+		{"refused", &net.DNSError{Err: "server misbehaving", Name: "refused.invalid"}, ErrConnect},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			o := testOptions(t, "http://resolve.invalid")
+			o.Cfg.ConnectTimeout = config.Duration(time.Second)
+			o.Resolver = errResolver{err: tc.err}
+			c, err := New(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("resolver err %v: got %v (want %v)", tc.err, err, tc.want)
+			}
+		})
+	}
 }
 
 func discardLogger() *slog.Logger {

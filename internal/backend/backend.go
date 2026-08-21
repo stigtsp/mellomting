@@ -93,6 +93,13 @@ func (p Policy) allow(ip net.IP) bool {
 	}
 }
 
+// Resolver resolves hostnames to IP addresses. net.DefaultResolver
+// satisfies it; tests inject a stub to exercise a hanging or failing
+// resolver without touching the process-global default (T-M14).
+type Resolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
 // Options configures one backend client.
 type Options struct {
 	Name string
@@ -103,6 +110,9 @@ type Options struct {
 	// responses (PLAN §9.1).
 	MaxResponseBytes int
 	Log              *slog.Logger
+	// Resolver overrides the DNS resolver used for outbound dials.
+	// Defaults to net.DefaultResolver. Testing hook (T-M14).
+	Resolver Resolver
 }
 
 // Client owns one backend's connection and admission state.
@@ -138,6 +148,10 @@ func New(o Options) (*Client, error) {
 	policy, err := parsePolicy(o.Network)
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", o.Name, err)
+	}
+	resolver := o.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
 	}
 
 	u, err := parseBaseURL(o.Cfg.BaseURL)
@@ -179,7 +193,7 @@ func New(o Options) (*Client, error) {
 		DisableKeepAlives: false,
 		MaxIdleConns:      16,
 		IdleConnTimeout:   90 * time.Second,
-		DialContext:       policyDial(policy, o.Cfg.ConnectTimeout.Duration()),
+		DialContext:       policyDial(policy, o.Cfg.ConnectTimeout.Duration(), resolver),
 	}
 	// Streaming: the first stream byte is expected promptly, so the
 	// header wait is bounded by header_timeout (PLAN §15).
@@ -280,8 +294,12 @@ func splitHostPort(u *url.URL) (string, string) {
 
 // policyDial returns a DialContext that enforces the egress policy on
 // every new connection (PLAN §16.2: revalidate each new connection) and
-// disables MPTCP (PLAN §61).
-func policyDial(p Policy, connectTimeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+// disables MPTCP (PLAN §61). The whole dial — DNS resolution included —
+// is bounded by the connect timeout (T-M14): a silent resolver must not
+// pin an admission slot indefinitely, and a slow resolver must surface
+// as a dial timeout (never a plain ErrConnect that would misclassify the
+// failure and feed passive-health poisoning).
+func policyDial(p Policy, connectTimeout time.Duration, resolver Resolver) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if network != "tcp" && network != "tcp4" && network != "tcp6" {
 			return nil, fmt.Errorf("unexpected network %q", network)
@@ -290,6 +308,15 @@ func policyDial(p Policy, connectTimeout time.Duration) func(context.Context, st
 		if err != nil {
 			return nil, ErrConnect
 		}
+		timeout := connectTimeout
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+		// The deadline covers name resolution and the TCP connect
+		// (T-M14); the net.Dialer.Timeout below remains as a second,
+		// shorter-or-equal bound on the connect itself.
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		var target string
 		if ip := net.ParseIP(host); ip != nil {
 			if !p.allow(ip) {
@@ -297,8 +324,11 @@ func policyDial(p Policy, connectTimeout time.Duration) func(context.Context, st
 			}
 			target = net.JoinHostPort(ip.String(), port)
 		} else {
-			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			ips, err := resolver.LookupIPAddr(dialCtx, host)
 			if err != nil {
+				if isTimeout(err) {
+					return nil, ErrDialTimeout
+				}
 				return nil, ErrConnect
 			}
 			for _, ip := range ips {
@@ -312,17 +342,29 @@ func policyDial(p Policy, connectTimeout time.Duration) func(context.Context, st
 			}
 		}
 		var d net.Dialer
-		d.Timeout = connectTimeout
-		if d.Timeout == 0 {
-			d.Timeout = 30 * time.Second
-		}
+		d.Timeout = timeout
 		d.SetMultipathTCP(false) // PLAN §61, §83
-		conn, err := d.DialContext(ctx, "tcp", target)
+		conn, err := d.DialContext(dialCtx, "tcp", target)
 		if err != nil {
 			return nil, dialError(err)
 		}
 		return conn, nil
 	}
+}
+
+// isTimeout reports whether an error is a resolution/dial timeout or
+// deadline expiry (T-M14). DNS errors carry their own timeout flag;
+// context deadlines and net.Error timeouts are also covered.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var de *net.DNSError
+	if errors.As(err, &de) {
+		return de.IsTimeout || de.IsTemporary
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 func dialError(err error) error {
