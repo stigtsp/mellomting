@@ -1286,3 +1286,124 @@ func TestServeSandboxRequiredApplies(t *testing.T) {
 		t.Fatal("serve did not exit after SIGTERM")
 	}
 }
+
+// TestServeAccountingDisabledStillEnforcesQuota proves that token quotas
+// remain enforced when accounting.enabled: false (T-M5). Accounting off
+// must never silently void a per-key token budget: the in-memory quota
+// tracker runs regardless of JSONL persistence. A request whose
+// reservation (the model cap) exceeds the key's hourly budget must be
+// rejected 429 token_quota_exceeded, and the daemon must warn at startup
+// that quotas are in-memory only.
+func TestServeAccountingDisabledStillEnforcesQuota(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("quota-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+			Limits: auth.KeyLimits{TokensPerHour: 50},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+accounting:
+  enabled: false
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    policy:
+      max_output_tokens: 100
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "serve", "-config", cfgPath)
+	// Capture daemon logs to a file (not an in-memory buffer): the child
+	// inherits the fd, so writes are complete once the process exits and
+	// there is no parent-side io.Copy goroutine to race with.
+	logPath := filepath.Join(dir, "daemon.log")
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if cmd.Process != nil && !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	client := waitReady(t, sock)
+
+	// The request's reservation is the injected 100-token cap, which
+	// exceeds the key's 50-token hourly quota. It must be rejected even
+	// though accounting (JSONL persistence) is disabled.
+	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
+	if resp.StatusCode != 429 || !strings.Contains(body, "token_quota_exceeded") {
+		t.Fatalf("quota not enforced with accounting disabled: %d %s", resp.StatusCode, body)
+	}
+
+	// The daemon must also warn at startup that quotas are in-memory
+	// only, so an operator who disabled accounting sees the consequence.
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+	killed = true
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "accounting disabled; token quotas are enforced in-memory only") {
+		t.Fatalf("startup warning missing: %q", string(logData))
+	}
+}

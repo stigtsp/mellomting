@@ -298,6 +298,18 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
+// quotaKeysConfigured reports whether any key carries a token budget, so
+// the daemon can warn when accounting is disabled but quotas would
+// otherwise apply (T-M5).
+func quotaKeysConfigured(keys []auth.Key) bool {
+	for _, k := range keys {
+		if k.Limits.TokensPerHour > 0 || k.Limits.TokensPerDay > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // backendBaseURLs returns the configured backend base URLs (PLAN §60).
 func backendBaseURLs(cfg *config.Config) []string {
 	urls := make([]string, 0, len(cfg.Backends))
@@ -457,15 +469,16 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("routing: %w", err)
 	}
 
-	// Token accounting (PLAN §37-42): a quota tracker and the bounded
-	// JSONL writer. When enabled, replay the recent log tail at startup so
-	// a daemon restart does not trivially reset per-key token windows
-	// (PLAN §40). Startup is fail-closed: an unusable accounting file is
-	// a startup error rather than a silent reset.
-	var quota *accounting.Quota
+	// Token accounting (PLAN §37-42). Token quotas are always enforced
+	// (T-M5): the quota tracker is in-memory and independent of JSONL
+	// persistence, so accounting.enabled:false can no longer silently
+	// void per-key token budgets. accounting.enabled only controls
+	// whether usage records are written and replayed at startup. Startup
+	// is fail-closed: an unusable accounting file is a startup error
+	// rather than a silent reset.
+	quota := accounting.NewQuota()
 	var writer *accounting.Writer
 	if cfg.Accounting.Enabled {
-		quota = accounting.NewQuota()
 		w, err := accounting.NewWriter(accounting.WriterConfig{
 			Path:          cfg.Accounting.Path,
 			QueueSize:     cfg.Accounting.QueueSize,
@@ -488,6 +501,8 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			"fsync", cfg.Accounting.FSync,
 			"queue_size", cfg.Accounting.QueueSize,
 		)
+	} else if quotaKeysConfigured(users.Keys) {
+		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
 	}
 
 	prox, err := proxy.New(cfg, router, clients, log, quota, writer)

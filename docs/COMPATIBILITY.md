@@ -90,6 +90,21 @@ If exact stream usage cannot be obtained, the inference completes
 normally and accounting records `usage_status: unknown` (never a made-up
 exact count).
 
+## Token quotas vs. accounting persistence
+
+Per-key token budgets (`limits.tokens_per_hour` / `tokens_per_day`) are
+enforced **regardless** of `accounting.enabled`. The in-memory quota
+tracker always runs, so `accounting.enabled: false` only disables JSONL
+usage records and startup replay — it never silently voids a token
+quota.
+
+Consequence: with accounting disabled, token quotas are enforced
+in-memory only, so a daemon restart resets the current windows and no
+usage is ever recorded. Mellomting warns about exactly this at startup
+when accounting is disabled and at least one key carries a token budget.
+Operators who need durable, replay-able quotas must leave accounting
+enabled.
+
 ## Endpoint coverage
 
 Mellomting forwards only the allow-listed inference endpoints and 404s
