@@ -26,6 +26,10 @@ type dualEnv struct {
 }
 
 func newDualEnv(t *testing.T, maxAttempts int, b1, b2 http.HandlerFunc) *dualEnv {
+	return newDualEnvIdle(t, maxAttempts, 2*time.Second, b1, b2)
+}
+
+func newDualEnvIdle(t *testing.T, maxAttempts int, idle time.Duration, b1, b2 http.HandlerFunc) *dualEnv {
 	t.Helper()
 	e := &dualEnv{body: `{"model":"gen-1","messages":[{"role":"u","content":"x"}]}`}
 	e.f1n.Store(0)
@@ -46,11 +50,12 @@ func newDualEnv(t *testing.T, maxAttempts int, b1, b2 http.HandlerFunc) *dualEnv
 		ConnectTimeout:    config.Duration(time.Second),
 		HeaderTimeout:     config.Duration(2 * time.Second),
 		RequestTimeout:    config.Duration(5 * time.Second),
-		StreamIdleTimeout: config.Duration(2 * time.Second),
+		StreamIdleTimeout: config.Duration(idle),
 	}
 	cfg := testConfig(e.f1.server.URL)
 	beA := cfg.Backends["b1"]
 	beA.UpstreamModel = "Up/A"
+	beA.StreamIdleTimeout = config.Duration(idle)
 	cfg.Backends["b1"] = beA
 	be.BaseURL = e.f2.server.URL
 	be.UpstreamModel = "Up/B"
@@ -170,6 +175,74 @@ func TestStreamFailureIsNeverRetried(t *testing.T) {
 		// Handler returns: the connection closes mid-stream.
 	}
 	e := newDualEnv(t, 2, aSSE, okJSON)
+	rec := run(t, e.p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (headers already committed)", rec.Code)
+	}
+	if e.f1n.Load() != 1 || e.f2n.Load() != 0 {
+		t.Fatalf("post-stream retry happened: a=%d b=%d, want 1/0", e.f1n.Load(), e.f2n.Load())
+	}
+	if !strings.Contains(rec.Body.String(), `"partial":1`) {
+		t.Fatalf("first event lost: %q", rec.Body.String())
+	}
+}
+
+// T-T8: the stream-failure-never-retried property must hold for a real
+// mid-stream ABORT (not just a clean EOF): the backend writes an event,
+// then RSTs the TCP connection. The proxy has already committed 200 and
+// relayed bytes, so it must truncate and return without ever trying the
+// sibling replica.
+func TestStreamAbortIsNeverRetried(t *testing.T) {
+	t.Parallel()
+	abortSSE := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"partial\":1}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0) // RST, not a clean FIN.
+		}
+		_ = conn.Close()
+	}
+	e := newDualEnv(t, 2, abortSSE, okJSON)
+	rec := run(t, e.p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (headers already committed)", rec.Code)
+	}
+	if e.f1n.Load() != 1 || e.f2n.Load() != 0 {
+		t.Fatalf("post-stream retry happened: a=%d b=%d, want 1/0", e.f1n.Load(), e.f2n.Load())
+	}
+	if !strings.Contains(rec.Body.String(), `"partial":1`) {
+		t.Fatalf("first event lost: %q", rec.Body.String())
+	}
+}
+
+// T-T8: the same never-retried property must hold when the stream is cut
+// by stream_idle_timeout (PLAN §24): the backend writes an event, then
+// goes silent until the proxy's read-idle bound fires. The stream is
+// truncated; the sibling replica is never tried.
+func TestStreamIdleTimeoutIsNeverRetried(t *testing.T) {
+	t.Parallel()
+	stall := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"partial\":1}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // hold the stream open until cancelled
+	}
+	e := newDualEnvIdle(t, 2, 60*time.Millisecond, stall, okJSON)
 	rec := run(t, e.p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","stream":true}`, testKey())
 	if rec.Code != 200 {
