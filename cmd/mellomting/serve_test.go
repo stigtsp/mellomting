@@ -430,6 +430,11 @@ func TestSafeUnixListen(t *testing.T) {
 	if st.Mode().Perm() != 0o660 {
 		t.Fatalf("mode = %v", st.Mode().Perm())
 	}
+	// A live socket must not be silently stolen (T-L9): a second listen
+	// on the same path while ln1 is alive must refuse.
+	if _, err := safeUnixListen(configListenUnix(sock, "0660")); err == nil {
+		t.Fatal("live socket stolen")
+	}
 	_ = ln1.Close()
 	ln2, err := safeUnixListen(configListenUnix(sock, "0660"))
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"mellomting/internal/accounting"
 	"mellomting/internal/auth"
@@ -341,6 +342,18 @@ func buildListener(l config.Listen) (net.Listener, error) {
 	}
 }
 
+// isSocketLive reports whether a live listener is accepting on the Unix
+// socket path: a successful dial means an owner is bound to it (T-L9). A
+// stale socket (no listener behind it) refuses the dial.
+func isSocketLive(addr string) bool {
+	conn, err := net.DialTimeout("unix", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // mptcpOffListen listens on TCP with MPTCP explicitly disabled
 // (PLAN §61, §83).
 func mptcpOffListen(addr string) (net.Listener, error) {
@@ -368,6 +381,12 @@ func safeUnixListen(l config.Listen) (net.Listener, error) {
 		}
 		if st.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("refusing to unlink %q: it is not a unix socket (PLAN §8.3)", l.Address)
+		}
+		// Liveness check (T-L9): refuse to steal a socket a live
+		// listener is accepting on. Only a stale socket (nothing
+		// behind it, so a dial is refused) is removed.
+		if isSocketLive(l.Address) {
+			return nil, fmt.Errorf("refusing to unlink %q: a live listener is accepting on it (T-L9)", l.Address)
 		}
 		if err := os.Remove(l.Address); err != nil {
 			return nil, fmt.Errorf("remove stale socket %q: %w", l.Address, err)
