@@ -343,6 +343,10 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "secret backend detail") {
 		t.Fatalf("backend body leaked: %s", rec.Body.String())
 	}
+	// The body must be exactly ONE valid JSON error object (X7: two
+	// concatenated objects was invalid JSON that OpenAI-compatible SDKs
+	// fail to parse).
+	decodeErr(t, rec.Body.String(), 502)
 
 	f2 := newFakeVLLM(t, upstream429)
 	p2 := newProxy(t, f2)
@@ -350,8 +354,51 @@ func TestUpstreamErrorsAreSanitized(t *testing.T) {
 	if rec.Code != 429 {
 		t.Fatalf("429 mapping: status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "upstream_rate_limited") {
-		t.Fatalf("body = %s", rec.Body.String())
+	decodeErr(t, rec.Body.String(), 429)
+
+	// A backend 400 (not 429, not >=500) maps to a client 400.
+	f3 := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad"}}`))
+	})
+	p3 := newProxy(t, f3)
+	rec = run(t, p3, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+	if rec.Code != 400 {
+		t.Fatalf("400 mapping: status = %d", rec.Code)
+	}
+	decodeErr(t, rec.Body.String(), 400)
+}
+
+// decodeErr asserts the response body is exactly one valid OpenAI-shaped
+// JSON error object carrying the given HTTP status.
+func decodeErr(t *testing.T, body string, status int) {
+	t.Helper()
+	if err := json.Unmarshal([]byte(body), &struct {
+		Error struct {
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{}); err != nil {
+		t.Fatalf("error body is not a single valid JSON object (status %d): %q: %v", status, body, err)
+	}
+	// Assert the whole body was consumed by one object (no trailing
+	// concatenated object) via a strict decode.
+	dec := json.NewDecoder(strings.NewReader(body))
+	var first struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := dec.Decode(&first); err != nil {
+		t.Fatalf("decode: %v (body=%q)", err, body)
+	}
+	if first.Error == nil {
+		t.Fatalf("body carries no error field: %q", body)
+	}
+	if dec.More() {
+		t.Fatalf("body carries more than one JSON object: %q", body)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		t.Fatalf("trailing content after error object: %v (body=%q)", err, body)
 	}
 }
 

@@ -493,6 +493,11 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				fail(400, "invalid_request_error", "upstream_rejected",
 					"upstream rejected the request", "backend_4xx")
 			}
+			// Exactly one error object is emitted per terminal error.
+			// Without this return the second switch below ran again,
+			// writing a second concatenated JSON object and
+			// overwriting out.status/out.class (X7).
+			return
 		}
 		switch {
 		case errors.Is(lastErr, backend.ErrQueueFull):
