@@ -149,3 +149,31 @@ func TestFilesSymlinkRefused(t *testing.T) {
 		t.Fatal("symlink final component accepted (PLAN §28)")
 	}
 }
+
+func TestFilesRejectsWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	// A world-readable private key is refused fail-closed (T-M8).
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Files(certPath, keyPath); err == nil {
+		t.Fatal("world-readable TLS key accepted (T-M8)")
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A world-readable certificate is likewise refused.
+	if err := os.Chmod(certPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Files(certPath, keyPath); err == nil {
+		t.Fatal("world-readable TLS certificate accepted (T-M8)")
+	}
+	if err := os.Chmod(certPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Files(certPath, keyPath); err != nil {
+		t.Fatalf("0600 TLS files rejected: %v", err)
+	}
+}

@@ -82,34 +82,39 @@ func TestReadBounded(t *testing.T) {
 	}
 }
 
-func TestWorldWritable(t *testing.T) {
+func TestWorldAccessible(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	set := func(name string, perm os.FileMode) {
 		t.Helper()
 		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, nil, perm); err != nil {
+		if err := os.WriteFile(p, []byte("x"), perm); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chmod(p, perm); err != nil { // umask-proof
 			t.Fatal(err)
 		}
 	}
-	set("a", 0o646)
-	mode, err := LStat(filepath.Join(dir, "a"))
-	if err != nil {
-		t.Fatal(err)
+	// Reject: any "other" access bit exposes the secret (T-M8).
+	for _, perm := range []os.FileMode{0o644, 0o666, 0o777, 0o604} {
+		if !WorldAccessible(perm) {
+			t.Fatalf("mode %04o must be reported world-accessible", perm)
+		}
 	}
-	if !WorldWritable(mode) {
-		t.Fatal("0646 not reported world-writable")
+	// Accept: owner-only and owner+group modes.
+	for _, perm := range []os.FileMode{0o600, 0o640, 0o660, 0o700} {
+		if WorldAccessible(perm) {
+			t.Fatalf("mode %04o must not be reported world-accessible", perm)
+		}
 	}
-	set("b", 0o640)
-	mode, err = LStat(filepath.Join(dir, "b"))
-	if err != nil {
-		t.Fatal(err)
+	// Read refuses a world-accessible file (fail closed).
+	set("bad", 0o644)
+	if _, err := Read(filepath.Join(dir, "bad"), 0); err == nil {
+		t.Fatal("world-readable file read succeeded")
 	}
-	if WorldWritable(mode) {
-		t.Fatal("0640 reported world-writable")
+	set("good", 0o640)
+	if _, err := Read(filepath.Join(dir, "good"), 0); err != nil {
+		t.Fatalf("0640 read failed: %v", err)
 	}
 }

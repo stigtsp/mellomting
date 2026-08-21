@@ -113,6 +113,27 @@ func TestForwardInjectsBackendAuth(t *testing.T) {
 	}
 }
 
+func TestForwardRejectsWorldReadableKeyFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "backend.key")
+	if err := os.WriteFile(keyFile, []byte("backend-secret-123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := testOptions(t, "http://127.0.0.1:8001")
+	o.Cfg.APIKeyFile = keyFile
+	if _, err := New(o); err == nil {
+		t.Fatal("world-readable api_key_file accepted (T-M8)")
+	}
+	if err := os.Chmod(keyFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(o); err != nil {
+		t.Fatalf("0600 api_key_file rejected: %v", err)
+	}
+}
+
 // Redirects are never followed (X3): the backend must not steer the
 // connection elsewhere, and the Authorization header must never be
 // re-sent to a redirect target.

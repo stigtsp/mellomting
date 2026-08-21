@@ -15,8 +15,11 @@ import (
 const DefaultMaxSize = 1 << 20
 
 // Read opens path without following the final component if it is a
-// symlink, verifies the target is a regular file, and returns at most
-// maxBytes of content (DefaultMaxSize when maxBytes <= 0).
+// symlink, verifies the target is a regular file, rejects a mode that is
+// accessible by others (T-M8), and returns at most maxBytes of content
+// (DefaultMaxSize when maxBytes <= 0). Sensitive files are secret-bearing
+// (users, pepper, TLS key, backend api_key_file), so a group- or
+// world-readable mode is refused fail-closed rather than read.
 func Read(path string, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxSize
@@ -34,6 +37,9 @@ func Read(path string, maxBytes int64) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file")
+	}
+	if WorldAccessible(info.Mode()) {
+		return nil, fmt.Errorf("mode %04o is too permissive: file must not be readable by others (use 0600 or 0640)", info.Mode().Perm())
 	}
 
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
@@ -59,8 +65,10 @@ func LStat(path string) (os.FileMode, error) {
 	return info.Mode(), nil
 }
 
-// WorldWritable reports whether the (non-symlink) file is group- or
-// world-writable.
-func WorldWritable(mode os.FileMode) bool {
-	return mode&(0o020|0o002) != 0
+// WorldAccessible reports whether the (non-symlink) file has any
+// permission bit set for "others" (read, write, or execute). The exposure
+// is readability: a 0644/0666 secret file is rejected while 0600/0640 are
+// accepted (PLAN §100, T-M8).
+func WorldAccessible(mode os.FileMode) bool {
+	return mode.Perm()&0o007 != 0
 }

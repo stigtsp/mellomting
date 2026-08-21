@@ -212,6 +212,51 @@ func TestLoadUsersRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestLoadUsersRejectsWorldReadable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "users.yaml")
+	rawKey, id, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := "version: 1\nkeys:\n  - id: " + id + "\n    name: t\n    secret_hash: " +
+		FormatHashValue(Hash([]byte("pepper-pepper-xx"), rawKey)) + "\n    enabled: true\n    models: [\"*\"]\n"
+
+	if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUsers(path); err == nil {
+		t.Fatal("world-readable users file accepted")
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUsers(path); err != nil {
+		t.Fatalf("0640 users file rejected: %v", err)
+	}
+}
+
+func TestLoadPepperRejectsWorldReadable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.pepper")
+	if err := os.WriteFile(path, []byte("sixteen-byte-pepper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPepper(path); err == nil {
+		t.Fatal("world-readable pepper accepted")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPepper(path); err != nil {
+		t.Fatalf("0600 pepper rejected: %v", err)
+	}
+}
+
 func mustKey(t *testing.T) string {
 	t.Helper()
 	k, _, err := Generate()
