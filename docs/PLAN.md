@@ -2609,7 +2609,7 @@ server:
   max_header_bytes: 32768
   max_body_bytes: 16777216
   max_response_bytes: 67108864
-  max_inflight_requests: 32
+  max_inflight_requests: 64
   max_buffered_request_bytes: 67108864
 
   read_header_timeout: 5s
