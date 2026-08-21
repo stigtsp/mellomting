@@ -33,11 +33,16 @@ test:
 
 .PHONY: check
 check: ## full quality gate (AGENTS.md)
-	gofmt -l .
+	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
 	$(GO) build ./...
 	$(GO) vet ./...
 	$(GO) test ./...
 	$(GO) test -race ./...
+	# staticcheck/govulncheck are run on the primary linux build when
+	# installed (AGENTS.md); CI installs both. SA4023 under GOOS=darwin
+	# is a known non-issue: landlock.Apply must fail closed off-Linux.
+	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; else echo "staticcheck not installed; skipping (AGENTS.md)"; fi
+	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "govulncheck not installed; skipping (AGENTS.md)"; fi
 
 .PHONY: clean
 clean:

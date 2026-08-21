@@ -60,6 +60,28 @@ jobs:
       - name: Fuzz config parser (15s smoke)
         run: go test -run=NONE -fuzz=FuzzParse -fuzztime=15s ./internal/config
 
+  nonlinux:
+    name: non-linux build (darwin) vet+test
+    runs-on: macos-latest
+    needs: quality
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # The landlock_other/apply_other build and TestApplyNonLinuxFailsClosed
+      # only exist on non-Linux: on an ubuntu runner this test takes its
+      # Linux branch, so its fail-closed assertion never runs (T-Q3).
+      - name: Vet (darwin)
+        run: go vet ./...
+
+      - name: Test (darwin)
+        run: go test ./...
+
   build:
     name: cross-compile
     runs-on: ubuntu-latest

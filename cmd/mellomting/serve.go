@@ -300,6 +300,10 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	if abi > landlock.MaxABI {
 		abi = landlock.MaxABI
 	}
+	// On non-Linux builds Apply always returns a non-nil error by design
+	// (PLAN §7 fail-closed), so the nil check is statically "always
+	// true" there; staticcheck reports SA4023 only under GOOS=darwin and
+	// is scoped to the linux build in the quality gate (see AGENTS.md).
 	if err := landlock.Apply(abi, pol); err != nil {
 		return failClosed("sandbox application failed", err.Error())
 	}

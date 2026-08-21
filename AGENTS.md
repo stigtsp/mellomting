@@ -92,8 +92,15 @@ go build ./...
 go test ./...
 go test -race ./...
 go vet ./...
-staticcheck ./...     # if installed
+staticcheck ./...     # if installed, on the primary linux build
+govulncheck ./...     # if installed (also in `make check`)
 ```
+
+`make check` runs all of the above and fails on `gofmt -l` output. staticcheck
+and govulncheck are run on the primary linux build (as in CI). SA4023 under
+`GOOS=darwin` at `serve.go` is a known non-issue: `landlock.Apply` must fail
+closed on non-Linux (PLAN §7), so its nil-check is intentionally always-true
+there.
 
 - Security-critical behaviour must have automated tests; fuzz the parser
   targets listed in PLAN §80 with arbitrary bytes.

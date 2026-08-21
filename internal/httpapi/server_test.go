@@ -772,8 +772,7 @@ func TestKeyDefaultConcurrencyNoStarve(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	arrived := make(chan struct{}, auth.DefaultConcurrentRequests+4)
-	var e *env
-	e = buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		// The aggressor key is identified by its passthrough User-Agent
 		// (client Authorization is stripped before forwarding, PLAN §17).
 		if r.UserAgent() == "tx8-aggressor" {
