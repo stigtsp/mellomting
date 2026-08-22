@@ -501,6 +501,25 @@ models:
 			wantErr: "allow_plaintext_non_loopback",
 		},
 		{
+			name: "tcp listener with listen.mode rejected",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+    mode: "0660"
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "server.listen.mode: only valid for network unix",
+		},
+		{
 			name: "plaintext localhost tcp rejected too",
 			yaml: `
 version: 1

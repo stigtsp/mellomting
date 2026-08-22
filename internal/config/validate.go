@@ -293,6 +293,9 @@ func validateServer(s *Server) []string {
 
 	switch s.Listen.Network {
 	case "tcp":
+		if s.Listen.Mode != "" {
+			errs = append(errs, "server.listen.mode: only valid for network unix")
+		}
 		host, _, err := net.SplitHostPort(s.Listen.Address)
 		if err != nil || host == "" {
 			errs = append(errs, fmt.Sprintf("server.listen.address: %q must be host:port for network tcp", s.Listen.Address))
