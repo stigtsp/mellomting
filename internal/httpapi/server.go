@@ -113,9 +113,12 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 // before the store so a request that races the reload can at worst build
 // fresh limit state from the previous store's keys — never keep a stale
 // registry entry for the reloaded store (which would silently retain the
-// old, possibly more permissive limits).
+// old, possibly more permissive limits). Token buckets are carried over
+// across the reload for keys whose rate and burst are unchanged, so a
+// reload does not gift every key a fresh burst; changed limits rebuild
+// the bucket from the reloaded store (FIX-22).
 func (s *Server) ReloadStore(st *auth.Store) {
-	s.keyLimits.Store(limiter.NewRegistry())
+	s.keyLimits.Store(limiter.NewRegistryCarrying(s.keyLimits.Load()))
 	s.store.Store(st)
 }
 

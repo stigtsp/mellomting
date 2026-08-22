@@ -120,6 +120,12 @@ func (ks *KeyState) AcquireConcurrency() (release func(), ok bool) {
 	return ks.Concur.Acquire()
 }
 
+// match reports whether the bucket was built with the given rate and
+// burst, i.e. whether carrying it across a reload is safe (FIX-22).
+func (b *Bucket) match(rate float64, burst int) bool {
+	return b.rate == rate && b.cap == float64(burst)
+}
+
 // Registry lazily materializes per-key limit state for authenticated
 // keys (PLAN §32, §34, §35). State is bounded by the finite key store:
 // only keys that passed authentication ever obtain a slot, and the
@@ -127,11 +133,22 @@ func (ks *KeyState) AcquireConcurrency() (release func(), ok bool) {
 type Registry struct {
 	mu   sync.Mutex
 	keys map[string]*KeyState
+	prev *Registry // prior generation, for token-bucket carry-over on reload
 }
 
 // NewRegistry builds an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{keys: make(map[string]*KeyState)}
+}
+
+// NewRegistryCarrying builds an empty registry that carries over the
+// token buckets of the previous generation for keys whose rate and burst
+// are unchanged, so a SIGHUP reload does not gift every key a fresh
+// burst (FIX-22, PLAN §30, §34). Concurrency bounds are never carried:
+// they are always built fresh from the reloaded store, so a changed
+// concurrent_requests limit applies immediately.
+func NewRegistryCarrying(prev *Registry) *Registry {
+	return &Registry{keys: make(map[string]*KeyState), prev: prev}
 }
 
 // For returns the limit state of a key, creating it on first use.
@@ -143,8 +160,22 @@ func (r *Registry) For(key *auth.Key) *KeyState {
 		return ks
 	}
 	ks = r.build(key)
+	if r.prev != nil {
+		if prev := r.prev.lookup(key.ID); prev != nil && prev.Bucket != nil &&
+			prev.Bucket.match(key.Limits.RequestsPerSecond, key.Limits.Burst) {
+			ks.Bucket = prev.Bucket
+		}
+	}
 	r.keys[key.ID] = ks
 	return ks
+}
+
+// lookup returns the key state for keyID without creating one. It must
+// not be called with r.mu held (it takes the lock itself).
+func (r *Registry) lookup(keyID string) *KeyState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.keys[keyID]
 }
 
 func (r *Registry) build(key *auth.Key) *KeyState {

@@ -1309,6 +1309,43 @@ func TestReloadAppliesNewPerKeyLimits(t *testing.T) {
 	}
 }
 
+// FIX-22, PLAN §30, §34: a reload must not gift every key a fresh token
+// burst. Drain a key's bucket below a full burst, reload with identical
+// limits, and assert the bucket is not refilled.
+func TestReloadPreservesPerKeyBucket(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}, nil, auth.KeyLimits{RequestsPerSecond: 1, Burst: 2})
+
+	// Drain the key's bucket: 2 admits (burst), then a throttle.
+	for i := 0; i < 2; i++ {
+		if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 200 {
+			t.Fatalf("drain request %d: %d body=%s", i, w.Code, w.Body.String())
+		}
+	}
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 429 {
+		t.Fatalf("bucket not drained: %d body=%s (want 429)", w.Code, w.Body.String())
+	}
+
+	// Reload with identical limits, then immediately probe again.
+	old, err := e.srv.store.Load().Lookup(e.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st2, err := auth.NewStore(&auth.UsersFile{Version: 1, Keys: []auth.Key{*old}}, []byte("httpapi-test-pepper-16b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.ReloadStore(st2)
+
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 {
+		t.Fatalf("after reload, bucket refilled: %d body=%s (want 429; reload must preserve the drained bucket)",
+			w.Code, w.Body.String())
+	}
+}
+
 // T-T9: the remaining allow-listed inference endpoints (/v1/completions and
 // /v1/embeddings) must be routed through the real HTTP surface, apply the
 // model rewrite, and enforce per-key model ACL the same way chat does.
