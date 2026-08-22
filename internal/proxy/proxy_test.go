@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -427,6 +428,94 @@ func TestChatStreamPassthrough(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream missing %q: %s", want, body)
 		}
+	}
+}
+
+// FIX-03/N3: "stream": true on /v1/embeddings must not bypass token
+// accounting. The backend answers with a plain application/json body that
+// reports 1000 total tokens. A stream-flagged embeddings request is
+// rejected 400 (OpenAI never streams embeddings), and the non-stream
+// request is buffered (never fed to the SSE pump) and its usage is
+// accounted.
+func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
+	t.Parallel()
+	embJSON := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"index":0,"embedding":[0.1]}],"usage":{"prompt_tokens":5,"total_tokens":1000}}`))
+	}
+	f := newFakeVLLM(t, embJSON)
+
+	accPath := filepath.Join(t.TempDir(), "usage.jsonl")
+	acc, err := accounting.NewWriter(accounting.WriterConfig{Path: accPath, FSync: "never", Log: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = acc.Close() })
+
+	cfg := testConfig(f.server.URL)
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"],
+		Network:          backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes,
+		Log:              discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// stream=true is rejected outright: streaming is only valid for
+	// generative endpoints, and accepting it here would let an
+	// SSE-misrouted response charge zero tokens.
+	rec := run(t, p, http.MethodPost, "/v1/embeddings",
+		`{"model":"gen-1","input":"hi","stream":true}`, testKey())
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "stream_not_supported") {
+		t.Fatalf("stream embeddings: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// stream=false is buffered and accounted: application/json (never
+	// text/event-stream), and the backend's reported usage is charged.
+	rec = run(t, p, http.MethodPost, "/v1/embeddings",
+		`{"model":"gen-1","input":"hi"}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("embeddings: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("embeddings content-type = %q, want application/json (never text/event-stream)", ct)
+	}
+	if err := acc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(accPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs []accounting.Record
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var r accounting.Record
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("bad accounting line: %v: %s", err, line)
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("accounting records = %d, want 1: %s", len(recs), string(data))
+	}
+	if recs[0].TotalTokens != 1000 || recs[0].ChargedTokens != 1000 {
+		t.Fatalf("usage = %+v, want total/charged 1000", recs[0])
+	}
+	if recs[0].Endpoint != "embeddings" {
+		t.Fatalf("endpoint = %q", recs[0].Endpoint)
 	}
 }
 

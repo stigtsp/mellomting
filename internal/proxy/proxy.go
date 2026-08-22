@@ -46,6 +46,7 @@ type operation struct {
 	path       string // backend path
 	method     string
 	needsModel bool // body must carry a "model" field
+	generative bool // streams output tokens (chat/completions/responses)
 	capture    bool // record created response IDs (responses create)
 	respID     bool // ResponseID is authoritative (retrieve/cancel)
 	endpoint   string
@@ -57,10 +58,10 @@ type operation struct {
 }
 
 var (
-	opChat       = operation{path: "/v1/chat/completions", method: "POST", needsModel: true, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
-	opLegacy     = operation{path: "/v1/completions", method: "POST", needsModel: true, endpoint: "completions", capField: "max_tokens"}
+	opChat       = operation{path: "/v1/chat/completions", method: "POST", needsModel: true, generative: true, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
+	opLegacy     = operation{path: "/v1/completions", method: "POST", needsModel: true, generative: true, endpoint: "completions", capField: "max_tokens"}
 	opEmbed      = operation{path: "/v1/embeddings", method: "POST", needsModel: true, endpoint: "embeddings"}
-	opResp       = operation{path: "/v1/responses", method: "POST", needsModel: true, capture: true, endpoint: "responses", capField: "max_output_tokens"}
+	opResp       = operation{path: "/v1/responses", method: "POST", needsModel: true, generative: true, capture: true, endpoint: "responses", capField: "max_output_tokens"}
 	opRespGet    = operation{path: "/v1/responses", method: "GET", respID: true, endpoint: "responses"}
 	opRespCancel = operation{path: "/v1/responses", method: "POST", respID: true, endpoint: "responses"}
 )
@@ -261,6 +262,15 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		case errors.Is(perr, errModelNotString):
 			fail(400, "invalid_request_error", "invalid_model",
 				"the model field must be a string", "bad_request")
+			return
+		}
+		// OpenAI never streams non-generative endpoints (FIX-03/N3):
+		// accepting "stream": true here would otherwise let a
+		// misrouted SSE response charge zero tokens. Fail closed with a
+		// 4xx before any accounting or forwarding happens.
+		if stream && !o.generative {
+			fail(400, "invalid_request_error", "stream_not_supported",
+				"streaming is not supported for this endpoint", "bad_request")
 			return
 		}
 		// Do not reveal whether the model exists (PLAN §31): unknown

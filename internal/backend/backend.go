@@ -533,7 +533,13 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 		h.release()
 		return nil, requestError(err, req.Stream)
 	}
-	streamBody := req.Stream && resp.StatusCode == http.StatusOK
+	// Response liveness is decided from the response's Content-Type, not
+	// from the client's stream flag (FIX-03/N3 of FIX_REVIEW_2026-08-22):
+	// a stream-flagged request answered with a plain application/json
+	// 200 (e.g. /v1/embeddings, which OpenAI never streams) is buffered
+	// and accounted like any non-streaming response, never fed to the
+	// SSE pump where it would charge zero tokens.
+	streamBody := resp.StatusCode == http.StatusOK && isEventStream(resp)
 	if !streamBody {
 		defer resp.Body.Close()
 		data, rerr := io.ReadAll(io.LimitReader(resp.Body, int64(c.maxResponseBytes)+1))
@@ -565,6 +571,15 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	// backend). The caller must Close the Result once the body has
 	// been fully drained.
 	return &Result{Status: resp.StatusCode, Header: resp.Header, Body: resp.Body, hold: h}, nil
+}
+
+// isEventStream reports whether the backend is sending a Server-Sent
+// Events body. Liveness is decided from the response Content-Type, not
+// the client's stream flag, so a plain application/json 200 is never fed
+// to the SSE pump (FIX-03/N3).
+func isEventStream(resp *http.Response) bool {
+	ct := resp.Header.Get("Content-Type")
+	return strings.HasPrefix(strings.ToLower(ct), "text/event-stream")
 }
 
 // requestError classifies an http.Client.Do error (no response headers
