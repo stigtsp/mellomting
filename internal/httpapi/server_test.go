@@ -1204,6 +1204,11 @@ func TestKeyConcurrencyLimit429(t *testing.T) {
 	if w.Code != 429 {
 		t.Fatalf("key-1 second in-flight: %d (want 429)", w.Code)
 	}
+	// T-Q12 / FIX-10: every 429 carries Retry-After; a concurrency slot
+	// has no computable wait, so the conservative default of 1s is used.
+	if ra := w.Header().Get("Retry-After"); ra != "1" {
+		t.Fatalf("concurrency 429 Retry-After = %q, want \"1\"", ra)
+	}
 	// A different key is unaffected by key-1's bound.
 	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer2", `{"model":"model-a"}`)
 	if w.Code != 200 {

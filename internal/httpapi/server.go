@@ -266,7 +266,10 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	}
 	releaseKey, ok := ks.AcquireConcurrency()
 	if !ok {
-		writeRateLimit(w, 0)
+		// No computable wait for a concurrency slot, so use the same
+		// conservative default as the proxy quota 429 (PLAN §34, T-Q12:
+		// every 429 carries Retry-After; FIX-10).
+		writeRateLimit(w, time.Second)
 		return
 	}
 	defer releaseKey()
