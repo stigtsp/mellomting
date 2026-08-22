@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -173,6 +174,74 @@ func TestUsersFileRoundTrip(t *testing.T) {
 	}
 	if perm := mode.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("users file mode = %v, want 0600", perm)
+	}
+}
+
+func TestUpdatePreservesModeAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepper := []byte("preserve-pepper")
+
+	touch := func(addKey bool) {
+		t.Helper()
+		if err := Update(usersPath, func(uf *UsersFile) error {
+			if addKey {
+				key, id, err := Generate()
+				if err != nil {
+					return err
+				}
+				uf.Keys = append(uf.Keys, Key{
+					ID:         id,
+					Name:       "extra",
+					SecretHash: FormatHashValue(Hash(pepper, key)),
+					Enabled:    true,
+					Models:     []string{"*"},
+				})
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+
+	touch(false) // creates the file at the default 0600
+
+	if err := os.Chmod(usersPath, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(usersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeST := before.Sys().(*syscall.Stat_t)
+
+	touch(true) // must preserve mode 0640 and ownership
+
+	after, err := os.Stat(usersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := after.Mode().Perm(); perm != 0o640 {
+		t.Fatalf("users file mode = %v, want 0640 (preserved)", perm)
+	}
+	afterST := after.Sys().(*syscall.Stat_t)
+	if afterST.Uid != beforeST.Uid || afterST.Gid != beforeST.Gid {
+		t.Fatalf("users file owner changed: uid/gid = %d/%d, want %d/%d",
+			afterST.Uid, afterST.Gid, beforeST.Uid, beforeST.Gid)
+	}
+
+	if err := os.Chmod(usersPath, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	touch(false) // mode must be clamped to 0640, never widened
+	clamped, err := os.Stat(usersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := clamped.Mode().Perm(); perm != 0o640 {
+		t.Fatalf("users file mode = %v after 0660 input, want clamp to 0640", perm)
 	}
 }
 

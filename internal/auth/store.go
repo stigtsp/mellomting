@@ -297,7 +297,23 @@ func Update(path string, fn func(*UsersFile) error) error {
 		}
 	}()
 
-	if err := tmp.Chmod(0o600); err != nil {
+	// PLAN §29.1: preserve the existing file's ownership and its mode
+	// clamped to 0640 (never widened), so a privileged `key create`
+	// cannot leave a 0600 root:root file the daemon can no longer read.
+	// A fresh file defaults to 0600.
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm() & 0o640
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			if cerr := os.Chown(tmpName, int(st.Uid), int(st.Gid)); cerr != nil {
+				// Best-effort: an unprivileged caller cannot chown a
+				// file to a group it is not in; the atomic rename below
+				// proceeds regardless and the mode clamp still applies.
+				_ = cerr
+			}
+		}
+	}
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
 	}
