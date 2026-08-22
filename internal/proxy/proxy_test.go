@@ -167,7 +167,7 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestModelLoggedTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestClientDisconnectClassified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, pLog, nil, nil)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, pLog, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, acc)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, acc, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1072,7 @@ func TestStreamIdleUsesPerBackendBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1233,7 +1233,7 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, discardLogger(), nil, nil)
+	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, discardLogger(), nil, nil, false)
 	rec = run(t, p3, http.MethodPost, "/v1/chat/completions", big, testKey())
 	if rec.Code != 413 {
 		t.Fatalf("oversized body: status = %d", rec.Code)

@@ -96,7 +96,7 @@ func newDualEnvIdle(t *testing.T, maxAttempts int, idle time.Duration, b1, b2 ht
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.p, err = New(cfg, router, clients, discardLogger(), nil, nil)
+	e.p, err = New(cfg, router, clients, discardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

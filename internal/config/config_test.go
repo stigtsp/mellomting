@@ -806,13 +806,13 @@ models:
 			wantErr: "unknown_usage_reservation",
 		},
 		{
-			name: "accounting reservation set while disabled",
+			name: "accounting negative reservation while disabled",
 			yaml: `
 version: 1
 ` + minimalServer + `
 accounting:
   enabled: false
-  unknown_usage_reservation: 50
+  unknown_usage_reservation: -5
 backends:
   qa:
     base_url: http://127.0.0.1:8001
@@ -821,7 +821,26 @@ models:
   m1:
     backends: [qa]
 `,
-			wantErr: "must be empty when enabled is false",
+			wantErr: "unknown_usage_reservation",
+		},
+		{
+			name: "accounting disabled with quota settings accepted",
+			yaml: `
+version: 1
+` + minimalServer + `
+accounting:
+  enabled: false
+  ensure_stream_usage: true
+  unknown_usage_reservation: 500
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+			wantErr: "",
 		},
 		{
 			name: "bad landlock mode",

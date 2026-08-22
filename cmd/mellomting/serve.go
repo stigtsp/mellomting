@@ -568,7 +568,17 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
 	}
 
-	prox, err := proxy.New(cfg, router, clients, log, quota, writer)
+	// FIX-04/N10: ensure_stream_usage and unknown_usage_reservation are
+	// only meaningful when a per-key token quota is in effect. With
+	// accounting disabled and no quota anywhere, accepting them would be
+	// a silent no-op; fail closed at startup.
+	if !cfg.Accounting.Enabled &&
+		(cfg.Accounting.EnsureStreamUsage != nil || cfg.Accounting.UnknownUsageReservation != 0) &&
+		!quotaKeysConfigured(users.Keys) {
+		return nil, fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require a per-key token quota (tokens_per_hour or tokens_per_day) when accounting is disabled; no key in %s carries one", cfg.Auth.UsersFile)
+	}
+
+	prox, err := proxy.New(cfg, router, clients, log, quota, writer, quotaKeysConfigured(users.Keys))
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}

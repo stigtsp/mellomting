@@ -435,11 +435,20 @@ func validateAccounting(a *Accounting) []string {
 	var errs []string
 
 	if !a.Enabled {
-		set := a.Path != "" || a.EnsureStreamUsage != nil || a.ReplayOnStart != nil ||
+		// FIX-04/N10: ensure_stream_usage and unknown_usage_reservation
+		// govern token-quota charging (PLAN §38-39), not the JSONL, so
+		// they stay usable when accounting is disabled but per-key token
+		// quotas are configured. serve rejects them at startup when no
+		// quota exists; every other field still requires accounting to
+		// be enabled.
+		set := a.Path != "" || a.ReplayOnStart != nil ||
 			a.ReplayMaxBytes != 0 || a.QueueSize != 0 || a.Overflow != "" || a.FSync != "" ||
-			a.FSyncInterval != 0 || a.UnknownUsageReservation != 0
+			a.FSyncInterval != 0
 		if set {
 			errs = append(errs, "accounting: remaining fields must be empty when enabled is false")
+		}
+		if a.UnknownUsageReservation < 0 {
+			errs = append(errs, "accounting.unknown_usage_reservation: must be >= 0")
 		}
 		return errs
 	}

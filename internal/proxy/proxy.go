@@ -83,7 +83,7 @@ type Proxy struct {
 // New builds a Proxy. clients is the backend-name -> client table built
 // from the same configuration. quota and acc enable token-usage quota and
 // JSONL accounting respectively; passing nil for both disables accounting.
-func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer) (*Proxy, error) {
+func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer, quotaConfigured bool) (*Proxy, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -103,8 +103,13 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 		budget:   newBudget(total),
 		quota:    quota,
 		acc:      acc,
-		ensureUsage: cfg.Accounting.Enabled && cfg.Accounting.EnsureStreamUsage != nil &&
-			*cfg.Accounting.EnsureStreamUsage,
+		// FIX-04/N10: stream-usage injection is driven by whether a token
+		// quota is in effect, not just by accounting.enabled. With
+		// accounting disabled but quotas active, without injection every
+		// stream settles the whole output cap against the quota.
+		ensureUsage: cfg.Accounting.EnsureStreamUsage != nil &&
+			*cfg.Accounting.EnsureStreamUsage &&
+			(cfg.Accounting.Enabled || quotaConfigured),
 	}, nil
 }
 
