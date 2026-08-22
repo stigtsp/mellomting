@@ -1,0 +1,34 @@
+# Mellomting accounting-log rotation policy (PLAN §42, FIX-11/N7).
+#
+# The daemon opens the JSONL once at startup and holds the file descriptor
+# forever; it never reopens it. Rename-based rotation (logrotate's default)
+# would therefore leave the daemon appending to the renamed inode while
+# `mellomting usage report` reads an empty current file.
+#
+# copytruncate keeps the inode unchanged, so the daemon keeps appending to
+# the same file that its Landlock policy granted at startup (PLAN §57) and
+# no SIGHUP/reopen is involved. Do NOT switch to rename-based rotation under
+# security.landlock.mode: required: a renamed file is a new inode the policy
+# does not grant, and the daemon would silently keep writing to the rotated
+# file until restart.
+#
+# copytruncate truncates in place; in the rare window between the copy and
+# the truncate a line may be duplicated or lost, which is acceptable for
+# token-accounting JSONL. If the daemon is stopped across rotation instead
+# (e.g. systemctl stop && rotate && start), the default rename mode works.
+#
+# The daemon creates the log as 0640 owned by the service account; keep
+# the `su` directive in sync with that account (create is not used with
+# copytruncate, which truncates the existing file in place).
+#
+# Install as:  /etc/logrotate.d/mellomting
+/var/log/mellomting/usage.jsonl {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su mellomting mellomting
+}

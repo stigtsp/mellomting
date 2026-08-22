@@ -105,6 +105,24 @@ when accounting is disabled and at least one key carries a token budget.
 Operators who need durable, replay-able quotas must leave accounting
 enabled.
 
+## Accounting log rotation (FIX-11/N7)
+
+The accounting writer opens `usage.jsonl` once at startup and holds the
+file descriptor forever; v1 has no in-process reopen path. Rotate the log
+with `copytruncate`, **not** with rename: rename leaves the daemon
+appending to the rotated inode while `mellomting usage report` reads an
+empty current file, and under `security.landlock.mode: required` the
+renamed file is a new inode the policy does not grant, so the daemon
+cannot reopen it anyway.
+
+The shipped policy is `deploy/mellomting.logrotate` (install at
+`/etc/logrotate.d/mellomting`). It rotates `/var/log/mellomting/usage.jsonl`
+(the default `accounting.path`) in place with `copytruncate`, preserving
+the inode the Landlock policy granted at startup, so rotation works
+without a restart in every mode. `copytruncate` truncates in place; in
+the rare window between the copy and the truncate a line may be
+duplicated or lost, which is acceptable for token-accounting JSONL.
+
 ## Endpoint coverage
 
 Mellomting forwards only the allow-listed inference endpoints and 404s

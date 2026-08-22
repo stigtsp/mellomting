@@ -1697,6 +1697,14 @@ When records are dropped:
 - emit a rate-limited operational error;
 - expose it through future metrics if metrics are implemented.
 
+The writer opens the JSONL once at startup and holds the file descriptor
+forever; there is no in-process reopen path in v1 (FIX-11/N7). Operators
+must therefore rotate with `copytruncate`, not with rename: a renamed file
+is a new inode that the Landlock policy (PLAN §57) does not grant, so the
+daemon would keep appending to the rotated file until restart. The shipped
+policy is `deploy/mellomting.logrotate`; it keeps the inode unchanged, so
+it works under `security.landlock.mode: required` without any reopen.
+
 ---
 
 # 43. Operational logging
