@@ -107,9 +107,12 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 		// FIX-04/N10: stream-usage injection is driven by whether a token
 		// quota is in effect, not just by accounting.enabled. With
 		// accounting disabled but quotas active, without injection every
-		// stream settles the whole output cap against the quota.
-		ensureUsage: cfg.Accounting.EnsureStreamUsage != nil &&
-			*cfg.Accounting.EnsureStreamUsage &&
+		// stream settles the whole output cap against the quota. A nil
+		// ensure_stream_usage (never configured) defaults to enabled when
+		// a quota is in effect, so a quota-only deployment does not have
+		// to set it explicitly; the serve-time fail-closed check still
+		// keys off the explicit (non-nil) value.
+		ensureUsage: (cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage) &&
 			(cfg.Accounting.Enabled || quotaConfigured),
 	}, nil
 }
@@ -985,11 +988,15 @@ func stringField(body []byte, field string) (string, bool) {
 }
 
 // maxLoggedModelLen bounds the client-supplied model name written to a
-// log record so a hostile client cannot journal an unbounded string
-// (T-L3). The value is a public model name, so a short bound suffices.
+// log record or an accounting JSONL record so a hostile client cannot
+// journal an unbounded string (T-L3). The value is a public model name,
+// so a short bound suffices. Records with a huge model would otherwise
+// exceed the accounting read bound and be skipped as unreadable waste
+// (FIX-26 eval / FIX-28).
 const maxLoggedModelLen = 128
 
-// logModel truncates a client-supplied model name for structured logs.
+// logModel truncates a client-supplied model name for structured logs
+// and accounting records.
 func logModel(m string) string {
 	if len(m) > maxLoggedModelLen {
 		return m[:maxLoggedModelLen]
@@ -1268,7 +1275,7 @@ func (p *Proxy) account(q *Req, o operation, model string, start time.Time, stat
 			Time:            time.Now().UTC(),
 			RequestID:       q.RequestID,
 			KeyID:           q.Key.ID,
-			Model:           model,
+			Model:           logModel(model),
 			Backend:         backendName,
 			Endpoint:        o.endpoint,
 			Status:          status,

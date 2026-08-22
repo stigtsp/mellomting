@@ -261,6 +261,54 @@ func TestAccountingOffWithQuotaSettlesExactStreamUsage(t *testing.T) {
 	}
 }
 
+// FIX-04 (eval): with accounting disabled but a per-key token quota in
+// effect and ensure_stream_usage left unset (nil), injection must still
+// happen — a quota-only deployment must not burn the whole output cap on
+// every stream just because the field was omitted.
+func TestQuotaOnlyDefaultsEnsureStreamUsage(t *testing.T) {
+	f := newFakeVLLM(t, usageOnlyJSON)
+	quota := accounting.NewQuota()
+	cfg := testConfig(f.server.URL)
+	cfg.Accounting.Enabled = false
+	cfg.Models["gen-1"] = config.Model{
+		Type: "generation", Strategy: "single",
+		Policy:   config.ModelPolicy{MaxOutputTokens: 100000},
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(f.lastBody, &body); err != nil {
+		t.Fatalf("backend body: %v", err)
+	}
+	if !body.StreamOptions.IncludeUsage {
+		t.Fatalf("include_usage not injected with quota-only and ensure_stream_usage omitted: %s", f.lastBody)
+	}
+}
+
 // TestProxyQuota429RetryAfter is the T-Q12 check on the token-quota 429:
 // it must carry a Retry-After just like the httpapi rate-limit 429s.
 func TestProxyQuota429RetryAfter(t *testing.T) {
@@ -488,6 +536,34 @@ func TestRejectedRequestRecordedInAccounting(t *testing.T) {
 	if recs[0].Status != 400 || recs[0].ChargedTokens != 0 ||
 		recs[0].UsageStatus != accounting.UsageUnknown || recs[0].KeyID != "K1" {
 		t.Fatalf("record = %+v", recs[0])
+	}
+}
+
+func TestRejectedRequestBoundedModelRecord(t *testing.T) {
+	f := newFakeVLLM(t, usageJSON)
+	quota := accounting.NewQuota()
+	writer, path := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+
+	// R2 (FIX-26 eval): the client's model string is routed into
+	// usage.jsonl untruncated; a 4 MiB model name once wrote a
+	// 4,194,612-byte record that the 1 MiB read bound then skipped as
+	// unreadable waste. The record model must be bounded so a hostile
+	// client cannot journal unbounded data (T-L3) or displace real
+	// records from the replay window.
+	huge := strings.Repeat("m", 1<<16)
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"`+huge+`","messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 404 {
+		t.Fatalf("status = %d, want 404 (unknown model)", w.Code)
+	}
+	_ = writer.Close()
+	recs := readRecords(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1 (the rejected request)", len(recs))
+	}
+	if recs[0].Model != huge[:maxLoggedModelLen] || len(recs[0].Model) != maxLoggedModelLen {
+		t.Fatalf("record model = %q (len %d), want the %d-byte prefix", recs[0].Model, len(recs[0].Model), maxLoggedModelLen)
 	}
 }
 
