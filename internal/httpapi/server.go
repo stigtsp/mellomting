@@ -36,7 +36,12 @@ type Server struct {
 	sourceLimit *limiter.SourceRegistry
 	authLog     *limiter.Bucket
 	authDropped atomic.Int64
-	keyLimits   *limiter.Registry
+	// keyLimits is swapped atomically alongside store on SIGHUP reload
+	// (PLAN §30: "key rate limits" reload with the snapshot). A fresh
+	// registry is built from the reloaded store's key records so changed
+	// limits take effect for new requests; in-flight requests keep the
+	// KeyState they were admitted against (PLAN §74).
+	keyLimits   atomic.Pointer[limiter.Registry]
 	ready       atomic.Bool
 	startedUnix int64
 }
@@ -94,17 +99,25 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		globalRPS:   globalRPS,
 		sourceLimit: sourceLimit,
 		authLog:     authLog,
-		keyLimits:   limiter.NewRegistry(),
 		startedUnix: time.Now().Unix(),
 	}
 	s.store.Store(store)
+	s.keyLimits.Store(limiter.NewRegistry())
 	return s
 }
 
-// ReloadStore atomically swaps the key store (SIGHUP reload, PLAN §30).
-// In-flight requests keep serving against the store they looked up, so a
-// reload never severs an active stream (PLAN §74).
-func (s *Server) ReloadStore(st *auth.Store) { s.store.Store(st) }
+// ReloadStore atomically swaps the key store and the per-key limit
+// registry (SIGHUP reload, PLAN §30). In-flight requests keep serving
+// against the store and limits they were admitted under, so a reload
+// never severs an active stream (PLAN §74). The registry is swapped
+// before the store so a request that races the reload can at worst build
+// fresh limit state from the previous store's keys — never keep a stale
+// registry entry for the reloaded store (which would silently retain the
+// old, possibly more permissive limits).
+func (s *Server) ReloadStore(st *auth.Store) {
+	s.keyLimits.Store(limiter.NewRegistry())
+	s.store.Store(st)
+}
 
 // SetReady flips readiness (PLAN §69 /readyz).
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
@@ -246,7 +259,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	// Per-key limits (PLAN §34, §35): request rate, then concurrency.
 	// Acquired before bodies are read (the proxy reads after this
 	// point) so a single key cannot pile up resources (PLAN §35).
-	ks := s.keyLimits.For(key)
+	ks := s.keyLimits.Load().For(key)
 	if ok, ra := ks.AllowRate(time.Now()); !ok {
 		writeRateLimit(w, ra)
 		return

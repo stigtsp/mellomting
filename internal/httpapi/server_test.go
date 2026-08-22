@@ -1211,6 +1211,73 @@ func TestKeyConcurrencyLimit429(t *testing.T) {
 	}
 }
 
+// PLAN §30: a SIGHUP reload must re-apply per-key rate/concurrency
+// limits. ReloadStore previously swapped only the store, while the
+// limiter.Registry kept per-key state keyed by ID forever: an existing
+// key whose concurrent_requests changed on reload kept the OLD (stale,
+// possibly tighter) bound until restart, so a tightened limit silently
+// failed to apply and a raised limit stayed bottlenecked.
+func TestReloadAppliesNewPerKeyLimits(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	defer close(done)
+	firstAdmitted := make(chan struct{}, 1)
+	var holder int32
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if atomic.CompareAndSwapInt32(&holder, 0, 1) {
+			select {
+			case firstAdmitted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-r.Context().Done():
+			case <-done:
+			}
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}, nil, auth.KeyLimits{ConcurrentRequests: 1, RequestsPerSecond: 10, Burst: 10})
+
+	// Key 1 holds its single slot under the original limit (1).
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	req.Header.Set("Authorization", "Bearer "+e.key)
+	rr := httptest.NewRecorder()
+	go func() { e.srv.Handler().ServeHTTP(rr, req) }()
+	select {
+	case <-firstAdmitted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("held request never admitted")
+	}
+
+	// Under the original limit the key is saturated.
+	w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 429 {
+		t.Fatalf("before reload, second in-flight: %d (want 429)", w.Code)
+	}
+
+	// Reload with the same key but a raised concurrency limit. The users
+	// file is rebuilt from the live key record so the new store matches
+	// the running one except for the raised bound.
+	old, err := e.srv.store.Load().Lookup(e.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relaxed := *old
+	relaxed.Limits.ConcurrentRequests = 10
+	st2, err := auth.NewStore(&auth.UsersFile{Version: 1, Keys: []auth.Key{relaxed}}, []byte("httpapi-test-pepper-16b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.ReloadStore(st2)
+
+	// The new limit must take effect immediately: a concurrent request is
+	// admitted even though the first still holds its (old-generation) slot.
+	w = e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`)
+	if w.Code != 200 {
+		t.Fatalf("after reload, concurrent request: %d body=%s (want 200; stale limit persisted)",
+			w.Code, w.Body.String())
+	}
+}
+
 // T-T9: the remaining allow-listed inference endpoints (/v1/completions and
 // /v1/embeddings) must be routed through the real HTTP surface, apply the
 // model rewrite, and enforce per-key model ACL the same way chat does.
