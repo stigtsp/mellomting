@@ -195,6 +195,32 @@ func TestHealthEndpoints(t *testing.T) {
 	}
 }
 
+// noFlushWriter is a ResponseWriter without http.Flusher.
+type noFlushWriter struct {
+	h    http.Header
+	code int
+	body string
+}
+
+func (w *noFlushWriter) Header() http.Header { return w.h }
+func (w *noFlushWriter) WriteHeader(c int)   { w.code = c }
+func (w *noFlushWriter) Write(p []byte) (int, error) {
+	w.body += string(p)
+	return len(p), nil
+}
+
+// N9: writeHealth must not panic when the ResponseWriter does not
+// implement http.Flusher; the health endpoints are reached through
+// wrapper layers that must stay free of unguarded type assertions.
+func TestHealthzNoPanicOnNonFlusher(t *testing.T) {
+	t.Parallel()
+	w := &noFlushWriter{h: http.Header{}}
+	writeHealth(w, http.StatusOK, "ok")
+	if w.code != http.StatusOK || w.body != "ok" {
+		t.Fatalf("writeHealth on non-flusher: code=%d body=%q", w.code, w.body)
+	}
+}
+
 // TestStreamFlushesThroughWrapper proves the route layer's
 // committedWriter forwards http.Flusher (X4 defence-in-depth wrapper
 // must not break SSE streaming or the health endpoints, which call

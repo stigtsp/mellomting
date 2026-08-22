@@ -57,5 +57,11 @@ func writeHealth(w http.ResponseWriter, status int, body string) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(body))
-	w.(http.Flusher).Flush()
+	// Guard the flush: a ResponseWriter wrapper without http.Flusher must
+	// not panic (N9). The health endpoints and SSE rely on Flush when
+	// available; when it is not, the buffered write still reaches the
+	// client at finishRequest.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
