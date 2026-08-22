@@ -379,7 +379,7 @@ func keyCreate(c *keyFlags) int {
 }
 
 func keySetEnabled(c *keyFlags, enable bool) int {
-	_, usersPath, _, exit := keyState(c)
+	cfg, usersPath, _, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
@@ -395,6 +395,7 @@ func keySetEnabled(c *keyFlags, enable bool) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "%s key %s\n", verb, c.id)
+	warnLandlockReloadRequired(cfg, "key "+verb)
 	return 0
 }
 
@@ -428,8 +429,23 @@ func keyList(c *keyFlags) int {
 	return 0
 }
 
+// warnLandlockReloadRequired warns, when the configured Landlock mode is
+// required, that a running server applies users-file changes only after a
+// restart or SIGHUP reload — a revoked (or disabled) key stays effective
+// on a live server until then, so a silent success here would be a
+// false sense of security (FIX-02 eval residual). The Landlock policy
+// grants the users file read, so a reload does pick the change up.
+func warnLandlockReloadRequired(cfg *config.Config, action string) {
+	if cfg.Security.Landlock.Mode != landlock.ModeRequired {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"mellomting: warning: %s under landlock.mode=required: running servers apply users-file changes only after a restart or SIGHUP reload; the change is not effective on a live server until then\n",
+		action)
+}
+
 func keyRevoke(c *keyFlags) int {
-	_, usersPath, _, exit := keyState(c)
+	cfg, usersPath, _, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
@@ -441,6 +457,7 @@ func keyRevoke(c *keyFlags) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "revoked key %s\n", c.id)
+	warnLandlockReloadRequired(cfg, "key revoke")
 	return 0
 }
 

@@ -216,6 +216,61 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	}
 }
 
+// FIX-02 (eval residual): revoking or disabling a key under
+// landlock.mode: required must warn that a live server applies the change
+// only after a restart or SIGHUP reload — a silent success would be a
+// false sense of security. Other modes stay silent.
+func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, out, _ := runCLI(t, bin, dir,
+		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
+	if code != 0 {
+		t.Fatalf("create exit = %d", code)
+	}
+	id := keyRe.FindString(out)
+	if id == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+	id = id[4:12]
+
+	// Default fixture config: landlock.mode defaults to required, so the
+	// reload warning must appear on a successful revoke.
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
+		t.Fatalf("revoke exit = %d stderr=%q", code, errOut)
+	} else if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "SIGHUP") {
+		t.Fatalf("no reload warning for landlock.mode=required: stderr=%q", errOut)
+	}
+
+	// Control: best-effort mode must stay silent. Write a second config
+	// with an explicit security section and repeat.
+	base, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beCfg := string(base) + "\nsecurity:\n  landlock:\n    mode: best-effort\n"
+	bePath := filepath.Join(dir, "config-best-effort.yaml")
+	if err := os.WriteFile(bePath, []byte(beCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = runCLI(t, bin, dir,
+		"key", "create", "-config", bePath, "-name", "warn2", "-models", "qwen-coder")
+	if code != 0 {
+		t.Fatalf("create (best-effort) exit = %d", code)
+	}
+	id = keyRe.FindString(out)
+	if id == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+	id = id[4:12]
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", bePath, "-id", id); code != 0 {
+		t.Fatalf("revoke (best-effort) exit = %d stderr=%q", code, errOut)
+	} else if strings.Contains(errOut, "landlock") {
+		t.Fatalf("unexpected reload warning for best-effort: stderr=%q", errOut)
+	}
+}
+
 // T-X8: key create records per-key limits flags in the users file, and
 // rejects negative limit values.
 func TestKeyCreateLimits(t *testing.T) {
