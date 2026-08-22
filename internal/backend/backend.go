@@ -40,12 +40,17 @@ import (
 // Sanitized error classes (PLAN §43). These never carry backend
 // hostnames, bodies, or secrets into logs or client responses.
 //
-// Retry classification (PLAN §23): ErrConnect, ErrDialTimeout,
-// ErrHeaderTimeout, and ErrQueueFull denote a connection-level or
-// admission failure before any response byte was observed; they are the
-// client-side connection failures the proxy may retry or fall back.
-// ErrTimeout covers bounded total/body timeouts, which are not on the
-// PLAN §23 retry list.
+// Retry classification (PLAN §23): ErrConnect and ErrDialTimeout denote
+// a connection failure before any response byte was observed; they are
+// the client-side connection failures the proxy may retry or fall back,
+// and they poison passive health. ErrHeaderTimeout is a distinct class —
+// the connection was established but the first response byte did not
+// arrive within header_timeout — and is deliberately NOT retried: it is
+// a latency/capacity signal, and retrying would re-issue a full
+// generation that cannot succeed within the header bound (X6). It also
+// does not poison passive health. ErrQueueFull (admission failure) is a
+// fallback candidate but not health-poisoning. ErrTimeout covers bounded
+// total/body timeouts, which are not on the PLAN §23 retry list.
 var (
 	ErrConnect       = errors.New("backend_connect")
 	ErrDialTimeout   = errors.New("backend_dial_timeout")

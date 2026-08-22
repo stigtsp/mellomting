@@ -598,7 +598,10 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 // retryableBackendError reports whether a pre-stream failure is on the
 // PLAN §23 retry list: connection failure, connection timeout, queue
-// exhaustion (fallback), or upstream 429/502/503/504.
+// exhaustion (fallback), or upstream 429/502/503/504. ErrHeaderTimeout
+// is deliberately NOT on that list: it is a latency/capacity signal and
+// retrying re-issues a full generation that cannot succeed within the
+// header bound (X6).
 func retryableBackendError(err error) bool {
 	var up *backend.Upstream
 	if errors.As(err, &up) {
