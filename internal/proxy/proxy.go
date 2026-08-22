@@ -141,13 +141,14 @@ func (p *Proxy) ResponsesCancel(q *Req, id string) { q.ResponseID = id; p.dispat
 
 // result is the structured outcome logged per request (PLAN §43).
 type result struct {
-	status   int
-	class    string // sanitized error class; "ok" on success
-	model    string
-	backend  string
-	bytesIn  int
-	bytesOut int
-	retries  int
+	status    int
+	class     string // sanitized error class; "ok" on success
+	model     string
+	backend   string
+	bytesIn   int
+	bytesOut  int
+	retries   int
+	accounted bool // an accounting record was already emitted
 }
 
 // dispatch runs the full pipeline for one allow-listed operation.
@@ -173,6 +174,15 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"retry_count", out.retries,
 			"error_class", out.class,
 		)
+		// Observability (FIX-26): a request that never reached the
+		// success/terminal accounting below (draining 503, 415/400/404
+		// validation, 429 quota, the upstream-error return) still emits a
+		// minimal zero-usage record so rejection patterns are queryable
+		// in usage.jsonl (PLAN §41). ChargedTokens stays 0 — rejects
+		// never touch quota.
+		if !out.accounted {
+			p.account(q, o, out.model, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, 0, 0)
+		}
 	}()
 
 	fail := func(status int, typ, code, msg, class string) {
@@ -540,6 +550,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				usageStatus = accounting.UsageExact
 			}
 			p.account(q, o, publicModel, start, status, backendName, usage, usageStatus, retried, reservation)
+			out.accounted = true
 			return
 		}
 		res.Close()
@@ -553,6 +564,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			usageStatus = accounting.UsageExact
 		}
 		p.account(q, o, publicModel, start, res.Status, backendName, usage, usageStatus, retried, reservation)
+		out.accounted = true
 		ct := "application/json"
 		if v := res.Header.Get("Content-Type"); v != "" {
 			ct = v
@@ -659,6 +671,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 	// Record the failed request (PLAN §41): no usage was produced.
 	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, retried, 0)
+	out.accounted = true
 }
 
 // retryableBackendError reports whether a pre-stream failure is on the

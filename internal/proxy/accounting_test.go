@@ -464,6 +464,33 @@ func TestQuotaAdmissionReject(t *testing.T) {
 	}
 }
 
+// FIX-26: a rejected request that never reaches the success/terminal
+// accounting path still emits a minimal zero-usage record, so rejection
+// patterns are queryable in usage.jsonl. ChargedTokens stays 0.
+func TestRejectedRequestRecordedInAccounting(t *testing.T) {
+	f := newFakeVLLM(t, usageJSON)
+	quota := accounting.NewQuota()
+	writer, path := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions", `{}`, testKey())
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "missing_model") {
+		t.Fatalf("status = %d body = %s (want 400 missing_model)", w.Code, w.Body.String())
+	}
+	if len(f.lastBody) != 0 {
+		t.Fatalf("backend must not be reached on missing-model rejection")
+	}
+	_ = writer.Close()
+	recs := readRecords(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1 (the rejected request)", len(recs))
+	}
+	if recs[0].Status != 400 || recs[0].ChargedTokens != 0 ||
+		recs[0].UsageStatus != accounting.UsageUnknown || recs[0].KeyID != "K1" {
+		t.Fatalf("record = %+v", recs[0])
+	}
+}
+
 func TestNonStreamAccountingExact(t *testing.T) {
 	f := newFakeVLLM(t, usageJSON)
 	quota := accounting.NewQuota()

@@ -569,11 +569,16 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 		}
 		recs = append(recs, r)
 	}
-	if len(recs) != 1 {
-		t.Fatalf("accounting records = %d, want 1: %s", len(recs), string(data))
+	if len(recs) != 2 {
+		t.Fatalf("accounting records = %d, want 2: %s", len(recs), string(data))
 	}
-	if recs[0].TotalTokens != 1000 || recs[0].ChargedTokens != 1000 {
-		t.Fatalf("usage = %+v, want total/charged 1000", recs[0])
+	// The rejected stream=true attempt is recorded with zero usage
+	// (FIX-26); the accepted request is charged its reported usage.
+	if recs[0].Status != 400 || recs[0].ChargedTokens != 0 || recs[0].Endpoint != "embeddings" {
+		t.Fatalf("rejected record = %+v", recs[0])
+	}
+	if recs[1].TotalTokens != 1000 || recs[1].ChargedTokens != 1000 {
+		t.Fatalf("usage = %+v, want total/charged 1000", recs[1])
 	}
 	if recs[0].Endpoint != "embeddings" {
 		t.Fatalf("endpoint = %q", recs[0].Endpoint)
