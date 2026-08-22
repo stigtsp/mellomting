@@ -261,6 +261,68 @@ func TestModelLoggedTruncated(t *testing.T) {
 	}
 }
 
+// TestClientDisconnectClassified verifies that a client that disconnects
+// while the backend is still processing is logged as client cancellation
+// (status 499, error_class client_canceled), not a server-side internal
+// error. The class must not read as a 500 in operational logs (PLAN §43).
+func TestClientDisconnectClassified(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	})
+	var buf bytes.Buffer
+	pLog := slog.New(slog.NewJSONHandler(&buf, nil))
+	cfg := testConfig(f.server.URL)
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, pLog, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`))
+	r = r.WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	q := &Req{W: w, R: r, Key: testKey(), RequestID: "req_test", Remote: "127.0.0.1"}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.ChatCompletions(q)
+	}()
+	<-started
+	cancel() // the client goes away mid-request
+	<-done
+
+	var rec struct {
+		Status int    `json:"status"`
+		Class  string `json:"error_class"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("log is not a single JSON record: %v (%q)", err, buf.String())
+	}
+	if rec.Status != 499 {
+		t.Fatalf("status = %d, want 499", rec.Status)
+	}
+	if rec.Class != "client_canceled" {
+		t.Fatalf("error_class = %q, want client_canceled", rec.Class)
+	}
+}
+
 // --- SSE parser --------------------------------------------------------
 
 func TestSSEParserEventsAndBounds(t *testing.T) {

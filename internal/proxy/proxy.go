@@ -384,9 +384,18 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	var lastErr error
 	var lastFailed string
 	var lastRetryAfter string // upstream Retry-After on the final result (T-Q12)
+	// markClientCanceled flags the request outcome as the client going
+	// away before any response byte was sent (PLAN §43). No response is
+	// possible, so the log uses 499 (client closed request) rather than
+	// implying a server-side failure.
+	markClientCanceled := func() {
+		out.status = 499
+		out.class = "client_canceled"
+		out.bytesOut = 0
+	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if q.R.Context().Err() != nil {
-			out.bytesOut = 0
+			markClientCanceled()
 			return
 		}
 
@@ -429,7 +438,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		if attempt > 0 && backendName == lastFailed {
 			retried++
 			if !p.sleepBackoff(q.R.Context(), attempt) {
-				out.bytesOut = 0
+				markClientCanceled()
 				return
 			}
 		}
@@ -451,7 +460,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		if err != nil {
 			if errors.Is(err, context.Canceled) && q.R.Context().Err() != nil {
 				// The client went away; no response is sent or possible.
-				out.bytesOut = 0
+				markClientCanceled()
 				return
 			}
 			lastErr = err
