@@ -159,7 +159,7 @@ func applyDefaults(c *Config) {
 		if a.FSync == "" {
 			a.FSync = "interval"
 		}
-		if a.FSyncInterval == 0 {
+		if a.FSync == "interval" && a.FSyncInterval == 0 {
 			a.FSyncInterval = Duration(5 * time.Second)
 		}
 	}

@@ -1309,6 +1309,40 @@ models:
 			wantErr: "fsync_interval: only valid when fsync is interval",
 		},
 		{
+			name: "accounting fsync never without interval",
+			yaml: `
+version: 1
+` + minimalServer + `
+accounting:
+  enabled: true
+  fsync: never
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+		},
+		{
+			name: "accounting fsync every without interval",
+			yaml: `
+version: 1
+` + minimalServer + `
+accounting:
+  enabled: true
+  fsync: every
+backends:
+  qa:
+    base_url: http://127.0.0.1:8001
+    upstream_model: M
+models:
+  m1:
+    backends: [qa]
+`,
+		},
+		{
 			name: "accounting fsync invalid",
 			yaml: `
 version: 1
