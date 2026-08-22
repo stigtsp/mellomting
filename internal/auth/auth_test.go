@@ -308,6 +308,23 @@ func TestLoadUsersRejectsWorldReadable(t *testing.T) {
 	}
 }
 
+// FIX-14 / PLAN §28: a trailing second YAML document after a `---`
+// marker must fail closed instead of being silently discarded by the
+// strict decode (which reads only the first document).
+func TestLoadUsersRejectsMultiDoc(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "users.yaml")
+	multi := "version: 1\nkeys: []\n---\nversion: 2\nkeys: []\n"
+	if err := os.WriteFile(path, []byte(multi), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUsers(path); err == nil || !strings.Contains(err.Error(), "multi-document") {
+		t.Fatalf("multi-document users file: err = %v, want a multi-document rejection", err)
+	}
+}
+
 func TestLoadPepperRejectsWorldReadable(t *testing.T) {
 	t.Parallel()
 

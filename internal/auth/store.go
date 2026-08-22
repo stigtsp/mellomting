@@ -87,6 +87,12 @@ func LoadUsers(path string) (*UsersFile, error) {
 	if err := config.CheckYAMLTree(data); err != nil {
 		return nil, fmt.Errorf("users file: %v", err)
 	}
+	// A trailing second YAML document must fail, not be silently dropped
+	// by the strict decode below (FIX-14): CLI and daemon agree because
+	// both go through LoadUsers.
+	if err := config.CheckSingleDocument(data); err != nil {
+		return nil, fmt.Errorf("users file: %v", err)
+	}
 	var uf UsersFile
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true)

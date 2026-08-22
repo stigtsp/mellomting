@@ -82,18 +82,36 @@ func Parse(data []byte) (*Config, error) {
 // e.g. an appended override file or a `security:` block — while config
 // check reports valid.
 func checkShape(data []byte) error {
+	if err := CheckSingleDocument(data); err != nil {
+		return err
+	}
 	var m map[string]yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&m); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CheckSingleDocument ensures data is exactly one YAML document: not
+// empty and with no second document after a `---` marker. It is shared by
+// the config loader and the auth users-file loader so a trailing document
+// is never silently discarded (FIX-14, PLAN §28); the strict decoders only
+// ever read the first document, so anything after the marker would
+// otherwise be lost while validation reports success.
+func CheckSingleDocument(data []byte) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var first any
+	if err := dec.Decode(&first); err != nil {
 		if err == io.EOF {
-			return fmt.Errorf("empty configuration document")
+			return fmt.Errorf("empty YAML document")
 		}
 		return err
 	}
 	var extra yaml.Node
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("multi-document YAML configuration is not allowed")
+			return fmt.Errorf("multi-document YAML is not allowed")
 		}
 		return err
 	}
