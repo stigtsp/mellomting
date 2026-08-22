@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -1593,6 +1594,198 @@ func TestServeCleanShutdownNoListenerWarn(t *testing.T) {
 	if strings.Contains(string(logData), "listener close") ||
 		strings.Contains(string(logData), "closed network connection") {
 		t.Fatalf("clean shutdown logged a spurious listener-close warning:\n%s", logData)
+	}
+}
+
+// FIX-05/M19: while A drains with a stalled in-flight stream, B starts on
+// the same Unix socket path. A's serve() only returns after its grace
+// period; the old deferred os.Remove then fired against whatever owned the
+// path, unlinking B's fresh socket and taking B off the path while its
+// process kept running. After the fix B's socket must survive A's drain.
+func TestDrainingDoesNotUnlinkReplacementSocket(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	release := make(chan struct{})
+	defer close(release)
+	backend := slowChatBackend(t, release)
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("e2e-pepper-long-enough-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+shutdown:
+  grace_period: 3s
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// startDaemon spawns serve with its own log file and a cleanup that
+	// kills it if it is still running when the test ends.
+	startDaemon := func(name string) (*exec.Cmd, *http.Client) {
+		t.Helper()
+		cmd := exec.Command(bin, "serve", "-config", cfgPath)
+		logPath := filepath.Join(dir, name+".log")
+		logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Stdout = logF
+		cmd.Stderr = logF
+		if err := cmd.Start(); err != nil {
+			logF.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			logF.Close()
+			if cmd.Process != nil && cmd.ProcessState == nil {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}
+		})
+		return cmd, waitReady(t, sock)
+	}
+
+	cmdA, clientA := startDaemon("a")
+
+	// Stall an in-flight streaming request so A stays in the drain for
+	// its full grace period: its listener (and therefore the socket path)
+	// is closed at the start of the drain, but serve() only returns once
+	// the grace expires.
+	req, err := http.NewRequest(http.MethodPost, "http://mellomting/v1/chat/completions",
+		strings.NewReader(`{"model":"qwen-coder","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	first := make(chan struct{})
+	streamDone := make(chan error, 1)
+	go func() {
+		resp, err := clientA.Do(req)
+		if err != nil {
+			streamDone <- err
+			return
+		}
+		defer resp.Body.Close()
+		br := bufio.NewReader(resp.Body)
+		// The first flushed chunk means the backend was reached and the
+		// connection is tracked as active by the server, so the drain
+		// actually waits for it.
+		if _, err := br.ReadString('\n'); err == nil {
+			close(first)
+		}
+		_, _ = io.Copy(io.Discard, br)
+		streamDone <- nil
+	}()
+	// Hold until the in-flight stream is established, then begin the
+	// drain: A stays in it for its full grace period because its listener
+	// (and socket path) is closed at the start of the drain while serve()
+	// only returns once the grace expires.
+	select {
+	case <-first:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream never established")
+	}
+
+	if err := cmdA.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	// A's listener is closed (socket unlinked) at the start of the drain;
+	// wait for the path to disappear so B can bind it without tripping
+	// the T-L9 liveness check.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Lstat(sock); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("A's socket was not unlinked after SIGTERM")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// B starts while A is still draining (start-before-stop replacement).
+	_, clientB := startDaemon("b")
+	resp, body := getURL(t, clientB, "http://mellomting/readyz", "")
+	if resp.StatusCode != 200 || body != "ready" {
+		t.Fatalf("B not reachable right after start: %d %q", resp.StatusCode, body)
+	}
+
+	// Wait for A to fully exit (past its 3s grace), when the old deferred
+	// os.Remove would have fired.
+	done := make(chan error, 1)
+	go func() { done <- cmdA.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("A exited with error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("A did not exit within 15s")
+	}
+	select {
+	case <-streamDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled stream did not finish after A exited")
+	}
+
+	// The replacement's socket file must still exist and B must still be
+	// reachable on the path.
+	if _, err := os.Lstat(sock); err != nil {
+		t.Fatalf("replacement socket was unlinked by the draining process: %v", err)
+	}
+	resp, body = getURL(t, clientB, "http://mellomting/readyz", "")
+	if resp.StatusCode != 200 || body != "ready" {
+		t.Fatalf("B unreachable after A's drain: %d %q", resp.StatusCode, body)
 	}
 }
 

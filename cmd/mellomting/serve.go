@@ -96,13 +96,14 @@ func serveCmd(args []string) int {
 		ln = tls.NewListener(ln, d.tlsConfig)
 	}
 	d.listen = ln
-	// Only a Unix-socket listener leaves a filesystem artifact to clean
-	// up; a TCP listener must never os.Remove a host:port-named relative
-	// path (T-L11). The path was already vetted against symlink and
-	// non-socket attacks in safeUnixListen before bind.
-	if cfg.Server.Listen.Network == "unix" {
-		defer os.Remove(d.listenAddr()) // best-effort socket cleanup
-	}
+	// FIX-05/M19: there is deliberately NO deferred os.Remove of the Unix
+	// socket path here. Go's net.UnixListener already unlinks the socket
+	// when the listener is closed, and Shutdown/Close close it at the
+	// start of the grace period (T-L11's liveness check at serve.go:396
+	// stays). A deferred os.Remove fires only after serve() returns — up
+	// to grace_period later — against whatever then owns the path,
+	// unlinking a start-before-stop / blue-green replacement's fresh
+	// socket and taking it off the path while its process keeps running.
 
 	if cfg.Server.TLS.Mode == "" && cfg.Server.Listen.Network == "tcp" &&
 		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
@@ -635,11 +636,6 @@ func (d *daemon) logReloadFailed(err error) {
 		return
 	}
 	d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
-}
-
-// listenAddr returns the listener address for logging/cleanup.
-func (d *daemon) listenAddr() string {
-	return d.cfg.Server.Listen.Address
 }
 
 // isNonLoopbackListenAddr reports whether a TCP listen address is NOT
