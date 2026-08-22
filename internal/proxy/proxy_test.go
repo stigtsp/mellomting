@@ -1274,6 +1274,96 @@ func TestPumpClientWriteDeadlineBounded(t *testing.T) {
 	}
 }
 
+// slowChunk is the delivery quantum for slowWriter: perWrite is the time
+// the simulated client takes to read one slowChunk of the response.
+const slowChunk = 32 << 10
+
+// slowWriter simulates a client that reads the response at a fixed rate:
+// delivering a write of n bytes takes perWrite per slowChunk, and the
+// write fails if the armed conn deadline has passed by delivery time (a
+// fully stalled reader). FIX-19/N5: with per-chunk deadline resets, a
+// slow-but-steady client completes a large body, while a fully stalled
+// client is still cut off.
+type slowWriter struct {
+	hdr      http.Header
+	code     int
+	perWrite time.Duration
+	mu       sync.Mutex
+	body     []byte
+	deadline time.Time
+}
+
+func (s *slowWriter) Header() http.Header { return s.hdr }
+func (s *slowWriter) WriteHeader(c int)   { s.code = c }
+
+func (s *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(time.Duration((len(p)+slowChunk-1)/slowChunk) * s.perWrite)
+	s.mu.Lock()
+	dl := s.deadline
+	s.mu.Unlock()
+	if !dl.IsZero() && time.Now().After(dl) {
+		return 0, errWriteTimeout
+	}
+	s.mu.Lock()
+	s.body = append(s.body, p...)
+	s.mu.Unlock()
+	return len(p), nil
+}
+
+// SetWriteDeadline is found by http.ResponseController and records the
+// conn write deadline armed before each non-stream chunk write.
+func (s *slowWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.deadline = t
+	s.mu.Unlock()
+	return nil
+}
+
+// FIX-19/N5: the non-streaming client write deadline is an idle bound.
+// A 256 KiB body written at 20 ms per 32 KiB chunk takes ~160 ms total —
+// past a 50 ms single deadline — but must complete because the deadline
+// resets per chunk; a client that takes longer than the timeout on a
+// single chunk must still be cut off.
+func TestNonStreamWriteDeadlineResets(t *testing.T) {
+	t.Parallel()
+	big := bytes.Repeat([]byte("x"), 256<<10)
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(big)
+	})
+	p := newProxy(t, f)
+	p.cfg.Server.StreamWriteTimeout = config.Duration(50 * time.Millisecond)
+
+	post := func(sw *slowWriter) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`))
+		p.ChatCompletions(&Req{W: sw, R: r, Key: testKey(), RequestID: "req_t", Remote: "x"})
+	}
+	received := func(sw *slowWriter) int {
+		t.Helper()
+		sw.mu.Lock()
+		defer sw.mu.Unlock()
+		return len(sw.body)
+	}
+
+	t.Run("slow but steady completes", func(t *testing.T) {
+		sw := &slowWriter{hdr: http.Header{}, perWrite: 20 * time.Millisecond}
+		post(sw)
+		if got := received(sw); got != len(big) {
+			t.Fatalf("slow-but-steady client received %d of %d bytes (deadline must reset per chunk)", got, len(big))
+		}
+	})
+
+	t.Run("stalled client cut off", func(t *testing.T) {
+		sw := &slowWriter{hdr: http.Header{}, perWrite: 80 * time.Millisecond}
+		post(sw)
+		if got := received(sw); got == len(big) {
+			t.Fatalf("stalled client received the full %d-byte body (write was not cut off)", len(big))
+		}
+	})
+}
+
 func TestBodyLimitsAndEncoding(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, okJSON)

@@ -546,11 +546,25 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// hold the inflight slot forever. stream_write_timeout is the
 		// same bound the streaming pump applies per event (PLAN §9.1);
 		// where unusable (e.g. HTTP/2, unsupported here in v1) the
-		// client context remains the disconnect signal.
+		// client context remains the disconnect signal. The deadline is
+		// reset around each chunk (FIX-19/N5) so a large response is an
+		// idle bound — a slow-but-steady client is never cut off for
+		// reading too long, while a fully stalled client still is.
 		ctrl := http.NewResponseController(q.W)
 		clientIdle := p.cfg.Server.StreamWriteTimeout.Duration()
 		deadlineOK := ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
-		_, werr := q.W.Write(res.BodyBytes)
+		const writeChunk = 32 << 10
+		var werr error
+		for off := 0; off < len(res.BodyBytes) && werr == nil; off += writeChunk {
+			if deadlineOK {
+				deadlineOK = ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
+			}
+			end := off + writeChunk
+			if end > len(res.BodyBytes) {
+				end = len(res.BodyBytes)
+			}
+			_, werr = q.W.Write(res.BodyBytes[off:end])
+		}
 		// Clear the deadline only when the write completed, so it cannot
 		// leak into the next keep-alive request on this connection. When
 		// the write errored (stalled reader, deadline fired) the deadline
