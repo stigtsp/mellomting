@@ -1085,14 +1085,14 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 
 	// Stream usage injection (PLAN §38): known OpenAI-compatible
 	// Chat/Completions requests. Responses API emits usage in-band, so no
-	// injection there.
+	// injection there. injectedUsage is true only when the proxy actually
+	// wrote include_usage; a client-set value (true or false) is preserved
+	// and never counted as injected, so the pump does not swallow a chunk
+	// the client asked for or one the proxy did not inject (FIX-09).
 	if stream && ensureUsage {
 		switch o.endpoint {
 		case "chat.completions", "completions":
-			if !clientRequestedUsage(fields) {
-				injectStreamUsage(fields)
-				injectedUsage = true
-			}
+			injectedUsage = injectStreamUsage(fields)
 		}
 	}
 
@@ -1132,25 +1132,12 @@ func tokenLimit(fields map[string]json.RawMessage, name string, cap int) (presen
 	return true, n, nil
 }
 
-// clientRequestedUsage reports whether the client asked for a stream
-// usage chunk (stream_options.include_usage == true).
-func clientRequestedUsage(fields map[string]json.RawMessage) bool {
-	raw, ok := fields["stream_options"]
-	if !ok {
-		return false
-	}
-	var so struct {
-		IncludeUsage bool `json:"include_usage"`
-	}
-	if err := json.Unmarshal(raw, &so); err != nil {
-		return false
-	}
-	return so.IncludeUsage
-}
-
 // injectStreamUsage sets stream_options.include_usage=true, preserving
-// any other existing stream options (PLAN §38).
-func injectStreamUsage(fields map[string]json.RawMessage) {
+// any other existing stream options (PLAN §38). It reports whether it
+// actually injected the key: a client-set value (true or false) is never
+// overwritten and yields false, so callers set injectedUsage only for a
+// real injection (FIX-09).
+func injectStreamUsage(fields map[string]json.RawMessage) bool {
 	var so map[string]json.RawMessage
 	if raw, ok := fields["stream_options"]; ok {
 		_ = json.Unmarshal(raw, &so)
@@ -1158,14 +1145,16 @@ func injectStreamUsage(fields map[string]json.RawMessage) {
 	if so == nil {
 		so = map[string]json.RawMessage{}
 	}
-	if _, ok := so["include_usage"]; !ok {
-		so["include_usage"] = json.RawMessage(`true`)
+	if _, ok := so["include_usage"]; ok {
+		return false
 	}
+	so["include_usage"] = json.RawMessage(`true`)
 	enc, err := json.Marshal(so)
 	if err != nil {
-		return
+		return false
 	}
 	fields["stream_options"] = enc
+	return true
 }
 
 // isUsageOnlyChunk reports whether a streaming data payload is the

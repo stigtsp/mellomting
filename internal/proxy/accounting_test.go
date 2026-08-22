@@ -340,6 +340,66 @@ func TestUsageNullFrameReEmitted(t *testing.T) {
 	}
 }
 
+// FIX-09: injectedUsage must be true only when the proxy actually wrote
+// include_usage. An explicit client value (true or false) is preserved
+// upstream and never counts as injected, so the pump does not swallow a
+// real backend usage-only chunk the client did not ask the proxy to add.
+func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
+	prep := func(body string) bool {
+		o := operation{endpoint: "chat.completions", generative: true}
+		_, _, inj, err := prepareOutbound([]byte(body), o, 100000, true, true, 0)
+		if err != nil {
+			t.Fatalf("prepareOutbound: %v", err)
+		}
+		return inj
+	}
+	if !prep(`{"model":"m","stream":true,"messages":[]}`) {
+		t.Fatal("omit stream_options: injectedUsage should be true")
+	}
+	if prep(`{"model":"m","stream":true,"stream_options":{"include_usage":false},"messages":[]}`) {
+		t.Fatal("explicit include_usage:false: injectedUsage should be false")
+	}
+	if prep(`{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[]}`) {
+		t.Fatal("explicit include_usage:true: injectedUsage should be false")
+	}
+
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"id":"c","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n" +
+				`data: {"id":"c","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}` + "\n\n" +
+				`data: [DONE]` + "\n\n",
+		))
+	})
+	quota := accounting.NewQuota()
+	writer, _ := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var upstream struct {
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(f.lastBody, &upstream); err != nil {
+		t.Fatalf("backend body: %v", err)
+	}
+	if upstream.StreamOptions.IncludeUsage {
+		t.Fatalf("client's include_usage:false must be preserved upstream: %s", f.lastBody)
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"total_tokens":15`) {
+		t.Fatalf("usage-only chunk must be relayed when the client set include_usage:false:\n%s", got)
+	}
+	if !strings.Contains(got, "Hi") || !strings.Contains(got, "[DONE]") {
+		t.Fatalf("stream content missing:\n%s", got)
+	}
+}
+
 // TestStreamFinalEventNoBlankLineDelivered is the T-X13 regression test:
 // a stream whose final event lacks a terminating blank line (trailer="",
 // "\n" or "\r") must still deliver the final content event to the client
