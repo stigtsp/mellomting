@@ -131,9 +131,9 @@ func (b *Bucket) match(rate float64, burst int) bool {
 // only keys that passed authentication ever obtain a slot, and the
 // number of such keys is the number of configured keys.
 type Registry struct {
-	mu   sync.Mutex
-	keys map[string]*KeyState
-	prev *Registry // prior generation, for token-bucket carry-over on reload
+	mu    sync.Mutex
+	keys  map[string]*KeyState
+	carry map[string]*Bucket // buckets carried from the prior generation
 }
 
 // NewRegistry builds an empty registry.
@@ -147,8 +147,26 @@ func NewRegistry() *Registry {
 // burst (FIX-22, PLAN §30, §34). Concurrency bounds are never carried:
 // they are always built fresh from the reloaded store, so a changed
 // concurrent_requests limit applies immediately.
+//
+// Only the carryable buckets are retained, as an immutable snapshot; the
+// previous Registry itself is deliberately not referenced, so a chain of
+// SIGHUPs never accumulates a linked list of dead generations (R3,
+// FIX-22 eval).
 func NewRegistryCarrying(prev *Registry) *Registry {
-	return &Registry{keys: make(map[string]*KeyState), prev: prev}
+	var carry map[string]*Bucket
+	if prev != nil {
+		prev.mu.Lock()
+		if n := len(prev.keys); n > 0 {
+			carry = make(map[string]*Bucket, n)
+			for id, ks := range prev.keys {
+				if ks.Bucket != nil {
+					carry[id] = ks.Bucket
+				}
+			}
+		}
+		prev.mu.Unlock()
+	}
+	return &Registry{keys: make(map[string]*KeyState), carry: carry}
 }
 
 // For returns the limit state of a key, creating it on first use.
@@ -160,36 +178,37 @@ func (r *Registry) For(key *auth.Key) *KeyState {
 		return ks
 	}
 	ks = r.build(key)
-	if r.prev != nil {
-		if prev := r.prev.lookup(key.ID); prev != nil && prev.Bucket != nil &&
-			prev.Bucket.match(key.Limits.RequestsPerSecond, key.Limits.Burst) {
-			ks.Bucket = prev.Bucket
+	if b, ok := r.carry[key.ID]; ok {
+		// Carry only when the effective burst is unchanged, not merely
+		// the raw field: a bucket built with burst omitted (derived from
+		// the rate) must still match a reload where the burst remains
+		// omitted, or every reload re-gifts a fresh burst (FIX-22).
+		burst := derivedBurst(key.Limits.RequestsPerSecond, key.Limits.Burst)
+		if b.match(key.Limits.RequestsPerSecond, burst) {
+			ks.Bucket = b
 		}
 	}
 	r.keys[key.ID] = ks
 	return ks
 }
 
-// lookup returns the key state for keyID without creating one. It must
-// not be called with r.mu held (it takes the lock itself).
-func (r *Registry) lookup(keyID string) *KeyState {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.keys[keyID]
+// derivedBurst computes the effective burst a bucket is built with:
+// the configured value when present, else one second of sustained rate
+// (at least one), mirroring build().
+func derivedBurst(rate float64, burst int) int {
+	if burst < 1 {
+		burst = int(rate)
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	return burst
 }
 
 func (r *Registry) build(key *auth.Key) *KeyState {
 	ks := &KeyState{Concur: NewConcurrency(key.Limits.ConcurrentRequests)}
 	if key.Limits.RequestsPerSecond > 0 {
-		burst := key.Limits.Burst
-		if burst < 1 {
-			// One second of sustained rate (PLAN §34 spirit: a
-			// burst must be calculable, default to something sane).
-			burst = int(key.Limits.RequestsPerSecond)
-			if burst < 1 {
-				burst = 1
-			}
-		}
+		burst := derivedBurst(key.Limits.RequestsPerSecond, key.Limits.Burst)
 		b, err := NewBucket(key.Limits.RequestsPerSecond, burst)
 		if err != nil { // unreachable for store-validated keys: negative rates are
 			// rejected at the key-store boundary (auth.validateLimits), so this

@@ -198,3 +198,131 @@ func TestSourceRegistryRejectsBadConfig(t *testing.T) {
 		t.Fatal("negative rate accepted")
 	}
 }
+
+func TestRegistryCarryOverCarriesUnchangedBucket(t *testing.T) {
+	t.Parallel()
+	prev := NewRegistry()
+	k := &auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}}
+	old := prev.For(k)
+	// Consume the full burst so a carried bucket is observably drained,
+	// unlike a freshly built one: carrying must not re-gift a full burst.
+	if ok, _ := old.AllowRate(time.Now()); !ok {
+		t.Fatal("fresh bucket must admit")
+	}
+	if ok, _ := old.AllowRate(time.Now()); !ok {
+		t.Fatal("fresh burst-2 bucket must admit twice")
+	}
+
+	reg := NewRegistryCarrying(prev)
+	got := reg.For(k)
+	if got.Bucket == nil {
+		t.Fatal("carried key must keep a bucket")
+	}
+	if got.Bucket != old.Bucket {
+		t.Fatal("unchanged limits must carry the same bucket across a reload")
+	}
+	if ok, _ := got.AllowRate(time.Now()); ok {
+		t.Fatal("carried bucket must stay drained (no re-gifted burst)")
+	}
+}
+
+func TestRegistryCarryOverDerivedBurst(t *testing.T) {
+	t.Parallel()
+	prev := NewRegistry()
+	// Burst omitted: the bucket is built with the derived burst (one
+	// second of rate). A reload that also omits burst must still carry
+	// it; comparing the raw field would re-gift a fresh burst every
+	// reload (FIX-22).
+	k := &auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 10, Burst: 0}}
+	old := prev.For(k)
+	if ok, _ := old.AllowRate(time.Now()); !ok {
+		t.Fatal("fresh bucket must admit")
+	}
+
+	reg := NewRegistryCarrying(prev)
+	got := reg.For(&auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 10, Burst: 0}})
+	if got.Bucket != old.Bucket {
+		t.Fatal("burst omitted on both sides must still carry the bucket (FIX-22)")
+	}
+}
+
+func TestRegistryCarryOverRebuildsOnChangedLimits(t *testing.T) {
+	t.Parallel()
+	// Rate changed: the carried (drained) bucket must be replaced by a
+	// fresh one built from the new limits.
+	prev := NewRegistry()
+	k := &auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}}
+	old := prev.For(k)
+	old.AllowRate(time.Now())
+	old.AllowRate(time.Now()) // fully drained
+
+	reg := NewRegistryCarrying(prev)
+	got := reg.For(&auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 5, Burst: 2}})
+	if got.Bucket == old.Bucket {
+		t.Fatal("changed rate must rebuild the bucket, not carry the old one")
+	}
+	if ok, _ := got.AllowRate(time.Now()); !ok {
+		t.Fatal("rebuilt bucket must be fresh and admit immediately")
+	}
+
+	// Explicit burst changed (rate unchanged) must also rebuild.
+	prev2 := NewRegistry()
+	k2 := &auth.Key{ID: "K2", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}}
+	old2 := prev2.For(k2)
+	old2.AllowRate(time.Now())
+	old2.AllowRate(time.Now())
+
+	reg2 := NewRegistryCarrying(prev2)
+	got2 := reg2.For(&auth.Key{ID: "K2", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 5}})
+	if got2.Bucket == old2.Bucket {
+		t.Fatal("changed burst must rebuild the bucket, not carry the old one")
+	}
+	if ok, _ := got2.AllowRate(time.Now()); !ok {
+		t.Fatal("rebuilt bucket must be fresh and admit immediately")
+	}
+
+	// Omitted burst (derived) on one side, explicit on the other: the
+	// effective burst differs, so the bucket must rebuild.
+	prev3 := NewRegistry()
+	k3 := &auth.Key{ID: "K3", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 0}}
+	old3 := prev3.For(k3)
+	old3.AllowRate(time.Now())
+
+	reg3 := NewRegistryCarrying(prev3)
+	got3 := reg3.For(&auth.Key{ID: "K3", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}})
+	if got3.Bucket == old3.Bucket {
+		t.Fatal("derived vs explicit burst must rebuild the bucket (FIX-22)")
+	}
+}
+
+func TestRegistryCarryOverAcrossGenerations(t *testing.T) {
+	t.Parallel()
+	// R3 (FIX-22 eval): repeated SIGHUPs must not accumulate a chain of
+	// dead generations. The carried bucket persists, each generation
+	// starts lazy (empty) and is snapshotted, and the drain is never
+	// re-gifted.
+	k := &auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}}
+	prev := NewRegistry()
+	old := prev.For(k)
+	if ok, _ := old.AllowRate(time.Now()); !ok {
+		t.Fatal("fresh bucket must admit")
+	}
+	if ok, _ := old.AllowRate(time.Now()); !ok {
+		t.Fatal("fresh burst-2 bucket must admit twice")
+	}
+
+	for i := 0; i < 3; i++ {
+		next := NewRegistryCarrying(prev)
+		if next.Size() != 0 {
+			t.Fatalf("generation %d starts non-empty (Size=%d), want lazy", i+1, next.Size())
+		}
+		got := next.For(k)
+		if got.Bucket != old.Bucket {
+			t.Fatalf("generation %d did not carry the original bucket", i+1)
+		}
+		prev = next
+	}
+	if ok, _ := prev.For(k).AllowRate(time.Now()); ok {
+		t.Fatal("carried bucket must stay drained across generations")
+	}
+}
