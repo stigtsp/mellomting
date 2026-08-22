@@ -596,12 +596,12 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 func (d *daemon) reloadUsers() {
 	users, err := auth.LoadUsers(d.cfg.Auth.UsersFile)
 	if err != nil {
-		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
+		d.logReloadFailed(err)
 		return
 	}
 	store, err := auth.NewStore(users, d.pepper)
 	if err != nil {
-		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
+		d.logReloadFailed(err)
 		return
 	}
 	d.api.ReloadStore(store)
@@ -609,6 +609,22 @@ func (d *daemon) reloadUsers() {
 	if len(users.Keys) == 0 {
 		d.log.Warn("users file has no keys; every request will be rejected until a key is added")
 	}
+}
+
+// logReloadFailed reports a failed SIGHUP reload (PLAN §30). Fail closed:
+// the previous store stays in effect. Under landlock.mode: required the
+// users file is pinned to its startup inode (PLAN §58), and key
+// create/disable/revoke atomically rename it to a new inode the sandbox
+// denies, so the ERROR names the sandbox and the restart requirement —
+// the operator sees the cause instead of a silent no-op (FIX-02/N2 of
+// FIX_REVIEW_2026-08-22).
+func (d *daemon) logReloadFailed(err error) {
+	if d.cfg.Security.Landlock.Mode == landlock.ModeRequired {
+		d.log.Error("users reload failed; keeping previous store (under landlock.mode: required the users file is pinned to its startup inode, so key rotation or revocation requires a restart)",
+			"error_class", "configuration", "error", err)
+		return
+	}
+	d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
 }
 
 // listenAddr returns the listener address for logging/cleanup.

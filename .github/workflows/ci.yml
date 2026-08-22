@@ -60,6 +60,31 @@ jobs:
       - name: Fuzz config parser (15s smoke)
         run: go test -run=NONE -fuzz=FuzzParse -fuzztime=15s ./internal/config
 
+  landlock:
+    name: landlock acceptance (ABI >= 6 required)
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # The Landlock acceptance tests need kernel ABI >= 6. MELLOMTING_
+      # LANDLOCK_STRICT turns any skip into a failure, so the ABI-6/TSYNC
+      # fix and the required-mode serve path are proven to have executed
+      # (FIX-02/X2 of FIX_REVIEW_2026-08-22). On a runner without an
+      # ABI >= 6 kernel this job fails loudly instead of silently
+      # skipping the acceptance tests.
+      - name: Landlock acceptance (strict)
+        run: MELLOMTING_LANDLOCK_STRICT=1 go test -count=1 -run 'TestAllThreadsEnforced|TestScopedAbstractSocket' ./internal/landlock/
+
+      - name: Landlock required-mode serve tests (strict)
+        run: MELLOMTING_LANDLOCK_STRICT=1 go test -count=1 -run 'TestServeSandboxRequiredApplies' ./cmd/mellomting/
+
   nonlinux:
     name: non-linux build (darwin) vet+test
     runs-on: macos-latest

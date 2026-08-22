@@ -1344,6 +1344,15 @@ A reload must:
 
 On failure, retain the previous valid snapshot.
 
+Under `security.landlock.mode: required` the users file is pinned to its
+startup inode (the only file read the post-startup policy grants, §58).
+Offline `key create/disable/revoke` atomically renames the file to a new
+inode, so a `SIGHUP` reload of those changes is denied by the sandbox and
+fails closed (the previous store is retained). Key rotation and revocation
+therefore require a process restart under `mode: required`; the daemon logs
+an ERROR naming the sandbox and the restart requirement so the operator
+sees the cause rather than a silent no-op (FIX-02/N2).
+
 Revocation applies to new requests. Existing inference streams are not forcibly terminated in v1.
 
 ---

@@ -39,6 +39,26 @@ import (
 // forbidden operation attempted from every thread must fail, the
 // allowed operations must succeed, and a signal to a process outside
 // the domain must be denied.
+// requireABIOrFail enforces the configured minimum ABI. In ordinary test
+// runs an insufficient kernel skips (lltest.RequireABI); when the CI job
+// sets MELLOMTING_LANDLOCK_STRICT=1 an ABI >= minimum kernel is expected
+// and any skip becomes a failure, so the acceptance test can never
+// silently not run (FIX-02/X2 of FIX_REVIEW_2026-08-22).
+func requireABIOrFail(t *testing.T, minABI int) {
+	t.Helper()
+	if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" {
+		report := landlock.Check()
+		if !report.Supported {
+			t.Fatalf("strict landlock run: sandbox unsupported: %s", report.Reason)
+		}
+		if report.KernelABI < minABI {
+			t.Fatalf("strict landlock run: kernel ABI %d < required %d: acceptance test would have skipped", report.KernelABI, minABI)
+		}
+		return
+	}
+	lltest.RequireABI(t, minABI)
+}
+
 func TestAllThreadsEnforced(t *testing.T) {
 	lltest.RunInSubprocess(t, func() {
 		// ABI 6 is the configured default minimum (PLAN §55): it gives
@@ -46,7 +66,7 @@ func TestAllThreadsEnforced(t *testing.T) {
 		// filesystem, network, and signal confinement. On ABI 8+ the
 		// all-thread TSYNC path is exercised; below it go-landlock's
 		// all-thread prctl/restrict-self sequence is.
-		lltest.RequireABI(t, landlock.DefaultMinimumABI)
+		requireABIOrFail(t, landlock.DefaultMinimumABI)
 		report := landlock.Check()
 		abi := report.KernelABI
 		if abi > landlock.MaxABI {
@@ -429,7 +449,7 @@ func TestScopedAbstractSocket(t *testing.T) {
 	}
 
 	lltest.RunInSubprocess(t, func() {
-		lltest.RequireABI(t, landlock.DefaultMinimumABI)
+		requireABIOrFail(t, landlock.DefaultMinimumABI)
 		report := landlock.Check()
 		abi := report.KernelABI
 		if abi > landlock.MaxABI {

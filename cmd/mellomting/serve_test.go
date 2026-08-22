@@ -236,6 +236,11 @@ func (s *syncBuffer) String() string {
 }
 
 func startServe(t *testing.T, bin, cfgPath string) *exec.Cmd {
+	cmd, _ := startServeWithLog(t, bin, cfgPath)
+	return cmd
+}
+
+func startServeWithLog(t *testing.T, bin, cfgPath string) (*exec.Cmd, *syncBuffer) {
 	t.Helper()
 	cmd := exec.Command(bin, "serve", "-config", cfgPath)
 	var logB syncBuffer
@@ -251,7 +256,7 @@ func startServe(t *testing.T, bin, cfgPath string) *exec.Cmd {
 		}
 		t.Log(strings.TrimSpace(logB.String()))
 	})
-	return cmd
+	return cmd, &logB
 }
 
 func waitReady(t *testing.T, sock string) *http.Client {
@@ -1834,11 +1839,73 @@ models:
 func TestServeSandboxRequiredApplies(t *testing.T) {
 	report := landlock.Check()
 	if !report.Supported || report.KernelABI < landlock.DefaultMinimumABI {
+		if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" {
+			t.Fatalf("strict landlock run: required-mode enforcement cannot be tested here (supported=%v kernel_abi=%d)", report.Supported, report.KernelABI)
+		}
 		t.Skipf("landlock unavailable or kernel ABI %d < default minimum %d; required-mode enforcement cannot be tested here", report.KernelABI, landlock.DefaultMinimumABI)
 	}
 
-	bin, cfgPath, sock, key := serveFixture(t, "required")
-	cmd := startServe(t, bin, cfgPath)
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	backend := fakeChatBackend(t)
+	sock := filepath.Join(dir, "mellomting.sock")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("sandbox-required-pepper-16b")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "sandbox",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: required
+
+backends:
+  local-a:
+    base_url: %s
+    upstream_model: Qwen/Qwen3-Coder
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    backends:
+      - local-a
+`, sock, usersPath, pepperPath, backend.URL)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, logB := startServeWithLog(t, bin, cfgPath)
 	client := waitReady(t, sock) // ready only after the sandbox is applied (PLAN §57 step 19)
 
 	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
@@ -1854,7 +1921,44 @@ func TestServeSandboxRequiredApplies(t *testing.T) {
 	// required-mode daemon sets ready only after the sandbox has been
 	// applied to all threads, and it served a request under the
 	// confines of the policy.
-	err := cmd.Process.Signal(syscall.SIGTERM)
+
+	// N2 (FIX_REVIEW_2026-08-22): under landlock.mode: required the
+	// users file is pinned to its startup inode, so a key rotation that
+	// atomically renames the file cannot take effect on SIGHUP. Rewrite
+	// the file with the key disabled (the same atomic rename `key
+	// revoke` performs) and reload: the daemon must fail closed —
+	// keeping the previous store, so the key still works — and must log
+	// the ERROR naming the sandbox and the restart requirement instead
+	// of silently no-opping.
+	if err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		for i := range uf.Keys {
+			if uf.Keys[i].ID == id {
+				uf.Keys[i].Enabled = false
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logB.String(), "users reload failed; keeping previous store (under landlock.mode: required") {
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon did not log the sandbox-restart ERROR after SIGHUP; log=%s", logB.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// The previous (enabled) store must still be in effect: the key
+	// keeps working until a restart (PLAN §30 fail closed).
+	resp, body = postJSON(t, client, "http://mellomting/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("key must keep working after failed sandboxed reload (fail closed): %d %s", resp.StatusCode, body)
+	}
+
+	err = cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
 		t.Fatal(err)
 	}
