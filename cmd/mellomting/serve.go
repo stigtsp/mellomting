@@ -419,8 +419,10 @@ func safeUnixListen(l config.Listen) (net.Listener, error) {
 func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *http.Server {
 	// Bounded accepted connections (T-L15, PLAN §9.1): connections above
 	// the configured cap are closed at accept time so a flood of idle
-	// sockets cannot exhaust fds. StateHijacked/StateClosed release a
-	// slot; a hijacked SSE connection stays reserved until closed.
+	// sockets cannot exhaust fds. StateClosed and StateHijacked both
+	// release a slot; net/http fires StateHijacked as soon as a handler
+	// hijacks the connection (SSE streaming), so a hijacked connection no
+	// longer counts against the cap.
 	var active atomic.Int64
 	max := int64(cfg.Server.MaxConnections)
 	srv := &http.Server{

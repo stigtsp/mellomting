@@ -621,6 +621,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				fail(502, "api_error", "upstream_unavailable",
 					"upstream is unavailable", "backend_5xx")
 			default:
+				// A backend 3xx is deliberately terminal here: redirects
+				// are not followed, the status is a client-side error
+				// class, and the response maps to a sanitized
+				// upstream_rejected (backend_4xx). A redirecting backend
+				// is logged as a client error; nothing about its
+				// location leaks to the client.
 				fail(400, "invalid_request_error", "upstream_rejected",
 					"upstream rejected the request", "backend_4xx")
 			}

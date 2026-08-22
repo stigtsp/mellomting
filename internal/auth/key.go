@@ -24,7 +24,7 @@ const (
 	// Prefix is the key prefix.
 	Prefix = "mtk"
 
-	keyIDBytes  = 5  // 5 random bytes -> 8 base32 chars (~32 bits of ID space)
+	keyIDBytes  = 5  // 5 random bytes -> 8 base32 chars (~40 bits of ID space)
 	secretBytes = 32 // 256 bits of secret entropy
 )
 

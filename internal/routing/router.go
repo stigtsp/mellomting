@@ -227,7 +227,10 @@ func (r *Router) nextWRR(model string, entry modelEntry, cands []int) int {
 		st = &wrrState{current: make([]int, len(entry.replicas))}
 		r.wrr[model] = st
 	}
-	for len(st.current) != len(entry.replicas) {
+	// The router is immutable for a given configuration, so the state
+	// either already matches the replica count or was just created to
+	// match; one conditional is enough.
+	if len(st.current) != len(entry.replicas) {
 		st = &wrrState{current: make([]int, len(entry.replicas))}
 		r.wrr[model] = st
 	}
