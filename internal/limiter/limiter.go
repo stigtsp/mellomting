@@ -241,15 +241,27 @@ func (r *SourceRegistry) Allow(ip string, now time.Time) (ok bool, retryAfter ti
 	return st.rate.Allow(now)
 }
 
-// evictOldest drops the least-recently-touched source so the map stays
-// bounded. It must be called with r.mu held.
+// evictProbeBudget bounds the work of one source eviction: when the map
+// is at its cap, Allow probes at most this many sources and evicts the
+// least-recently-touched one it saw (FIX-17), keeping eviction O(1)-ish
+// at the DefaultPreauthSources bound instead of a full-map scan per new
+// source.
+const evictProbeBudget = 64
+
+// evictOldest drops a source so the map stays bounded. It must be called
+// with r.mu held.
 func (r *SourceRegistry) evictOldest() {
 	var oldest string
 	var oldestTime time.Time
 	first := true
+	probed := 0
 	for ip, st := range r.srcs {
+		probed++
 		if first || st.last.Before(oldestTime) {
 			oldest, oldestTime, first = ip, st.last, false
+		}
+		if probed >= evictProbeBudget {
+			break
 		}
 	}
 	delete(r.srcs, oldest)
