@@ -3,6 +3,7 @@ package accounting
 import (
 	"bufio"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,30 @@ func TestParseUsageClampsExtremes(t *testing.T) {
 	}
 	if neg.Input != 0 || neg.Output != 0 || neg.Total != 0 {
 		t.Fatalf("negatives not clamped: %+v", neg)
+	}
+}
+
+func TestSatAddNegative(t *testing.T) {
+	// FIX-07/N4: a negative addend must never wrap to MaxInt64 via the
+	// overflow guard's own arithmetic.
+	if got := satAdd(0, -1); got != 0 {
+		t.Fatalf("satAdd(0,-1) = %d, want 0", got)
+	}
+	if got := satAdd(100, -5); got != 95 {
+		t.Fatalf("satAdd(100,-5) = %d, want 95", got)
+	}
+	if got := satAdd(5, -10); got != 0 {
+		t.Fatalf("satAdd(5,-10) = %d, want 0 (floored)", got)
+	}
+	// The positive overflow behaviour is unchanged.
+	if got := satAdd(math.MaxInt64, 1); got != math.MaxInt64 {
+		t.Fatalf("satAdd(MaxInt64,1) = %d, want MaxInt64", got)
+	}
+	if got := satAdd(1, math.MaxInt64); got != math.MaxInt64 {
+		t.Fatalf("satAdd(1,MaxInt64) = %d, want MaxInt64", got)
+	}
+	if got := satAdd(math.MaxInt64, -1); got != math.MaxInt64-1 {
+		t.Fatalf("satAdd(MaxInt64,-1) = %d, want MaxInt64-1", got)
 	}
 }
 

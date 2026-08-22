@@ -37,14 +37,21 @@ type WindowLimit struct {
 	TokensPerDay  int64
 }
 
-// satAdd adds two non-negative token counts without wrapping: the result
-// saturates at MaxInt64 so overflow can never make a quota counter
-// negative or defeat a comparison (PLAN §39).
+// satAdd adds two token counts without wrapping: the result saturates at
+// MaxInt64 so overflow can never make a quota counter negative or defeat
+// a comparison (PLAN §39). A negative addend is corrupt input (e.g. a
+// JSONL line written by a pre-fix binary, FIX-07/N4); it is added as-is
+// but the result is floored at 0 — never wrapped to MaxInt64 by the
+// `a > math.MaxInt64-b` guard, which overflows when b is negative.
 func satAdd(a, b int64) int64 {
-	if a > math.MaxInt64-b {
+	if b > 0 && a > math.MaxInt64-b {
 		return math.MaxInt64
 	}
-	return a + b
+	s := a + b
+	if s < 0 {
+		return 0
+	}
+	return s
 }
 
 // Admit checks the settled usage against the key's configured windows,

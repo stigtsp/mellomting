@@ -59,7 +59,10 @@ func TestReportFileMissing(t *testing.T) {
 }
 
 func TestReportFileDoesNotWrap(t *testing.T) {
-	// Summing extreme totals must saturate, never wrap negative (T-X11).
+	// Extreme totals are clamped on read to the X11 bounds (FIX-07/N4)
+	// before summing, so the aggregate can never wrap negative or reach a
+	// bogus MaxInt64 (T-X11): two MaxInt64 records yield 2 * maxUsageTokens
+	// per field, not MaxInt64 and not a negative wrap.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.jsonl")
 	f, _ := os.Create(path)
@@ -82,7 +85,40 @@ func TestReportFileDoesNotWrap(t *testing.T) {
 			t.Fatalf("reported total wrapped negative: %d", v)
 		}
 	}
-	if k.TotalTokens != math.MaxInt64 {
-		t.Fatalf("total = %d, want saturated %d", k.TotalTokens, int64(math.MaxInt64))
+	if want := 2 * maxUsageTokens; k.InputTokens != want || k.OutputTokens != want || k.TotalTokens != want {
+		t.Fatalf("clamped fields = %+v, want each %d", k, want)
+	}
+}
+
+func TestReportFileClampsNegative(t *testing.T) {
+	// FIX-07/N4: a corrupt line (e.g. written by a pre-fix binary) with a
+	// negative token field must never blow the aggregate up to MaxInt64;
+	// the field is clamped to 0 on read.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	f, _ := os.Create(path)
+	b, _ := json.Marshal(Record{KeyID: "k", InputTokens: 10, OutputTokens: 50, TotalTokens: 60})
+	_, _ = f.Write(append(b, '\n'))
+	// Second record carries the corrupt negative output (review's log).
+	b, _ = json.Marshal(Record{KeyID: "k", InputTokens: 91, OutputTokens: -1, TotalTokens: 90})
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+
+	rep, err := ReportFile(path)
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if len(rep.Keys) != 1 {
+		t.Fatalf("want 1 key, got %d", len(rep.Keys))
+	}
+	k := rep.Keys[0]
+	if k.Requests != 2 {
+		t.Fatalf("requests = %d, want 2", k.Requests)
+	}
+	if k.OutputTokens != 50 {
+		t.Fatalf("output = %d, want 50 (negative clamped, never MaxInt64)", k.OutputTokens)
+	}
+	if k.InputTokens != 101 || k.TotalTokens != 150 {
+		t.Fatalf("input/total = %d/%d, want 101/150", k.InputTokens, k.TotalTokens)
 	}
 }

@@ -52,10 +52,14 @@ func ReportFile(path string) (*Report, error) {
 					order = append(order, ku)
 				}
 				ku.Requests++
-				ku.InputTokens = satAdd(ku.InputTokens, rec.InputTokens)
-				ku.OutputTokens = satAdd(ku.OutputTokens, rec.OutputTokens)
-				ku.TotalTokens = satAdd(ku.TotalTokens, rec.TotalTokens)
-				ku.CachedTokens = satAdd(ku.CachedTokens, rec.CachedTokens)
+				// FIX-07/N4: clamp each field with the X11 bounds
+				// before satAdd so a corrupt line (e.g. a negative
+				// token count from a pre-fix binary) can never blow
+				// the aggregate up to MaxInt64 or wrap it.
+				ku.InputTokens = satAdd(ku.InputTokens, clampUsage(rec.InputTokens))
+				ku.OutputTokens = satAdd(ku.OutputTokens, clampUsage(rec.OutputTokens))
+				ku.TotalTokens = satAdd(ku.TotalTokens, clampUsage(rec.TotalTokens))
+				ku.CachedTokens = satAdd(ku.CachedTokens, clampUsage(rec.CachedTokens))
 			}
 		}
 		if err != nil {
