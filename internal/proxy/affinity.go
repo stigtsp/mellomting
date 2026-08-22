@@ -70,26 +70,37 @@ func (a *affinity) Get(keyID, respID string) (string, bool) {
 	return v.Backend, true
 }
 
+// evictProbeBudget bounds the work of one eviction: when the table is at
+// its bound, a Put probes at most this many live entries and evicts the
+// oldest of those it saw (FIX-16), keeping eviction O(1)-ish even at the
+// MaxAffinityEntries bound instead of two full-table scans per Put.
+const evictProbeBudget = 64
+
 // evictLocked drops expired entries; if still at/over the bound it
-// removes the entry with the oldest expiry (bounded work, PLAN §21.4).
+// removes the oldest entry within a bounded probe window (bounded work,
+// PLAN §21.4).
 func (a *affinity) evictLocked(now time.Time) {
 	if len(a.table) < a.max {
 		return
 	}
+	var oldest affKey
+	var oldestT time.Time
+	haveOldest := false
+	probed := 0
 	for k, v := range a.table {
 		if now.After(v.Expiry) {
 			delete(a.table, k)
+			continue
+		}
+		probed++
+		if !haveOldest || v.Expiry.Before(oldestT) {
+			oldest, oldestT, haveOldest = k, v.Expiry, true
+		}
+		if probed >= evictProbeBudget && len(a.table) >= a.max {
+			break
 		}
 	}
-	var oldest affKey
-	var oldestT time.Time
-	first := true
-	if len(a.table) >= a.max {
-		for k, v := range a.table {
-			if first || v.Expiry.Before(oldestT) {
-				oldest, oldestT, first = k, v.Expiry, false
-			}
-		}
+	if len(a.table) >= a.max && haveOldest {
 		delete(a.table, oldest)
 	}
 }
