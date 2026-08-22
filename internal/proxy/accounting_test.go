@@ -305,6 +305,41 @@ func TestClientRequestedUsageNotSwallowed(t *testing.T) {
 	}
 }
 
+// FIX-08: an empty-choices frame carrying "usage": null plus provider
+// metadata is not a usage-only chunk and must be re-emitted verbatim
+// (PLAN §24) even when the proxy injected include_usage; only a real
+// injected usage object (no choices) is swallowed.
+func TestUsageNullFrameReEmitted(t *testing.T) {
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"id":"c","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n" +
+				`data: {"id":"c","choices":[],"usage":null,"metadata":{"provider":"upstream"}}` + "\n\n" +
+				`data: {"id":"c","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}` + "\n\n" +
+				`data: [DONE]` + "\n\n",
+		))
+	})
+	quota := accounting.NewQuota()
+	writer, _ := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	got := w.Body.String()
+	if !strings.Contains(got, `"usage":null`) || !strings.Contains(got, `"provider":"upstream"`) {
+		t.Fatalf("usage:null frame must be re-emitted verbatim:\n%s", got)
+	}
+	if strings.Contains(got, `"total_tokens":15`) {
+		t.Fatalf("injected usage chunk must be swallowed:\n%s", got)
+	}
+	if !strings.Contains(got, "Hi") || !strings.Contains(got, "[DONE]") {
+		t.Fatalf("stream content missing:\n%s", got)
+	}
+}
+
 // TestStreamFinalEventNoBlankLineDelivered is the T-X13 regression test:
 // a stream whose final event lacks a terminating blank line (trailer="",
 // "\n" or "\r") must still deliver the final content event to the client

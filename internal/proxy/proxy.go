@@ -11,6 +11,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1178,7 +1179,12 @@ func isUsageOnlyChunk(data string) bool {
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 		return false
 	}
-	return len(chunk.Usage) > 0 && len(chunk.Choices) == 0
+	// A literal "usage": null is an empty-choices frame carrying provider
+	// metadata, not a usage-only chunk, and must be re-emitted verbatim
+	// (PLAN §24). json.RawMessage captures "null" as 4 bytes, so without
+	// this check the frame would be swallowed (FIX-08).
+	return len(chunk.Choices) == 0 &&
+		len(chunk.Usage) > 0 && !bytes.Equal(chunk.Usage, []byte("null"))
 }
 
 // windowLimits maps a key's configured token budgets to quota windows.
