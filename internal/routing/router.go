@@ -266,20 +266,6 @@ func (r *Router) List() []string {
 	return out
 }
 
-// BackendsFor returns the configured backend names for a public model in
-// configuration order (PLAN §21.3: the "possible backends" of a model).
-func (r *Router) BackendsFor(publicModel string) []string {
-	e, ok := r.models[publicModel]
-	if !ok {
-		return nil
-	}
-	out := make([]string, len(e.replicas))
-	for i, rep := range e.replicas {
-		out[i] = rep.name
-	}
-	return out
-}
-
 // TypeOf returns the model type ("generation" or "embedding").
 func (r *Router) TypeOf(publicModel string) string {
 	e, ok := r.models[publicModel]

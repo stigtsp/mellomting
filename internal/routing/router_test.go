@@ -344,9 +344,6 @@ func TestSelectUnknownAndAccessors(t *testing.T) {
 	if got := r.List(); len(got) != 2 || got[0] != "embed-small" || got[1] != "qwen-coder" {
 		t.Fatalf("List = %v", got)
 	}
-	if got := r.BackendsFor("qwen-coder"); len(got) != 2 || got[0] != "back-a" || got[1] != "back-b" {
-		t.Fatalf("BackendsFor = %v", got)
-	}
 	if r.TypeOf("embed-small") != "embedding" {
 		t.Fatalf("TypeOf = %q", r.TypeOf("embed-small"))
 	}

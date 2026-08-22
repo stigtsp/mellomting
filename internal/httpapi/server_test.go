@@ -1331,13 +1331,17 @@ func TestCompletionsAndEmbeddingsRoutes(t *testing.T) {
 		default:
 			_, _ = w.Write([]byte(`{"id":"cmpl-9"}`))
 		}
-	}, nil, auth.KeyLimits{})
+	}, func(cfg *config.Config) {
+		// An embedding model is required on /v1/embeddings (N12); it is
+		// allowed only via the wildcard key.
+		cfg.Models["model-e"] = config.Model{Type: "embedding", Strategy: "single", Backends: []config.BackendRef{{Name: "b1", Weight: 1}}}
+	}, auth.KeyLimits{})
 
-	for _, tc := range []struct{ path, body string }{
-		{"/v1/completions", `{"model":"model-a","prompt":"hi"}`},
-		{"/v1/embeddings", `{"model":"model-a","input":"hi"}`},
+	for _, tc := range []struct{ path, body, key string }{
+		{"/v1/completions", `{"model":"model-a","prompt":"hi"}`, "bearer"},
+		{"/v1/embeddings", `{"model":"model-e","input":"hi"}`, "bearer2"},
 	} {
-		w := e.do(t, http.MethodPost, tc.path, "bearer", tc.body)
+		w := e.do(t, http.MethodPost, tc.path, tc.key, tc.body)
 		if w.Code != 200 {
 			t.Fatalf("%s: status = %d body = %s", tc.path, w.Code, w.Body.String())
 		}

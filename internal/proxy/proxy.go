@@ -288,6 +288,24 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"model not found or not allowed", "authz")
 			return
 		}
+		// Endpoint/model-type agreement (N12): an embedding model is not
+		// servable on a generative endpoint, and a generation model is
+		// not servable on the embeddings endpoint. The model is known to
+		// exist here (checked above), so this is a 400, not a 404.
+		switch p.router.TypeOf(publicModel) {
+		case "embedding":
+			if o.generative {
+				fail(400, "invalid_request_error", "model_type_mismatch",
+					"the requested model is not a generation model", "bad_request")
+				return
+			}
+		case "generation":
+			if o.endpoint == "embeddings" {
+				fail(400, "invalid_request_error", "model_type_mismatch",
+					"the requested model is not an embedding model", "bad_request")
+				return
+			}
+		}
 		if o.capture {
 			if prev, ok := stringField(body, "previous_response_id"); ok {
 				b, ok := p.affinity.Get(q.Key.ID, prev)

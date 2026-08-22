@@ -214,20 +214,6 @@ func (r Record) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(r))
 }
 
-// UnmarshalRecord parses one JSONL line into a Record. It tolerates the
-// "cached_tokens" field being absent and defaults UsageStatus to unknown
-// when missing.
-func UnmarshalRecord(line []byte) (Record, error) {
-	var r Record
-	if err := json.Unmarshal(line, &r); err != nil {
-		return Record{}, err
-	}
-	if r.UsageStatus == "" {
-		r.UsageStatus = UsageUnknown
-	}
-	return r, nil
-}
-
 // hourKey is the start of the fixed UTC hour window for a time.
 func hourKey(t time.Time) int64 {
 	return t.UTC().Unix() - t.UTC().Unix()%3600

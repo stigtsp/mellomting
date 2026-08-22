@@ -386,6 +386,61 @@ func TestSSEParserEventsAndBounds(t *testing.T) {
 
 // --- pipeline ----------------------------------------------------------
 
+// N12: the endpoint and the model type must agree. An embedding model on
+// a generative endpoint and a generation model on the embeddings endpoint
+// are rejected 400; the correct pairings pass.
+func TestEndpointModelTypeAgreement(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	cfg := testConfig(f.server.URL)
+	cfg.Models["emb-1"] = config.Model{
+		Type:     "embedding",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name:             "b1",
+		Cfg:              cfg.Backends["b1"],
+		Network:          backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes,
+		Log:              discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := testKey("gen-1", "emb-1")
+	for _, tc := range []struct {
+		name, path, body string
+		want             int
+	}{
+		{"embedding model on chat", "/v1/chat/completions",
+			`{"model":"emb-1","messages":[{"role":"user","content":"hi"}]}`, 400},
+		{"generation model on embeddings", "/v1/embeddings",
+			`{"model":"gen-1","input":"hi"}`, 400},
+		{"generation model on chat", "/v1/chat/completions",
+			`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, 200},
+		{"embedding model on embeddings", "/v1/embeddings",
+			`{"model":"emb-1","input":"hi"}`, 200},
+	} {
+		rec := run(t, p, http.MethodPost, tc.path, tc.body, key)
+		if rec.Code != tc.want {
+			t.Fatalf("%s: status = %d (want %d) body = %s", tc.name, rec.Code, tc.want, rec.Body.String())
+		}
+		if tc.want == 400 && !strings.Contains(rec.Body.String(), "model_type_mismatch") {
+			t.Fatalf("%s: body = %s (want model_type_mismatch)", tc.name, rec.Body.String())
+		}
+	}
+}
+
 func TestChatCompletionNonStreamAndRewrite(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, okJSON)
@@ -454,6 +509,11 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	t.Cleanup(func() { _ = acc.Close() })
 
 	cfg := testConfig(f.server.URL)
+	cfg.Models["emb-1"] = config.Model{
+		Type:     "embedding",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
 	router, err := routing.New(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -476,7 +536,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	// generative endpoints, and accepting it here would let an
 	// SSE-misrouted response charge zero tokens.
 	rec := run(t, p, http.MethodPost, "/v1/embeddings",
-		`{"model":"gen-1","input":"hi","stream":true}`, testKey())
+		`{"model":"emb-1","input":"hi","stream":true}`, testKey("emb-1"))
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "stream_not_supported") {
 		t.Fatalf("stream embeddings: status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -484,7 +544,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	// stream=false is buffered and accounted: application/json (never
 	// text/event-stream), and the backend's reported usage is charged.
 	rec = run(t, p, http.MethodPost, "/v1/embeddings",
-		`{"model":"gen-1","input":"hi"}`, testKey())
+		`{"model":"emb-1","input":"hi"}`, testKey("emb-1"))
 	if rec.Code != 200 {
 		t.Fatalf("embeddings: status=%d body=%s", rec.Code, rec.Body.String())
 	}

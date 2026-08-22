@@ -595,7 +595,7 @@ func readRecords(t *testing.T, path string) []accounting.Record {
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
-		r, err := accounting.UnmarshalRecord(line)
+		r, err := readRecord(line)
 		if err != nil {
 			t.Fatalf("bad record line: %v: %s", err, line)
 		}
@@ -605,6 +605,19 @@ func readRecords(t *testing.T, path string) []accounting.Record {
 		t.Fatal(err)
 	}
 	return recs
+}
+
+// readRecord parses one JSONL accounting line (previously
+// accounting.UnmarshalRecord, removed as dead in production).
+func readRecord(line []byte) (accounting.Record, error) {
+	var r accounting.Record
+	if err := json.Unmarshal(line, &r); err != nil {
+		return accounting.Record{}, err
+	}
+	if r.UsageStatus == "" {
+		r.UsageStatus = accounting.UsageUnknown
+	}
+	return r, nil
 }
 
 // T-M1: the generative output cap must not be bypassable. Negative,
