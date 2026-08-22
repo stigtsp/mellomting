@@ -104,7 +104,8 @@ type Options struct {
 	// Network is the egress policy (PLAN §16).
 	Network Policy
 	// MaxResponseBytes bounds buffered (non-stream and error) upstream
-	// responses (PLAN §9.1).
+	// responses (PLAN §9.1). Live streams are bounded by the same cap on
+	// emitted bytes in the proxy pump (FIX-12).
 	MaxResponseBytes int
 	Log              *slog.Logger
 	// Resolver overrides the DNS resolver used for outbound dials.

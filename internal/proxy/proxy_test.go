@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1106,6 +1107,70 @@ func TestPumpPanicContained(t *testing.T) {
 	}
 	if cls != "backend_stream_error" {
 		t.Fatalf("class = %q, want backend_stream_error", cls)
+	}
+}
+
+// FIX-12: a live SSE stream is bounded by a cumulative emitted-byte cap
+// (server.max_response_bytes, the same bound as the buffered path), so a
+// backend emitting small events forever cannot stream unbounded data. On
+// breach the stream terminates with backend_stream_error and only a
+// bounded prefix reaches the client.
+func TestStreamCumulativeBound(t *testing.T) {
+	event := `data: {"id":"c","choices":[{"delta":{"content":"x"}}]}` + "\n\n"
+
+	// Over the cap: the stream is cut off; the reader is never drained.
+	pr, pw := io.Pipe()
+	var sent atomic.Int64
+	go func() {
+		defer pw.Close()
+		for i := 0; i < 10000; i++ {
+			sent.Add(1)
+			if _, err := io.WriteString(pw, event); err != nil {
+				return
+			}
+		}
+	}()
+	p := newProxy(t, newFakeVLLM(t, okJSON))
+	p.cfg.Server.MaxResponseBytes = 2000
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gen-1","stream":true}`))
+	w := httptest.NewRecorder()
+	q := &Req{W: w, R: r, Key: testKey(), RequestID: "req_budget", Remote: "127.0.0.1"}
+	res := &backend.Result{Status: http.StatusOK, Body: pr}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if cls != "backend_stream_error" {
+		t.Fatalf("class = %q, want backend_stream_error", cls)
+	}
+	if bytesOut > 2000 {
+		t.Fatalf("emitted %d bytes, want <= 2000", bytesOut)
+	}
+	if sent.Load() >= 10000 {
+		t.Fatalf("stream drained to completion (%d events); budget never applied", sent.Load())
+	}
+
+	// Under the cap: an ordinary stream is unaffected.
+	pr2, pw2 := io.Pipe()
+	go func() {
+		defer pw2.Close()
+		for i := 0; i < 3; i++ {
+			_, _ = io.WriteString(pw2, event)
+		}
+		_, _ = io.WriteString(pw2, `data: [DONE]`+"\n\n")
+	}()
+	p2 := newProxy(t, newFakeVLLM(t, okJSON))
+	r2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gen-1","stream":true}`))
+	w2 := httptest.NewRecorder()
+	q2 := &Req{W: w2, R: r2, Key: testKey(), RequestID: "req_budget2", Remote: "127.0.0.1"}
+	res2 := &backend.Result{Status: http.StatusOK, Body: pr2}
+	_, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	status2, _, cls2 := p2.pump(q2, res2, opChat, cancel2, "b1", &accounting.Usage{}, false)
+	if status2 != http.StatusOK || cls2 != "ok" {
+		t.Fatalf("under-cap stream: status=%d class=%q, want 200/ok", status2, cls2)
 	}
 }
 

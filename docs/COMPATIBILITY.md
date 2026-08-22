@@ -123,6 +123,15 @@ without a restart in every mode. `copytruncate` truncates in place; in
 the rare window between the copy and the truncate a line may be
 duplicated or lost, which is acceptable for token-accounting JSONL.
 
+## Stream response bound (FIX-12)
+
+`server.max_response_bytes` bounds the total bytes a response may emit in
+both modes: buffered responses and, since FIX-12, live SSE streams. A
+backend that streams small events indefinitely is cut off once the
+cumulative emitted bytes pass the cap, terminating the stream with a
+`backend_stream_error` class (the client sees a truncated stream without
+`[DONE]`; the HTTP status was already 200). The default is 67108864 (64 MiB).
+
 ## Endpoint coverage
 
 Mellomting forwards only the allow-listed inference endpoints and 404s

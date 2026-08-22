@@ -452,6 +452,13 @@ server:
 
 All limits MUST be configurable but MUST have finite defaults.
 
+`max_response_bytes` bounds the total response in both modes (FIX-12):
+the buffered path (non-stream and error upstream bodies) and the live SSE
+pump's cumulative emitted bytes. A backend streaming small events forever
+is therefore cut off at the same cap as an over-large buffered response,
+with a `backend_stream_error` stream class; `stream_idle_timeout` remains
+the per-event idle bound in addition.
+
 Do not use a normal short global `WriteTimeout` that breaks long LLM streams. Instead use a per-write/per-stream idle policy.
 
 ## 9.2 Request compression

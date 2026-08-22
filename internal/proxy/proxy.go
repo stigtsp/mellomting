@@ -825,6 +825,15 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 				writeDeadlineUsable = false
 			}
 		}
+		// Cumulative emitted-byte bound (PLAN §4, FIX-12): the buffered
+		// path is bounded by server.max_response_bytes, and a live SSE
+		// stream is bounded by the same cap, so a backend emitting small
+		// events forever cannot stream unbounded data. On breach the
+		// stream is terminated with backend_stream_error (headers are
+		// already committed; the class carries the cause).
+		if budget := p.cfg.Server.MaxResponseBytes; budget > 0 && bytesOut+len(ev) > budget {
+			return 200, bytesOut, "backend_stream_error"
+		}
 		if _, werr := w.Write(ev); werr != nil {
 			return 200, bytesOut, "client_write_error"
 		}
