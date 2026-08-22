@@ -193,14 +193,18 @@ func New(o Options) (*Client, error) {
 
 	t := &http.Transport{
 		DisableKeepAlives: false,
-		MaxIdleConns:      16,
 		// Bound physical connections to the backend host by the
 		// admission concurrency cap: at most maxConc requests are
 		// in-flight to a backend, so more connections can never be
-		// needed (T-L7, §9.1 fd bound).
-		MaxConnsPerHost: maxConc,
-		IdleConnTimeout: 90 * time.Second,
-		DialContext:     policyDial(policy, o.Cfg.ConnectTimeout.Duration(), resolver),
+		// needed (T-L7, §9.1 fd bound). Match the idle pool to the same
+		// cap: Go's default MaxIdleConnsPerHost (2) makes MaxIdleConns
+		// alone inert, tearing down and re-handshaking connections
+		// under bursty load (M18).
+		MaxIdleConns:        maxConc,
+		MaxIdleConnsPerHost: maxConc,
+		MaxConnsPerHost:     maxConc,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext:         policyDial(policy, o.Cfg.ConnectTimeout.Duration(), resolver),
 		// PLAN §9.2 SHOULD: the proxy passes response bodies through
 		// byte-identical; transparent gzip decoding would corrupt the
 		// accounting byte count and SSE framing (T-L7).

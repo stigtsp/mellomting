@@ -585,12 +585,65 @@ func TestBackendClientTransportBounds(t *testing.T) {
 		if tr.MaxConnsPerHost != 2 {
 			t.Fatalf("%s: MaxConnsPerHost = %d (want 2 = MaxConcurrency)", name, tr.MaxConnsPerHost)
 		}
+		if tr.MaxIdleConnsPerHost != 2 {
+			t.Fatalf("%s: MaxIdleConnsPerHost = %d (want 2 = MaxConcurrency, M18)", name, tr.MaxIdleConnsPerHost)
+		}
 		if tr.MaxResponseHeaderBytes != maxBackendResponseHeaderBytes {
 			t.Fatalf("%s: MaxResponseHeaderBytes = %d", name, tr.MaxResponseHeaderBytes)
 		}
 		if !tr.DisableCompression {
 			t.Fatalf("%s: DisableCompression = false (want true, PLAN §9.2)", name)
 		}
+	}
+}
+
+// M18: the idle connection pool matches the per-host concurrency cap, so
+// bursty load reuses connections instead of tearing down and
+// re-handshaking (PLAN §9.1 fd bound). With 4 workers and an idle pool
+// of 4, 64 sequential-ish requests must reuse the 4 connections rather
+// than open one per request.
+func TestBackendConnectionReuse(t *testing.T) {
+	var conns atomic.Int64
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	ts.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	ts.Start()
+	defer ts.Close()
+
+	opts := testOptions(t, ts.URL)
+	opts.Cfg.MaxConcurrency = 4
+	c, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const workers = 4
+	const perWorker = 16
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
+				if err != nil {
+					t.Errorf("Forward: %v", err)
+					return
+				}
+				res.Close()
+			}
+		}()
+	}
+	wg.Wait()
+
+	total := int(conns.Load())
+	if total > workers {
+		t.Fatalf("connections established = %d (want <= %d = concurrency cap: keep-alive reuse)", total, workers)
 	}
 }
 
