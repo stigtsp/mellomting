@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"slices"
+
 	"mellomting/internal/landlock"
 )
 
@@ -685,6 +687,18 @@ func qualifierMode(mode, field string) string {
 	}
 }
 
+// SupportedStrategies is the canonical routing strategy set (PLAN §19).
+// routing derives its own acceptance set from this list, so the config
+// validator and the router can never drift (FIX-24b; routing imports
+// config, so the list cannot live in routing without an import cycle).
+var SupportedStrategies = []string{
+	"single",
+	"round-robin",
+	"weighted-round-robin",
+	"least-inflight",
+	"weighted-least-inflight",
+}
+
 func validateModels(models map[string]Model, backends map[string]Backend, qualifiers map[string]Qualifier) []string {
 	var errs []string
 	if len(models) == 0 {
@@ -700,9 +714,7 @@ func validateModels(models map[string]Model, backends map[string]Backend, qualif
 			errs = append(errs, fmt.Sprintf("%s.type: %q must be generation or embedding", prefix, m.Type))
 		}
 
-		switch m.Strategy {
-		case "single", "round-robin", "weighted-round-robin", "least-inflight", "weighted-least-inflight":
-		default:
+		if !slices.Contains(SupportedStrategies, m.Strategy) {
 			errs = append(errs, fmt.Sprintf("%s.strategy: %q is not a supported routing strategy", prefix, m.Strategy))
 		}
 		if m.Strategy == "single" && len(m.Backends) != 1 {

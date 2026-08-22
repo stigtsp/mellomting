@@ -34,14 +34,16 @@ var (
 	ErrNoEligibleBackend = errors.New("no eligible backend")
 )
 
-// Supported strategies (PLAN §19).
-var supportedStrategies = map[string]bool{
-	"single":                  true,
-	"round-robin":             true,
-	"weighted-round-robin":    true,
-	"least-inflight":          true,
-	"weighted-least-inflight": true,
-}
+// supportedStrategies is the router's acceptance set, derived from the
+// canonical config.SupportedStrategies list so the config validator and
+// the router can never drift (FIX-24b).
+var supportedStrategies = func() map[string]bool {
+	m := make(map[string]bool, len(config.SupportedStrategies))
+	for _, s := range config.SupportedStrategies {
+		m[s] = true
+	}
+	return m
+}()
 
 // Passive-health timing (PLAN §70): short base cooldown, exponential
 // growth, capped. Deliberately not configuration: the operator controls

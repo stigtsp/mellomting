@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -43,7 +42,11 @@ func FuzzSplitHostPort(f *testing.F) {
 	f.Add("://x")
 	f.Add(strings.Repeat("http://x:", 50))
 	f.Fuzz(func(t *testing.T, raw string) {
-		u, err := url.Parse(raw)
+		// splitHostPort is only ever called on URLs that passed
+		// parseBaseURL (http/https scheme plus a host), so enforce that
+		// precondition: for every valid base URL the resolved port must
+		// be non-empty (PLAN §15.1, T-Q6).
+		u, err := parseBaseURL(raw)
 		if err != nil {
 			return
 		}

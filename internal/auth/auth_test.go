@@ -344,6 +344,19 @@ func TestLoadPepperRejectsWorldReadable(t *testing.T) {
 	}
 }
 
+func TestLoadPepperRejectsShort(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.pepper")
+	if err := os.WriteFile(path, []byte("short-pepper"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPepper(path); err == nil || !strings.Contains(err.Error(), "pepper too short") {
+		t.Fatalf("short pepper: err = %v, want a too-short rejection", err)
+	}
+}
+
 func TestLoadUsersRejectsAnchorsAndMergeKeys(t *testing.T) {
 	t.Parallel()
 

@@ -473,15 +473,9 @@ func TestSafeUnixListen(t *testing.T) {
 }
 
 func TestMPTCPListenersDisabled(t *testing.T) {
-	// PLAN §83: assert the constructors explicitly disable MPTCP.
-	data, err := os.ReadFile("serve.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(data), `SetMultipathTCP(false)`) < 2 {
-		t.Fatal("serve.go must disable MPTCP on both the TCP and unix listener constructors")
-	}
-	// Functional: a TCP listener binds.
+	// PLAN §83: the listener constructors explicitly disable MPTCP. The
+	// behavioural (socket-level) assertion lives in mptcp_linux_test.go;
+	// this just confirms a TCP listener binds.
 	ln, err := mptcpOffListen("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

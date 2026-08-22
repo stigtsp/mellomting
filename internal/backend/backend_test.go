@@ -913,20 +913,11 @@ func TestStreamForwardKeepsBodyLive(t *testing.T) {
 }
 
 // MPTCP regression (PLAN §83): the dialer constructor used for every
-// backend connection must explicitly disable MPTCP. A source-level
-// assertion around the constructor is permitted by the plan; the runtime
-// check exercises the dial path against a live listener.
+// backend connection must explicitly disable MPTCP. The behavioural
+// assertion (socket-level TCP_MPTCP check) lives in mptcp_linux_test.go;
+// this smoke test just confirms the dial path works end to end on any
+// host.
 func TestMPTCPDisabledOnDialer(t *testing.T) {
-	data, err := os.ReadFile("backend.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := `d.SetMultipathTCP(false)`
-	if !strings.Contains(string(data), src) {
-		t.Fatalf("backend.go does not contain %q (PLAN §61/§83)", src)
-	}
-
-	// Also confirm the dial path works end to end on this host.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

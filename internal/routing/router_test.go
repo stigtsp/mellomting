@@ -386,3 +386,31 @@ func TestNewRejectsBadShapes(t *testing.T) {
 		}
 	}
 }
+
+// FIX-24b (T-Q6 style): the config validator and the router must agree
+// on the routing strategy set. The router derives its acceptance list
+// from config.SupportedStrategies, so this test guards against drift
+// (e.g. someone re-introducing a literal list in either package).
+func TestStrategySetAgreesWithConfig(t *testing.T) {
+	t.Parallel()
+
+	// Every canonical strategy is accepted by the router.
+	for _, s := range config.SupportedStrategies {
+		cfg := testConfig()
+		m := cfg.Models["qwen-coder"]
+		m.Strategy = s
+		cfg.Models["qwen-coder"] = m
+		if _, err := New(cfg, nil); err != nil {
+			t.Fatalf("router rejects canonical strategy %q: %v", s, err)
+		}
+	}
+
+	// A strategy outside the canonical set is rejected.
+	cfg := testConfig()
+	m := cfg.Models["qwen-coder"]
+	m.Strategy = "latency-learning"
+	cfg.Models["qwen-coder"] = m
+	if _, err := New(cfg, nil); err == nil {
+		t.Fatal("router accepted a non-canonical strategy")
+	}
+}

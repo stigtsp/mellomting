@@ -57,8 +57,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Fuzz config parser (15s smoke)
-        run: go test -run=NONE -fuzz=FuzzParse -fuzztime=15s ./internal/config
+      - name: Fuzz all targets (short smoke)
+        # PLAN §80: every Fuzz* target gets a short fuzz run in CI, not
+        # just FuzzParse and not merely a seed replay (-fuzz with a real
+        # -fuzztime mutates inputs). Target names are discovered from the
+        # sources so a newly added target is picked up automatically.
+        run: |
+          set -euo pipefail
+          for pkg in internal/accounting internal/auth internal/backend internal/config internal/httpapi internal/proxy; do
+            files=$(grep -lE '^func Fuzz' "$pkg"/*_test.go 2>/dev/null || true)
+            [ -z "$files" ] && continue
+            fns=$(grep -hoE '^func Fuzz[A-Za-z0-9_]+' $files | sed 's/^func //')
+            for f in $fns; do
+              echo "=== fuzz $f ($pkg) ==="
+              go test -run='^$' -fuzz="^${f}\$" -fuzztime=15s "./$pkg"
+            done
+          done
 
   landlock:
     name: landlock acceptance (ABI >= 6 required)

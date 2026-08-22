@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -62,10 +63,15 @@ func FuzzStoreLookup(f *testing.F) {
 	f.Add(strings.Repeat("x", 512))
 	f.Fuzz(func(t *testing.T, raw string) {
 		_, err := store.Lookup(raw)
-		if err != nil {
-			if strings.Contains(err.Error(), raw) && len(raw) > 0 {
-				t.Fatalf("lookup error leaks the raw key")
-			}
+		if err == nil {
+			return
+		}
+		// Lookup must only ever fail with a fixed sentinel error (PLAN
+		// §27: never embed the raw key in an error). Any other error is
+		// a leak, since an error embedding the raw key cannot be a
+		// fixed sentinel.
+		if !errors.Is(err, ErrUnknownKey) && !errors.Is(err, ErrDisabled) && !errors.Is(err, ErrExpired) {
+			t.Fatalf("lookup returned a non-sentinel error: %v", err)
 		}
 	})
 }
