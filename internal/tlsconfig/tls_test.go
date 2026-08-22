@@ -150,7 +150,7 @@ func TestFilesSymlinkRefused(t *testing.T) {
 	}
 }
 
-func TestFilesRejectsWorldReadable(t *testing.T) {
+func TestFilesRejectsWorldReadableKeyAcceptsWorldReadableCert(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := writeSelfSignedTLS(t, dir)
 	// A world-readable private key is refused fail-closed (T-M8).
@@ -163,17 +163,36 @@ func TestFilesRejectsWorldReadable(t *testing.T) {
 	if err := os.Chmod(keyPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A world-readable certificate is likewise refused.
+	// A world-readable certificate is public data and is accepted
+	// (FIX-06/M31): certbot issues fullchain.pem as 0644.
 	if err := os.Chmod(certPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Files(certPath, keyPath); err == nil {
-		t.Fatal("world-readable TLS certificate accepted (T-M8)")
+	if _, err := Files(certPath, keyPath); err != nil {
+		t.Fatalf("world-readable TLS certificate rejected (FIX-06/M31): %v", err)
 	}
 	if err := os.Chmod(certPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Files(certPath, keyPath); err != nil {
 		t.Fatalf("0600 TLS files rejected: %v", err)
+	}
+}
+
+// FIX-06/M31: the certificate is public data, so a world-readable mode is
+// accepted — but the final symlink and regular-file guards must still
+// hold for it.
+func TestFilesPublicCertStillSymlinkRefused(t *testing.T) {
+	dir := t.TempDir()
+	certPath, _ := writeSelfSignedTLS(t, dir)
+	link := filepath.Join(dir, "link.pem")
+	if err := os.Symlink(certPath, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(certPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Files(link, link); err == nil {
+		t.Fatal("symlink final component accepted for a public cert (PLAN §28)")
 	}
 }

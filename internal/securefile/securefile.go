@@ -21,6 +21,20 @@ const DefaultMaxSize = 1 << 20
 // (users, pepper, TLS key, backend api_key_file), so a group- or
 // world-readable mode is refused fail-closed rather than read.
 func Read(path string, maxBytes int64) ([]byte, error) {
+	return read(path, maxBytes, true)
+}
+
+// ReadPublic is Read without the mode check: the target must still be a
+// regular file reached through no final symlink (O_NOFOLLOW, PLAN §28) and
+// is size-bounded, but a world-readable mode is accepted. It is for public
+// data only — the TLS certificate, which is 0644 in mainstream issuance
+// (certbot fullchain.pem) and carries no secret (FIX-06/M31). Private keys
+// must keep going through Read.
+func ReadPublic(path string, maxBytes int64) ([]byte, error) {
+	return read(path, maxBytes, false)
+}
+
+func read(path string, maxBytes int64, rejectWorldAccessible bool) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxSize
 	}
@@ -38,7 +52,7 @@ func Read(path string, maxBytes int64) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file")
 	}
-	if WorldAccessible(info.Mode()) {
+	if rejectWorldAccessible && WorldAccessible(info.Mode()) {
 		return nil, fmt.Errorf("mode %04o is too permissive: file must not be readable by others (use 0600 or 0640)", info.Mode().Perm())
 	}
 

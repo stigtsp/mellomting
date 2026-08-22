@@ -17,11 +17,18 @@ import (
 // before returning, so no startup FD survives into the confined phase
 // (PLAN §59).
 //
+// The certificate is public data and is read with a mode-check-free
+// reader, so the common 0644 issuance (certbot fullchain.pem) is
+// accepted (FIX-06/M31); the private key keeps the strict secret-file
+// mode check (0600/0640, T-M8). PLAN §26 scopes the 0640 strictness to
+// the users file and pepper, and §100 names only "strict file-permission
+// checks" — neither covers the certificate.
+//
 // Secure defaults (PLAN §97): the protocol minimum is pinned to TLS 1.2;
 // cipher suites are Go's built-in secure set, with TLS 1.3 preferred when
 // negotiated. The certificate is fixed for the process lifetime.
 func Files(certFile, keyFile string) (*tls.Config, error) {
-	cert, err := securefile.Read(certFile, 1<<20)
+	cert, err := securefile.ReadPublic(certFile, 1<<20)
 	if err != nil {
 		return nil, fmt.Errorf("tls cert %q: %w", certFile, err)
 	}
