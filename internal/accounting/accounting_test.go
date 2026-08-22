@@ -144,6 +144,41 @@ func TestQuotaReplay(t *testing.T) {
 	}
 }
 
+// FIX-28: the startup replay path also skips an over-long line rather
+// than buffering it without bound, and later records still replay.
+func TestQuotaReplaySkipsOverlongLine(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 30, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(Record{Time: now, KeyID: "k", TotalTokens: 40})
+	_, _ = f.Write(append(b, '\n'))
+	// A line longer than maxAccountingLine of garbage between two records.
+	_, _ = f.Write(make([]byte, maxAccountingLine+4096))
+	_, _ = f.WriteString("\n")
+	b2, _ := json.Marshal(Record{Time: now, KeyID: "k", TotalTokens: 10})
+	_, _ = f.Write(append(b2, '\n'))
+	_ = f.Close()
+
+	q := &Quota{clock: func() time.Time { return now }}
+	// maxBytes is larger than the whole file, so the full-scan path runs
+	// and the over-long line sits between two replays.
+	if err := q.Replay(path, 4<<20); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	lim := WindowLimit{TokensPerHour: 49}
+	if ok, _ := q.Admit("k", lim, 0, now); ok {
+		t.Fatal("expected reject: 50 tokens replayed, over-long line skipped")
+	}
+	if ok, _ := q.Admit("k", WindowLimit{TokensPerHour: 60}, 9, now); !ok {
+		t.Fatal("expected admit within the replayed 50-token hour")
+	}
+}
+
 func TestParseUsageClampsExtremes(t *testing.T) {
 	// A single bogus MaxInt64 total_tokens must be clamped, not accepted
 	// verbatim, so it can never wrap a quota window negative (T-X11).

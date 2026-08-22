@@ -58,6 +58,36 @@ func TestReportFileMissing(t *testing.T) {
 	}
 }
 
+// FIX-28: an over-long synthetic line is skipped (never silently
+// buffered without bound) and does not stop later lines from being read.
+func TestReportFileSkipsOverlongLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(Record{KeyID: "before", InputTokens: 1, TotalTokens: 1})
+	_, _ = f.Write(append(b, '\n'))
+	// A line longer than maxAccountingLine of garbage.
+	_, _ = f.Write(make([]byte, maxAccountingLine+4096))
+	_, _ = f.WriteString("\n")
+	b2, _ := json.Marshal(Record{KeyID: "after", InputTokens: 7, TotalTokens: 7})
+	_, _ = f.Write(append(b2, '\n'))
+	_ = f.Close()
+
+	rep, err := ReportFile(path)
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	got := map[string]KeyUsage{}
+	for _, k := range rep.Keys {
+		got[k.KeyID] = k
+	}
+	if got["before"].Requests != 1 || got["after"].Requests != 1 || got["after"].TotalTokens != 7 {
+		t.Fatalf("over-long line should be skipped, reads must not truncate: %+v", rep.Keys)
+	}
+}
+
 func TestReportFileDoesNotWrap(t *testing.T) {
 	// Extreme totals are clamped on read to the X11 bounds (FIX-07/N4)
 	// before summing, so the aggregate can never wrap negative or reach a

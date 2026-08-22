@@ -155,24 +155,52 @@ func (q *Quota) Replay(path string, maxBytes int64) (err error) {
 	if _, err := f.Seek(size-maxBytes, io.SeekStart); err != nil {
 		return err
 	}
-	br := bufio.NewReader(f)
+	br := bufio.NewReaderSize(f, maxAccountingLine)
 	// Discard up to and including the first newline to avoid a partial
 	// leading line.
-	if _, err := br.ReadBytes('\n'); err != nil && err != io.EOF {
+	if _, err := br.ReadSlice('\n'); err != nil && err != io.EOF && err != bufio.ErrBufferFull {
 		return err
 	}
-	return q.scanLines(br, q.now())
+	return q.scanBounded(br, q.now())
 }
 
 func (q *Quota) scan(f *os.File) error {
-	return q.scanLines(bufio.NewReader(f), q.now())
+	return q.scanBounded(bufio.NewReaderSize(f, maxAccountingLine), q.now())
 }
 
-func (q *Quota) scanLines(br *bufio.Reader, now time.Time) error {
+// maxAccountingLine caps the length of a single JSONL line read during
+// startup replay (Quota.scanBounded) and usage reporting (ReportFile), so
+// a corrupt or adversarial accounting file can never force an unbounded
+// allocation on a startup path (PLAN §22; defence-in-depth, FIX-28).
+// Genuine records are far smaller; the cap is generous headroom.
+const maxAccountingLine = 1 << 20
+
+// scanBounded iterates br line by line with a hard per-line cap of
+// maxAccountingLine bytes, invoking fn for every line that fits.
+// Over-long lines are discarded in bounded chunks and skipped, never
+// buffered without bound. A non-EOF I/O error is returned.
+func scanBounded(br *bufio.Reader, fn func(line []byte)) error {
 	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			q.replayLine(line, now)
+		chunk, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// Line exceeds the cap: drain the remainder in bounded
+			// chunks and skip it entirely.
+			for err == bufio.ErrBufferFull {
+				_, err = br.ReadSlice('\n')
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if len(chunk) > 0 {
+			if chunk[len(chunk)-1] == '\n' {
+				chunk = chunk[:len(chunk)-1]
+			}
+			fn(chunk)
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -181,6 +209,10 @@ func (q *Quota) scanLines(br *bufio.Reader, now time.Time) error {
 			return err
 		}
 	}
+}
+
+func (q *Quota) scanBounded(br *bufio.Reader, now time.Time) error {
+	return scanBounded(br, func(line []byte) { q.replayLine(line, now) })
 }
 
 // replayLine aggregates one record into the current windows. Malformed

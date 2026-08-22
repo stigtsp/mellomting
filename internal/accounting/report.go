@@ -3,7 +3,6 @@ package accounting
 import (
 	"bufio"
 	"encoding/json"
-	"io"
 	"os"
 )
 
@@ -39,35 +38,28 @@ func ReportFile(path string) (*Report, error) {
 	r := &Report{}
 	var order []*KeyUsage
 	byKey := make(map[string]*KeyUsage)
-	br := bufio.NewReader(f)
-	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			var rec Record
-			if jerr := json.Unmarshal(line, &rec); jerr == nil && rec.KeyID != "" {
-				ku := byKey[rec.KeyID]
-				if ku == nil {
-					ku = &KeyUsage{KeyID: rec.KeyID}
-					byKey[rec.KeyID] = ku
-					order = append(order, ku)
-				}
-				ku.Requests++
-				// FIX-07/N4: clamp each field with the X11 bounds
-				// before satAdd so a corrupt line (e.g. a negative
-				// token count from a pre-fix binary) can never blow
-				// the aggregate up to MaxInt64 or wrap it.
-				ku.InputTokens = satAdd(ku.InputTokens, clampUsage(rec.InputTokens))
-				ku.OutputTokens = satAdd(ku.OutputTokens, clampUsage(rec.OutputTokens))
-				ku.TotalTokens = satAdd(ku.TotalTokens, clampUsage(rec.TotalTokens))
-				ku.CachedTokens = satAdd(ku.CachedTokens, clampUsage(rec.CachedTokens))
+	err = scanBounded(bufio.NewReaderSize(f, maxAccountingLine), func(line []byte) {
+		var rec Record
+		if jerr := json.Unmarshal(line, &rec); jerr == nil && rec.KeyID != "" {
+			ku := byKey[rec.KeyID]
+			if ku == nil {
+				ku = &KeyUsage{KeyID: rec.KeyID}
+				byKey[rec.KeyID] = ku
+				order = append(order, ku)
 			}
+			ku.Requests++
+			// FIX-07/N4: clamp each field with the X11 bounds
+			// before satAdd so a corrupt line (e.g. a negative
+			// token count from a pre-fix binary) can never blow
+			// the aggregate up to MaxInt64 or wrap it.
+			ku.InputTokens = satAdd(ku.InputTokens, clampUsage(rec.InputTokens))
+			ku.OutputTokens = satAdd(ku.OutputTokens, clampUsage(rec.OutputTokens))
+			ku.TotalTokens = satAdd(ku.TotalTokens, clampUsage(rec.TotalTokens))
+			ku.CachedTokens = satAdd(ku.CachedTokens, clampUsage(rec.CachedTokens))
 		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	for _, ku := range order {
 		r.Keys = append(r.Keys, *ku)
