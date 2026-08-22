@@ -55,6 +55,28 @@ func TestBackendPortsErrors(t *testing.T) {
 	}
 }
 
+// FIX-27 / T-M13: an error from BackendPorts must never echo the raw
+// base URL when it carries userinfo credentials, even though config
+// validation already forbids those (defence-in-depth for direct callers).
+func TestBackendPortsErrorRedactsUserinfo(t *testing.T) {
+	for _, raw := range []string{
+		"http://user:secret@127.0.0.1:99999", // port mismatch
+		"http://user:secret@127.0.0.1:0",     // port mismatch
+		"ftp://user:secret@127.0.0.1:8001",   // bad scheme
+	} {
+		_, err := BackendPorts(raw)
+		if err == nil {
+			t.Fatalf("BackendPorts(%q): expected error", raw)
+		}
+		if strings.Contains(err.Error(), "user:secret") {
+			t.Errorf("BackendPorts(%q) leaked userinfo: %v", raw, err)
+		}
+		if !strings.Contains(err.Error(), "***@") {
+			t.Errorf("BackendPorts(%q) did not redact: %v", raw, err)
+		}
+	}
+}
+
 func TestPolicySummarize(t *testing.T) {
 	pol := Policy{
 		ReadFiles:  []string{"/etc/mellomting/users.yaml"},
