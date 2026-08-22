@@ -204,22 +204,32 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// is rejected with a clean 503 before a single byte is allocated, and
 		// the reservation (budgetWeight × bytes) covers the shallow-parse /
 		// rewrite decode+re-encode peak, so the aggregate bound
-		// (MaxBufferedRequestBytes × MaxInflightRequests) actually holds. An
-		// unknown-size (chunked) body is read up to MaxBodyBytes and then
-		// reserved before the costly decode.
+		// (MaxBufferedRequestBytes × MaxInflightRequests) actually holds.
+		// An unknown-size (chunked) body reserves the worst case
+		// (max_body_bytes) up front and releases the unused remainder after
+		// the read, so the concurrent budget is never over-subscribed while a
+		// large body is being read (FIX-15).
 		var reserve int64
 		defer func() {
 			if reserve > 0 {
 				p.budget.Release(reserve)
 			}
 		}()
-		if cl := q.R.ContentLength; cl > 0 && cl <= int64(p.cfg.Server.MaxBodyBytes) {
+		maxBody := int64(p.cfg.Server.MaxBodyBytes)
+		if cl := q.R.ContentLength; cl > 0 && cl <= maxBody {
 			if !p.budget.Acquire(cl) {
 				fail(503, "overload_error", "server_overloaded",
 					"server is overloaded", "overload")
 				return
 			}
 			reserve = cl
+		} else if cl < 0 {
+			if !p.budget.Acquire(maxBody) {
+				fail(503, "overload_error", "server_overloaded",
+					"server is overloaded", "overload")
+				return
+			}
+			reserve = maxBody
 		}
 		var rerr error
 		body, rerr = readBodyLimited(q.R, p.cfg.Server.MaxBodyBytes)
@@ -233,17 +243,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				"request body could not be read", "bad_request")
 			return
 		}
-		if n := int64(len(body)); n > reserve {
-			// Body larger than reserved (unknown-size request): reserve the
-			// remainder now, before the costly shallow parse.
-			if !p.budget.Acquire(n - reserve) {
-				fail(503, "overload_error", "server_overloaded",
-					"server is overloaded", "overload")
-				return
-			}
-			reserve = n
-		} else if n < reserve {
-			// Reservation was based on Content-Length; release the excess.
+		if n := int64(len(body)); n < reserve {
+			// Body smaller than the reservation (an unknown-size request
+			// reserved the worst case): release the excess now.
 			p.budget.Release(reserve - n)
 			reserve = n
 		}

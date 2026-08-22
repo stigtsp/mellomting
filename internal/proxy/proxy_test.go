@@ -1392,6 +1392,101 @@ func TestBodyBudgetRejectsBeforeRead(t *testing.T) {
 	}
 }
 
+// blockingReader holds its first Read until release is closed, then
+// serves data. ContentLength is unknown for an arbitrary io.Reader, so a
+// request built on it is chunked (FIX-15).
+type blockingReader struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	data    []byte
+}
+
+func (b *blockingReader) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	if len(b.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+// FIX-15 / PLAN §12.1: an unknown-length (chunked) body must reserve the
+// worst case (max_body_bytes) up front, so a body that cannot fit the
+// budget is rejected before the read and the concurrent budget is
+// unavailable to other requests while a chunked body is being read.
+func TestChunkedBodyBudgetReservedBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejected before the full read", func(t *testing.T) {
+		f := newFakeVLLM(t, okJSON)
+		p := newProxy(t, f) // total=8MiB → per-request cap 512KiB; maxBody=1MiB
+		// A chunked body reserves max_body_bytes = 1MiB (16 MiB weighted)
+		// up front, which exceeds the 8 MiB budget: rejected with a clean
+		// 503 before a single byte is read (the reader would panic).
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", panicReader{})
+		w := httptest.NewRecorder()
+		p.ChatCompletions(&Req{W: w, R: r, Key: testKey(), RequestID: "req_t", Remote: "x"})
+		if w.Code != 503 {
+			t.Fatalf("status = %d (want 503)", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "server_overloaded") {
+			t.Fatalf("body = %q", w.Body.String())
+		}
+		if f.lastPath != "" {
+			t.Fatalf("backend saw request (path %q) despite budget rejection", f.lastPath)
+		}
+	})
+
+	t.Run("budget unavailable during the read", func(t *testing.T) {
+		f := newFakeVLLM(t, okJSON)
+		p := newProxy(t, f)
+		// 16 MiB weighted total; maxBody=1MiB reserves the whole budget, so
+		// while a chunked body is being read no other request can acquire.
+		p.budget = newBudget(16 << 20)
+		p.cfg.Server.MaxBodyBytes = 1 << 20
+
+		br := &blockingReader{
+			entered: make(chan struct{}),
+			release: make(chan struct{}),
+			data:    []byte(`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`),
+		}
+		r1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", br)
+		w1 := httptest.NewRecorder()
+		done1 := make(chan struct{})
+		go func() {
+			defer close(done1)
+			p.ChatCompletions(&Req{W: w1, R: r1, Key: testKey(), RequestID: "req_a", Remote: "x"})
+		}()
+		select {
+		case <-br.entered:
+			// Now inside the body read with the full budget held.
+		case <-time.After(3 * time.Second):
+			t.Fatal("first request never entered the body read")
+		}
+
+		// A known-size request that would fit an idle budget must 503 while
+		// the chunked read holds the reservation.
+		w2 := run(t, p, http.MethodPost, "/v1/chat/completions",
+			`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, testKey())
+		if w2.Code != 503 {
+			t.Fatalf("second request during chunked read: %d (want 503)", w2.Code)
+		}
+
+		close(br.release)
+		select {
+		case <-done1:
+		case <-time.After(3 * time.Second):
+			t.Fatal("first request never completed after the read was released")
+		}
+		if w1.Code != 200 {
+			t.Fatalf("first request: %d (want 200)", w1.Code)
+		}
+	})
+}
+
 // TestManyShortKeysBodyRejected reproduces the T-X12 finding: a body of
 // many short keys (whose decode+re-encode peaks at ~13× body) is rejected
 // by the pre-read budget with a clean 503 before the costly decode, and
