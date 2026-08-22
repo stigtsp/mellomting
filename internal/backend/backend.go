@@ -504,11 +504,30 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	u := &url.URL{Scheme: c.base.Scheme, Host: c.base.Host, Path: path}
 
 	fctx := ctx
-	cancel := func() {}
-	if !req.Stream && c.requestTimeout > 0 {
-		fctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
+	var cancel context.CancelFunc
+	var boundTimer *time.Timer
+	var timeoutFired <-chan struct{}
+	if c.requestTimeout > 0 {
+		if !req.Stream {
+			fctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
+			defer cancel()
+		} else {
+			// R1 (FIX-03 eval): a stream-flagged request may still be
+			// answered with plain content, taking the buffered path,
+			// where the streaming branch sets no request deadline. Keep a
+			// cancelable request context so that read can be bounded by
+			// request_timeout once the headers have arrived; a genuine
+			// stream keeps it live. The timer is created here (so cancel
+			// escapes the lostcancel check) but disarmed until the
+			// buffered path re-arms it.
+			fired := make(chan struct{})
+			timeoutFired = fired
+			fctx, cancel = context.WithCancel(ctx)
+			boundTimer = time.AfterFunc(c.requestTimeout, func() { close(fired); cancel() })
+			boundTimer.Stop()
+			defer boundTimer.Stop()
+		}
 	}
-	defer cancel()
 
 	outReq, err := http.NewRequestWithContext(fctx, req.Method, u.String(), bytes.NewReader(req.Body))
 	if err != nil {
@@ -547,16 +566,35 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	streamBody := resp.StatusCode == http.StatusOK && isEventStream(resp)
 	if !streamBody {
 		defer resp.Body.Close()
+		if boundTimer != nil {
+			// R1 (FIX-03 eval): the streaming branch sets no deadline, so
+			// a stream-flagged response buffered here would otherwise hold
+			// its admission slots until the client hung up. Arm the bound
+			// now that liveness is known; cancelling the request context
+			// is the only reliable way to interrupt a blocked body read.
+			boundTimer.Reset(c.requestTimeout)
+		}
 		data, rerr := io.ReadAll(io.LimitReader(resp.Body, int64(c.maxResponseBytes)+1))
+		if rerr != nil {
+			// Partial-body read failure: the buffered body cannot be
+			// trusted, so only the sanitized class comes back. When our
+			// request_timeout bound fired, report it directly — the
+			// ErrTimeout sentinel is not a net.Error, so passing it
+			// through bodyReadError would misclassify it as ErrConnect.
+			if timeoutFired != nil {
+				select {
+				case <-timeoutFired:
+					h.release()
+					return nil, ErrTimeout
+				default:
+				}
+			}
+			h.release()
+			return nil, bodyReadError(rerr)
+		}
 		if len(data) > c.maxResponseBytes {
 			h.release()
 			return nil, ErrTooLarge
-		}
-		if rerr != nil {
-			// Partial-body read failure: the buffered body cannot be
-			// trusted, so only the sanitized class comes back.
-			h.release()
-			return nil, bodyReadError(rerr)
 		}
 		// Any 3xx is an upstream error: with CheckRedirect set to
 		// ErrUseLastResponse the redirect was not followed, so the

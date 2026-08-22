@@ -535,6 +535,47 @@ func TestNonStreamingLongerThanHeaderTimeoutSucceeds(t *testing.T) {
 	}
 }
 
+// R1 (FIX-03 eval): a stream-flagged request answered with a plain 200
+// is buffered, and that buffered read must be bounded by request_timeout
+// (keyed off liveness, not the client's stream flag). Before the fix the
+// streaming branch set no deadline and the SSE pump never ran, so a
+// stalled backend held the request — and its admission slots — until the
+// client hung up.
+func TestStreamFlaggedBufferedResponseBoundedByRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	defer close(release)
+	stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-x","object":"chat.completion"}`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	}))
+	t.Cleanup(stall.Close)
+
+	o := testOptions(t, stall.URL)
+	o.Cfg.HeaderTimeout = config.Duration(200 * time.Millisecond)
+	o.Cfg.RequestTimeout = config.Duration(300 * time.Millisecond)
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = c.Forward(context.Background(), Request{
+		Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true,
+	})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout (buffered read of a stream-flagged request)", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("bounded buffered read took %v, want ~request_timeout (300ms)", d)
+	}
+}
+
 // T-T5: a non-streaming request that exceeds request_timeout is the
 // total-deadline class (ErrTimeout), NOT the streaming header bound
 // (ErrHeaderTimeout). The http client surfaces both bounds as a net.Error
