@@ -148,12 +148,26 @@ func slowChatBackend(t *testing.T, release chan struct{}) *httptest.Server {
 	return ts
 }
 
+// shortTempDir returns a temp directory whose absolute path is short,
+// so Unix socket paths built from it stay under the sun_path limit
+// (~104 bytes on macOS) even when $TMPDIR is long (FIX-29). It prefers
+// a short, writable base (/tmp) and falls back to t.TempDir() when that
+// is unavailable, so the suite still runs in restricted environments.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	if d, err := os.MkdirTemp("/tmp", "mtt"); err == nil {
+		t.Cleanup(func() { os.RemoveAll(d) })
+		return d
+	}
+	return t.TempDir()
+}
+
 // serveFixture wires a temp config + users/pepper + fake backend.
 // landlockMode is the security.landlock.mode of the written config.
 func serveFixture(t *testing.T, landlockMode string) (bin, cfgPath, sock string, key string) {
 	t.Helper()
 	bin = buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 
 	backend := fakeChatBackend(t)
 	sock = filepath.Join(dir, "mellomting.sock")
@@ -426,7 +440,7 @@ func isExit(err error, code int) bool {
 
 // TestSafeUnixListen covers PLAN §8.3 socket-safety rules.
 func TestSafeUnixListen(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sock := filepath.Join(dir, "s.sock")
 
 	// Symlink must be refused.
@@ -495,7 +509,7 @@ func TestServeSandboxRequiredFails(t *testing.T) {
 		t.Skip("landlock is available at the default minimum ABI: required mode enforces the policy instead of failing; see TestServeSandboxRequiredApplies")
 	}
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 
 	// The daemon reads the key store before the sandbox gate (PLAN
@@ -644,7 +658,7 @@ func tlsHTTPClient() *http.Client {
 // the ready log records tls=true, and a plaintext client is rejected.
 func TestServeStaticTLS(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 
 	// Grab a free loopback port.
@@ -782,7 +796,7 @@ models:
 // slog pipeline as a JSON ERROR record, never to raw stderr (T-L10).
 func TestServeTLSHandshakeErrorsStructured(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -935,7 +949,7 @@ models:
 // with allow_plaintext_non_loopback the §8.2 startup warning MUST fire.
 func TestServePlaintextLocalhostWarns(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1051,7 +1065,7 @@ func TestServeRejectsShelved(t *testing.T) {
 	backend := fakeChatBackend(t)
 
 	t.Run("acme_tls", func(t *testing.T) {
-		dir := t.TempDir()
+		dir := shortTempDir(t)
 		cfg := fmt.Sprintf(`version: 1
 
 server:
@@ -1089,7 +1103,7 @@ models:
 	})
 
 	t.Run("qualifier", func(t *testing.T) {
-		dir := t.TempDir()
+		dir := shortTempDir(t)
 		sock := filepath.Join(dir, "mellomting.sock")
 		cfg := fmt.Sprintf(`version: 1
 
@@ -1167,7 +1181,7 @@ func assertServeRefused(t *testing.T, bin, dir, cfg, want string) error {
 // sandboxTestConfig returns a minimal config for applySandbox tests.
 func sandboxTestConfig(t *testing.T) *config.Config {
 	t.Helper()
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	return &config.Config{
 		Auth: config.Auth{
 			UsersFile:  filepath.Join(dir, "users.yaml"),
@@ -1253,7 +1267,7 @@ func waitStatus(t *testing.T, client *http.Client, method, url, key, body string
 // daemon).
 func TestServeSIGHUPReload(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -1410,7 +1424,7 @@ models:
 // otherwise hold the drain open until the grace deadline.
 func TestServeSecondSignalForcesShutdown(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	release := make(chan struct{})
 	backend := slowChatBackend(t, release)
 	t.Cleanup(func() { close(release) })
@@ -1598,7 +1612,7 @@ func TestServeCleanShutdownNoListenerWarn(t *testing.T) {
 // process kept running. After the fix B's socket must survive A's drain.
 func TestDrainingDoesNotUnlinkReplacementSocket(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	release := make(chan struct{})
 	defer close(release)
 	backend := slowChatBackend(t, release)
@@ -1789,7 +1803,7 @@ models:
 // shutdown; after the fix it survives.
 func TestServeTCPUsesNoUnlink(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1925,7 +1939,7 @@ models:
 // past the cap cannot complete a request on the over-cap connections.
 func TestServeMaxConnectionsEnforced(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	usersPath := filepath.Join(dir, "users.yaml")
@@ -2033,7 +2047,7 @@ func TestServeSandboxRequiredApplies(t *testing.T) {
 	}
 
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -2170,7 +2184,7 @@ models:
 // that quotas are in-memory only.
 func TestServeAccountingDisabledStillEnforcesQuota(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -2288,7 +2302,7 @@ models:
 // startup instead of accepting a silent no-op (T-M12).
 func TestServeAccountingOffQuotaSettingsRequireQuota(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -2394,7 +2408,7 @@ models:
 // operator, never a silent no-op (T-M12).
 func TestServeBackendNetworkAnyWarns(t *testing.T) {
 	bin := buildCLI(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	backend := fakeChatBackend(t)
 	sock := filepath.Join(dir, "mellomting.sock")
 	cfgPath := filepath.Join(dir, "config.yaml")
