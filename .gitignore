@@ -9,3 +9,6 @@ coverage.*
 
 # editor / OS
 .DS_Store
+
+# local test credentials (never commit)
+opencode-for-testing-dont-commit.json
