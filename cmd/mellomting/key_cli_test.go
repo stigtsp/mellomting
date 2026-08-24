@@ -178,14 +178,16 @@ func TestKeyCreateUnknownModelWarns(t *testing.T) {
 		t.Fatalf("no warning for unknown model: stderr=%q", errOut)
 	}
 
-	// Control: a known model produces no warning.
+	// Control: a known model produces no unknown-model warning (the
+	// landlock reload warning may still appear: the fixture config
+	// defaults to landlock.mode: required).
 	code, _, errOut = runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "known", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create with known model exit = %d", code)
 	}
-	if strings.Contains(errOut, "warning") {
-		t.Fatalf("unexpected warning for known model: stderr=%q", errOut)
+	if strings.Contains(errOut, "is not present in the configuration") {
+		t.Fatalf("unexpected unknown-model warning: stderr=%q", errOut)
 	}
 }
 
@@ -226,11 +228,18 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
-	// Default fixture config: landlock.mode defaults to required.
-	code, out, _ := runCLI(t, bin, dir,
+	// Default fixture config: landlock.mode defaults to required, so the
+	// reload warning must appear on a successful create.
+	code, out, errOut := runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
+	}
+	if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "restart") {
+		t.Fatalf("no reload warning on create for landlock.mode=required: stderr=%q", errOut)
+	}
+	if strings.Contains(errOut, "SIGHUP") {
+		t.Fatalf("create warning must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
 	}
 	id := keyRe.FindString(out)
 	if id == "" {
@@ -258,10 +267,12 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if err := os.WriteFile(bePath, []byte(beCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, out, _ = runCLI(t, bin, dir,
+	code, out, errOut = runCLI(t, bin, dir,
 		"key", "create", "-config", bePath, "-name", "warn2", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create (best-effort) exit = %d", code)
+	} else if strings.Contains(errOut, "landlock") {
+		t.Fatalf("unexpected reload warning on create for best-effort: stderr=%q", errOut)
 	}
 	id = keyRe.FindString(out)
 	if id == "" {

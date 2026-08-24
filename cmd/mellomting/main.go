@@ -375,6 +375,7 @@ func keyCreate(c *keyFlags) int {
 	}
 	fmt.Printf("  users file:        %s\n", usersPath)
 	fmt.Fprintln(os.Stdout, "Store the secret now; it is not retrievable later.")
+	warnLandlockReloadRequired(cfg, "key create")
 	return 0
 }
 

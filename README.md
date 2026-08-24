@@ -212,8 +212,9 @@ mellomting key revoke  --id ID
 - The daemon applies users-file changes on `SIGHUP` reload or restart.
   Under `landlock.mode: required`, however, a `SIGHUP` reload of offline
   key changes is denied by the sandbox (the users file is pinned to its
-  startup inode), so key mutations take effect only after a restart; the
-  key commands print a reminder when the mode is `required`.
+  startup inode), so `create`, `enable`, `disable`, and `revoke` take
+  effect only after a restart; the key commands print a reminder when
+  the mode is `required`.
 - Keys are stored only as `HMAC-SHA-256(pepper, key)` hashes; the raw key is
   printed once at creation and never stored or logged.
 
