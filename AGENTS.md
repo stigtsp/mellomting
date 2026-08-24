@@ -181,6 +181,7 @@ native ACME (PLAN §68). The configuration schema stays forward-compatible,
 but `serve` refuses to start when a qualifier or `tls.mode: acme` is
 configured, so neither is ever a silent no-op.
 
-Remaining deferred work (later phases): SIGHUP key reload (PLAN §30 —
-the Landlock policy already grants the users file read); optional
-stickiness (PLAN §20); defence-in-depth review (PLAN §98).
+Remaining deferred work (later phases): optional stickiness (PLAN §20);
+defence-in-depth review (PLAN §98). (The §30 SIGHUP users-file reload is
+implemented; under `landlock.mode: required` offline key changes are
+pinned-inode-denied and require a restart, FIX-02/N2.)
