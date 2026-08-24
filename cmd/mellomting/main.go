@@ -430,17 +430,21 @@ func keyList(c *keyFlags) int {
 }
 
 // warnLandlockReloadRequired warns, when the configured Landlock mode is
-// required, that a running server applies users-file changes only after a
-// restart or SIGHUP reload — a revoked (or disabled) key stays effective
-// on a live server until then, so a silent success here would be a
-// false sense of security (FIX-02 eval residual). The Landlock policy
-// grants the users file read, so a reload does pick the change up.
+// required, that a running server applies users-file changes only after
+// a restart. Under that mode the users file is pinned to its startup
+// inode (PLAN §58) and the offline key commands atomically rename it, so
+// a SIGHUP reload of the change is denied by the sandbox and fails
+// closed (PLAN §30) — the daemon logs the sandbox ERROR naming the
+// restart requirement if one is attempted (FIX-02/N2). A revoked (or
+// disabled) key stays effective on a live server until a restart, so a
+// silent success here would be a false sense of security (FIX-02 eval
+// residual). The warning therefore never recommends SIGHUP.
 func warnLandlockReloadRequired(cfg *config.Config, action string) {
 	if cfg.Security.Landlock.Mode != landlock.ModeRequired {
 		return
 	}
 	fmt.Fprintf(os.Stderr,
-		"mellomting: warning: %s under landlock.mode=required: running servers apply users-file changes only after a restart or SIGHUP reload; the change is not effective on a live server until then\n",
+		"mellomting: warning: %s under landlock.mode=required: running servers apply users-file changes only after a restart; the change is not effective on a live server until then\n",
 		action)
 }
 

@@ -216,14 +216,17 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	}
 }
 
-// FIX-02 (eval residual): revoking or disabling a key under
-// landlock.mode: required must warn that a live server applies the change
-// only after a restart or SIGHUP reload — a silent success would be a
-// false sense of security. Other modes stay silent.
+// FIX-02 (eval residual): mutating a key under landlock.mode: required
+// must warn that a live server applies the change only after a restart —
+// under that mode a SIGHUP reload of the change is denied by the
+// sandbox (the users file is pinned to its startup inode), so the
+// warning must not recommend one. A silent success would be a false
+// sense of security. Other modes stay silent.
 func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
+	// Default fixture config: landlock.mode defaults to required.
 	code, out, _ := runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
 	if code != 0 {
@@ -235,12 +238,13 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	}
 	id = id[4:12]
 
-	// Default fixture config: landlock.mode defaults to required, so the
-	// reload warning must appear on a successful revoke.
+	// The same warning must appear on a successful revoke.
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
 		t.Fatalf("revoke exit = %d stderr=%q", code, errOut)
-	} else if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "SIGHUP") {
+	} else if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "restart") {
 		t.Fatalf("no reload warning for landlock.mode=required: stderr=%q", errOut)
+	} else if strings.Contains(errOut, "SIGHUP") {
+		t.Fatalf("revoke warning must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
 	}
 
 	// Control: best-effort mode must stay silent. Write a second config
