@@ -13,7 +13,7 @@
 # If a directive must be removed, document exactly why (PLAN §64).
 [Unit]
 Description=Mellomting - authenticated LLM inference proxy
-Documentation=https://github.com/your-org/mellomting
+Documentation=https://github.com/stigtsp/mellomting
 Wants=network-online.target
 After=network-online.target
 
@@ -45,6 +45,11 @@ LimitNOFILE=1024
 RuntimeDirectory=mellomting
 StateDirectory=mellomting
 LogsDirectory=mellomting
+# Pin the modes the installer provisions (0750): systemd creates these
+# at 0755 by default, which would silently loosen them on a fresh host.
+RuntimeDirectoryMode=0750
+StateDirectoryMode=0750
+LogsDirectoryMode=0750
 
 UMask=0077
 

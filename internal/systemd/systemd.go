@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 // Host paths the daemon and its provisioning use (PLAN §26-27, §64, §76).
@@ -101,10 +102,29 @@ func (p *Provision) Run() error {
 		return err
 	}
 
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+	systemctlPath, err := resolveBinary("systemctl", "/usr/bin/systemctl", "/bin/systemctl")
+	if err != nil {
+		return err
+	}
+	if err := exec.Command(systemctlPath, "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	return nil
+}
+
+// resolveBinary returns the first existing regular file among a fixed
+// list of well-known locations for the named system binary (useradd,
+// systemctl). It deliberately resolves nothing through $PATH: the
+// commands it produces run as root, and a caller-supplied PATH could put
+// a forged binary first. When no location yields a regular file it
+// returns an error naming the binary, never a partial fallback.
+func resolveBinary(bin string, locations ...string) (string, error) {
+	for _, loc := range locations {
+		if st, err := os.Stat(loc); err == nil && st.Mode().IsRegular() {
+			return loc, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in %s; refusing to resolve it through $PATH", bin, strings.Join(locations, " "))
 }
 
 // preflightEnv carries the environment-derived inputs to preflight so the
@@ -132,6 +152,13 @@ func (p *Provision) CheckHost() error {
 func (p *Provision) preflight(env preflightEnv) error {
 	if err := p.checkHost(env); err != nil {
 		return err
+	}
+	// BinaryPath is embedded verbatim in the unit's ExecStart; a control
+	// character would inject arbitrary directives into the generated unit.
+	if strings.ContainsFunc(p.BinaryPath, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}) {
+		return fmt.Errorf("binary path %q must not contain control characters", p.BinaryPath)
 	}
 	if !filepath.IsAbs(p.BinaryPath) {
 		return fmt.Errorf("binary path %q is not absolute", p.BinaryPath)
@@ -174,11 +201,15 @@ func ensureAccount(name string) (*user.User, error) {
 		"--system",
 		"--no-create-home",
 		"--user-group",
-		"--home-dir", "/run/mellomting",
+		"--home-dir", RunDir,
 		"--shell", "/usr/sbin/nologin",
 		name,
 	}
-	if out, err := exec.Command("useradd", args...).CombinedOutput(); err != nil {
+	useraddPath, err := resolveBinary("useradd", "/usr/sbin/useradd", "/sbin/useradd")
+	if err != nil {
+		return nil, err
+	}
+	if out, err := exec.Command(useraddPath, args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("create system user %q: %w: %s", name, err, out)
 	}
 	u, err := user.Lookup(name)
@@ -188,10 +219,15 @@ func ensureAccount(name string) (*user.User, error) {
 	return u, nil
 }
 
-// ensureDir creates an operational directory with a strict mode and owner.
-// It refuses to use an existing path that is not a real directory; a
-// symlink (even one resolving to a directory) is treated as hostile, in
-// line with the project's symlink stance.
+// ensureDir creates an operational directory with a strict mode and owner,
+// or adopts an existing one, re-asserting the mode and re-owning it to the
+// service account. An existing directory of foreign ownership is adopted
+// rather than refused: the installer runs as root by design and is
+// re-provisioning the same host, so a directory it created (or an operator
+// chown-ed) on an earlier run must not make re-running --install
+// --systemd fail. It refuses to use an existing path that is not a real
+// directory; a symlink (even one resolving to a directory) is treated as
+// hostile, in line with the project's symlink stance.
 func ensureDir(path string, mode os.FileMode, uid, gid int) error {
 	st, err := os.Lstat(path)
 	switch {
@@ -216,9 +252,9 @@ func ensureDir(path string, mode os.FileMode, uid, gid int) error {
 }
 
 // writeFileAtomic writes content to path atomically (a temp file in the
-// destination directory followed by rename) with a fixed mode. It refuses
-// to replace an existing symlink or non-regular file, and never leaves a
-// partial destination on failure.
+// destination directory, fsynced, then renamed over path) with a fixed
+// mode. It refuses to replace an existing symlink or non-regular file,
+// and never leaves a partial destination on failure.
 func writeFileAtomic(content, path string, mode os.FileMode) error {
 	if st, err := os.Lstat(path); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
@@ -247,6 +283,13 @@ func writeFileAtomic(content, path string, mode os.FileMode) error {
 	if _, err := tmp.WriteString(content); err != nil {
 		abort()
 		return fmt.Errorf("write %q: %w", tmpName, err)
+	}
+	// Fsync the data before the rename: rename(2) orders the directory
+	// entry, not the file's blocks, so an unsynced write can leave a
+	// truncated file at the destination after a crash.
+	if err := tmp.Sync(); err != nil {
+		abort()
+		return fmt.Errorf("sync %q: %w", tmpName, err)
 	}
 	if err := tmp.Chmod(mode); err != nil {
 		abort()

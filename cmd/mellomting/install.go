@@ -126,7 +126,7 @@ func printSystemdNextSteps(binaryPath string) {
 	fmt.Fprintln(os.Stdout, "mellomting: systemd provisioning complete")
 	fmt.Fprintf(os.Stdout, "  service account: %s (created if absent)\n", systemd.DefaultServiceUser)
 	fmt.Fprintln(os.Stdout, "  config dir:      "+systemd.ConfigDir+" (root:mellomting, 0750)")
-	fmt.Fprintln(os.Stdout, "  log/state/run:   "+systemd.LogDir+", "+systemd.StateDir+", "+systemd.RunDir+" (mellomting, 0750)")
+	fmt.Fprintln(os.Stdout, "  log/state dirs:  "+systemd.LogDir+", "+systemd.StateDir+" (mellomting, 0750); the runtime dir "+systemd.RunDir+" is recreated by systemd on each start")
 	fmt.Fprintln(os.Stdout, "  unit:            "+systemd.UnitPath)
 	fmt.Fprintln(os.Stdout, "  logrotate:       "+systemd.LogrotatePath)
 	fmt.Fprintln(os.Stdout, "next steps (run as root, as you did for --install --systemd; secrets are operator-authored):")
@@ -137,14 +137,14 @@ func printSystemdNextSteps(binaryPath string) {
 }
 
 // installBinary copies src to dest atomically: the copy is written to a
-// temporary file in the destination directory and renamed over dest, so
-// concurrent readers never observe a partial binary and the replace is a
-// single syscall. The installed file is always mode 0755, independent of
-// umask and of the source file's mode. installBinary refuses to replace
-// a symlink (the same stance as safeUnixListen, PLAN §8.3) and returns
-// errAlreadyInstalled when src and dest address the same file,
-// including through symlinked path components (macOS's /var is a
-// symlink to /private/var).
+// temporary file in the destination directory, fsynced, and renamed over
+// dest, so concurrent readers never observe a partial binary and the
+// replace is a single syscall. The installed file is always mode 0755,
+// independent of umask and of the source file's mode. installBinary
+// refuses to replace a symlink (the same stance as safeUnixListen, PLAN
+// §8.3) and returns errAlreadyInstalled when src and dest address the
+// same file, including through symlinked path components (macOS's /var
+// is a symlink to /private/var).
 func installBinary(src, dest string) error {
 	if sameResolvedPath(src, dest) {
 		return errAlreadyInstalled
@@ -193,6 +193,13 @@ func installBinary(src, dest string) error {
 	if st.Size() != srcInfo.Size() {
 		discard()
 		return fmt.Errorf("verify %q: copied %d bytes, source is %d", tmpName, st.Size(), srcInfo.Size())
+	}
+	// Fsync the data before the rename: rename(2) orders the directory
+	// entry, not the file's blocks, so an unsynced copy can leave a
+	// truncated binary at the destination after a crash.
+	if err := tmp.Sync(); err != nil {
+		discard()
+		return fmt.Errorf("sync %q: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)

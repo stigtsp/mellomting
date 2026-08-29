@@ -432,9 +432,11 @@ func (r *Result) Close() {
 	}
 }
 
-// hold is an admission slot (PLAN §22): a concurrency token held for the
-// lifetime of the request. Inflight counts each request exactly once via
-// the concurrency tokens it holds.
+// hold is the admission handle (PLAN §22) of a request admitted by acquire:
+// it carries the concurrency token the request keeps for its lifetime.
+// Inflight counts it as one active request once acquire has returned;
+// until then a queue-admitted request still holds its queue token too
+// (see the Inflight note on the transient double count).
 type hold struct{ c *Client }
 
 func (h *hold) release() {
@@ -689,11 +691,14 @@ func bodyReadError(err error) error {
 	return ErrConnect
 }
 
-// Inflight reports the current admission load: queued waiters plus
-// active requests, each counted once (PLAN §19, §22). It is a snapshot
-// for least-inflight routing and is always >= 0. For live streams the
-// slot is held until Result.Close, so Inflight stays accurate for the
-// full generation, not just the header exchange.
+// Inflight reports the current admission load (PLAN §19, §22): queued
+// waiters plus active requests. It is an approximate snapshot for
+// least-inflight routing and is always >= 0. A waiter that has just been
+// admitted holds its queue token and its concurrency token until acquire
+// returns, so it is transiently double counted for a few instructions;
+// the window is too brief to matter for a routing decision. For live
+// streams the slot is held until Result.Close, so Inflight stays
+// accurate for the full generation, not just the header exchange.
 func (c *Client) Inflight() int {
 	return len(c.queue) + len(c.conc)
 }

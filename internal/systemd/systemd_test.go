@@ -61,6 +61,7 @@ func TestPreflightFailClosed(t *testing.T) {
 		{"non-linux host", valid, preflightEnv{"darwin", 0, true}, "Linux"},
 		{"not root", valid, preflightEnv{"linux", 1000, true}, "root"},
 		{"systemd inactive", valid, preflightEnv{"linux", 0, false}, "systemd"},
+		{"control character in binary path", &Provision{BinaryPath: "/tmp/mellomting\nExecStart=malicious"}, preflightEnv{"linux", 0, true}, "control character"},
 		{"relative binary path", &Provision{BinaryPath: "mellomting"}, preflightEnv{"linux", 0, true}, "not absolute"},
 		{"missing binary", &Provision{BinaryPath: "/nonexistent/mellomting"}, preflightEnv{"linux", 0, true}, "not found"},
 	}
@@ -81,6 +82,19 @@ func TestPreflightFailClosed(t *testing.T) {
 			t.Errorf("valid preflight failed: %v", err)
 		}
 	})
+}
+
+// TestResolveBinaryNotFound proves the fixed-location resolver fails
+// closed (no $PATH) and names the binary when none of its locations hold
+// a regular file.
+func TestResolveBinaryNotFound(t *testing.T) {
+	got, err := resolveBinary("nosuchbinary", "/nonexistent/nosuchbinary-a", "/nonexistent/nosuchbinary-b")
+	if err == nil {
+		t.Fatalf("resolveBinary for a missing binary succeeded: %q", got)
+	}
+	if !strings.Contains(err.Error(), "nosuchbinary") {
+		t.Fatalf("error does not name the binary: %v", err)
+	}
 }
 
 func TestEnsureDir(t *testing.T) {

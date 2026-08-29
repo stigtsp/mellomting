@@ -526,15 +526,15 @@ key subcommands (docs/PLAN.md §29):
   key revoke  --id ID                 permanently remove a key
   all key subcommands accept -config PATH (default: mellomting config path)
 
-   serve -config PATH           run the proxy daemon (default: config path)
-   usage report                 report per-key token/request usage (docs/PLAN.md §44)
-   --install [--prefix DIR]     copy this binary to DIR/bin (default DIR:
-                                /usr/local): atomic replace, mode 0755,
-                                symlink destinations refused
-   --install --systemd          also provision as a systemd service (Linux
-                                root): service user, config/log/state/run
-                                dirs, hardened unit + logrotate, and a
-                                daemon-reload; config secrets remain
-                                operator-authored
+  serve -config PATH           run the proxy daemon (default: config path)
+  usage report                 report per-key token/request usage (docs/PLAN.md §44)
+  --install [--prefix DIR]     copy this binary to DIR/bin (default DIR:
+                               /usr/local): atomic replace, mode 0755,
+                               symlink destinations refused
+  --install --systemd          also provision as a systemd service (Linux
+                               root): service user, config/log/state/run
+                               dirs, hardened unit + logrotate, and a
+                               daemon-reload; config secrets remain
+                               operator-authored
 `)
 }
