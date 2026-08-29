@@ -1,0 +1,87 @@
+# Mellomting hardened systemd unit (PLAN §64).
+#
+# This complements the in-process Landlock confinement (PLAN §53-63):
+# Landlock is post-start containment against a compromised process;
+# these directives restrict the service account from systemd's side.
+#
+# Install as a mellomting system user, place the config at
+# /etc/mellomting/config.yaml and the users/pepper files there too.
+# The daemon's Landlock policy is generated from that config
+# (security.landlock.mode: required in production, PLAN §55).
+#
+# Test each directive on the target distribution before relying on it.
+# If a directive must be removed, document exactly why (PLAN §64).
+[Unit]
+Description=Mellomting - authenticated LLM inference proxy
+Documentation=https://github.com/your-org/mellomting
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mellomting
+Group=mellomting
+Type=simple
+ExecStart=@BINARY_PATH@ serve -config /etc/mellomting/config.yaml
+# systemctl reload == SIGHUP == graceful in-place users-file reload
+# (PLAN §30, T-M10): the daemon reloads the key store without killing the
+# process or severing in-flight streams, unlike a restart. Under
+# security.landlock.mode: required the users file is pinned to its startup
+# inode, so key rotation/revocation CANNOT take effect via SIGHUP: use a
+# full restart (systemctl restart) for those changes; the daemon logs an
+# ERROR naming the sandbox and the restart requirement if the reload fails
+# (FIX-02/N2).
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+
+# Bound accepted connections (T-L15, PLAN §9.1): the in-process
+# max_connections gate closes excess sockets, and this limits the fd
+# ceiling (each connection costs at least one fd) so the daemon cannot
+# be driven into fd exhaustion. 1024 matches the in-process default;
+# raise both together if capacity is needed.
+LimitNOFILE=1024
+
+# Directories: runtime socket, state (future), and the accounting log.
+RuntimeDirectory=mellomting
+StateDirectory=mellomting
+LogsDirectory=mellomting
+
+UMask=0077
+
+# No privilege escalation, no capabilities at all.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Filesystem.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths=/etc/mellomting
+ReadWritePaths=/var/log/mellomting /var/lib/mellomting
+
+# Kernel interfaces.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Process restrictions.
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Network: only the families Mellomting needs, and only to localhost
+# (the backends). Landlock adds port-level connect restrictions on top
+# of this (PLAN §60).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

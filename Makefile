@@ -16,14 +16,15 @@ build: ## build bin/mellomting with build metadata embedded
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/mellomting ./cmd/mellomting
 
 .PHONY: release
-release: ## cross-compile the PLAN §89 linux release artifacts
+release: ## cross-compile release artifacts into dist/ (linux/amd64, linux/arm64, darwin/arm64)
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/mellomting-linux-amd64 ./cmd/mellomting
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/mellomting-linux-arm64 ./cmd/mellomting
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/mellomting-darwin-arm64 ./cmd/mellomting
 	@if command -v sha256sum > /dev/null; then \
-		(cd dist && sha256sum mellomting-linux-amd64 mellomting-linux-arm64 > SHA256SUMS); \
+		(cd dist && sha256sum mellomting-linux-amd64 mellomting-linux-arm64 mellomting-darwin-arm64 > SHA256SUMS); \
 	else \
-		(cd dist && shasum -a 256 mellomting-linux-amd64 mellomting-linux-arm64 > SHA256SUMS); \
+		(cd dist && shasum -a 256 mellomting-linux-amd64 mellomting-linux-arm64 mellomting-darwin-arm64 > SHA256SUMS); \
 	fi
 
 .PHONY: test

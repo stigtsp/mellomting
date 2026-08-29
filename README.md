@@ -45,6 +45,14 @@ Linux release artifacts):
 make build
 ```
 
+Optionally install it system-wide — the binary copies itself atomically
+(mode 0755; symlink destinations are refused):
+
+```sh
+sudo bin/mellomting --install              # → /usr/local/bin/mellomting
+bin/mellomting --install --prefix ~/.local # user-local prefix
+```
+
 Write a config. **This is the whole config** — every other section is optional
 and has a safe default:
 
@@ -248,6 +256,33 @@ are in `docs/COMPATIBILITY.md`.
 - **Usage** — with `accounting.enabled: true`, run `mellomting usage report` for
   per-key token totals. Rotate the JSONL with `deploy/mellomting.logrotate`
   (`copytruncate`, not rename).
+- **Installation** — `mellomting --install` copies the running binary to
+  `/usr/local/bin/mellomting` atomically (temp file + rename, mode 0755);
+  `--prefix DIR` targets another prefix. Re-running on an already-installed
+  path is a no-op. The command installs the **binary only** — it creates no
+  config files, secrets, or directories. The daemon also creates none of
+  them itself, so the destination host must provide them: config in
+  `/etc/mellomting/` (`config.yaml`, `users.yaml`, `auth.pepper` — authored
+  via `mellomting key create`), the accounting log dir `/var/log/mellomting/`,
+  and the runtime socket dir `/run/mellomting/`. On systemd,
+  `deploy/mellomting.service` auto-creates the last three
+  (`RuntimeDirectory`/`StateDirectory`/`LogsDirectory`); on non-systemd
+  hosts create them as needed. Mellomting deliberately ships no default
+  config or boilerplate secrets — they are operator-authored.
+- **systemd provisioning** — on a Linux root host,
+  `mellomting --install --systemd` provisions the daemon end-to-end in the
+  single binary: it creates the unprivileged `mellomting` service account
+  (system user, `nologin` shell), the config/log/state/run dirs with strict
+  owners and modes (`/etc/mellomting` root:mellomting 0750; the rest
+  mellomting:mellomting 0750), installs the hardened unit at
+  `/etc/systemd/system/mellomting.service` and the logrotate policy at
+  `/etc/logrotate.d/mellomting`, then runs `systemctl daemon-reload`. It is
+  fail-closed: it refuses to run on non-Linux, as non-root, or when systemd
+  is not the active init, and never overwrites an existing `config.yaml` or
+  creates secrets — those remain operator-authored steps printed after
+  provisioning. The unit's `ExecStart` is rendered from the installed binary
+  path (`--prefix` aware); a sync test proves the embedded asset matches
+  `deploy/mellomting.service`. See also `docs/HARDENING.md`.
 - **systemd** — a hardened unit is in `deploy/mellomting.service`.
 
 ## Security
