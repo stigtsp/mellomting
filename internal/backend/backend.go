@@ -432,19 +432,36 @@ func (r *Result) Close() {
 	}
 }
 
-// hold is an admission slot (PLAN §22): a queue token while waiting,
-// then a concurrency token once admitted. The queue token is released
-// at admission so Inflight counts each request exactly once.
+// hold is an admission slot (PLAN §22): a concurrency token held for the
+// lifetime of the request. Inflight counts each request exactly once via
+// the concurrency tokens it holds.
 type hold struct{ c *Client }
 
 func (h *hold) release() {
 	<-h.c.conc
 }
 
-// acquire implements PLAN §22 admission: a queue slot is taken
-// non-blockingly, then a concurrency slot is waited on for up to
-// queue_timeout. Failures are bounded and never wait indefinitely.
+// acquire implements PLAN §22 admission. A concurrency slot is taken
+// immediately when one is free, so idle capacity is never gated by the
+// queue (a request is admitted whenever a concurrency slot OR a queue
+// slot is available, not only when a queue slot is). Only when
+// concurrency is saturated does the request take a queue slot to wait,
+// bounded by queue_size and queue_timeout. Failures are bounded and never
+// wait indefinitely.
 func (c *Client) acquire(ctx context.Context) (*hold, error) {
+	// Fast path: a concurrency slot is free right now — admit without
+	// touching the queue.
+	select {
+	case c.conc <- struct{}{}:
+		return &hold{c: c}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Concurrency is saturated: take a queue slot to wait for one. The
+	// queue token is released when acquire returns (admitted or not), so
+	// it gates only waiters, never in-flight requests.
 	select {
 	case c.queue <- struct{}{}:
 	case <-ctx.Done():
@@ -462,21 +479,16 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 			return nil, ErrQueueFull
 		}
 	}
+	defer func() { <-c.queue }()
 
 	timer := time.NewTimer(c.queueTimeout)
 	defer timer.Stop()
 	select {
 	case c.conc <- struct{}{}:
-		// Admitted: free the queue slot for other waiters so an
-		// active request holds exactly one token (Inflight counts
-		// queued + active, each once).
-		<-c.queue
 		return &hold{c: c}, nil
 	case <-ctx.Done():
-		<-c.queue
 		return nil, ctx.Err()
 	case <-timer.C:
-		<-c.queue
 		// The timer (queue_full) and a client disconnect can fire in
 		// the same instant; Go's select picks randomly among ready
 		// cases, so re-check the context before reporting queue

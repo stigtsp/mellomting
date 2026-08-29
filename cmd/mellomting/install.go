@@ -52,6 +52,18 @@ func installCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: --install: %v\n", err)
 		return 1
 	}
+
+	// Preflight the systemd half before writing anything, so a run that
+	// cannot provision (e.g. a non-Linux host) fails closed without
+	// leaving a freshly installed binary behind.
+	if *systemdInstall {
+		p := &systemd.Provision{}
+		if err := p.CheckHost(); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: --install --systemd: %v\n", err)
+			return 1
+		}
+	}
+
 	dest, code := performInstall(src, *prefix)
 	if code != 0 {
 		return code
@@ -105,7 +117,11 @@ func printInstallNote() {
 
 // printSystemdNextSteps reports what provisioning created and the manual
 // steps that remain. Secrets are operator-authored: the installer never
-// writes config.yaml, users.yaml, or the pepper file.
+// writes config.yaml, users.yaml, or the pepper file. The config dir is
+// root:mellomting 0750 (the group cannot write), so these remaining steps
+// run as root (as the operator did for --install --systemd); the pepper is
+// created 0640 root:mellomting so the daemon (which runs as the service
+// user) can read it, per HARDENING.
 func printSystemdNextSteps(binaryPath string) {
 	fmt.Fprintln(os.Stdout, "mellomting: systemd provisioning complete")
 	fmt.Fprintf(os.Stdout, "  service account: %s (created if absent)\n", systemd.DefaultServiceUser)
@@ -113,11 +129,11 @@ func printSystemdNextSteps(binaryPath string) {
 	fmt.Fprintln(os.Stdout, "  log/state/run:   "+systemd.LogDir+", "+systemd.StateDir+", "+systemd.RunDir+" (mellomting, 0750)")
 	fmt.Fprintln(os.Stdout, "  unit:            "+systemd.UnitPath)
 	fmt.Fprintln(os.Stdout, "  logrotate:       "+systemd.LogrotatePath)
-	fmt.Fprintln(os.Stdout, "next steps (secrets are operator-authored, never created by the installer):")
-	fmt.Fprintln(os.Stdout, "  sudo -u "+systemd.DefaultServiceUser+" editor /etc/mellomting/config.yaml")
-	fmt.Fprintln(os.Stdout, "  umask 077 && head -c 64 /dev/urandom | base64 > /etc/mellomting/auth.pepper")
-	fmt.Fprintln(os.Stdout, "  sudo -u "+systemd.DefaultServiceUser+" "+binaryPath+" key create --config /etc/mellomting/config.yaml ...")
-	fmt.Fprintln(os.Stdout, "  sudo systemctl enable --now "+systemd.DefaultServiceUser)
+	fmt.Fprintln(os.Stdout, "next steps (run as root, as you did for --install --systemd; secrets are operator-authored):")
+	fmt.Fprintln(os.Stdout, "  editor /etc/mellomting/config.yaml")
+	fmt.Fprintln(os.Stdout, "  umask 077 && head -c 64 /dev/urandom | base64 > /etc/mellomting/auth.pepper && chown root:"+systemd.DefaultServiceUser+" /etc/mellomting/auth.pepper && chmod 640 /etc/mellomting/auth.pepper")
+	fmt.Fprintln(os.Stdout, "  "+binaryPath+" key create --config /etc/mellomting/config.yaml ...")
+	fmt.Fprintln(os.Stdout, "  sudo systemctl enable --now "+systemd.UnitName)
 }
 
 // installBinary copies src to dest atomically: the copy is written to a

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -263,5 +264,27 @@ func TestInstallCmdUsageErrors(t *testing.T) {
 				t.Fatalf("installCmd %v exit = %d (want 2)", tc.args, code)
 			}
 		})
+	}
+}
+
+// TestInstallCmdSystemdFailClosedBeforeWrite proves --systemd fails closed
+// before the binary is written when the host cannot provision. Regression:
+// previously the binary landed at <prefix>/bin/, then the systemd half
+// failed with "requires a Linux host", leaving a half-install behind. On a
+// provisionable Linux root host the command would mutate /etc, so that
+// path is exercised on a real host, not in a unit test.
+func TestInstallCmdSystemdFailClosedBeforeWrite(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("host is Linux; provisioning mutates /etc and is exercised on a real Linux root host")
+	}
+	prefix := filepath.Join(t.TempDir(), "prefix")
+	code, out, _ := captureOutput(t, func() int {
+		return installCmd([]string{"--systemd", "--prefix", prefix})
+	})
+	if code != 1 {
+		t.Fatalf("installCmd --systemd exit = %d (want 1: fail closed on non-Linux), stdout=%q", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "bin", version.Name)); !os.IsNotExist(err) {
+		t.Fatalf("binary was written before the systemd preflight failed (want not found): %v", err)
 	}
 }

@@ -688,6 +688,72 @@ func TestBackendConnectionReuse(t *testing.T) {
 	}
 }
 
+// PLAN §22: the admission queue must never gate idle concurrency. A burst
+// of arrivals is admitted up to max_concurrency even when queue_size is
+// smaller, because a free concurrency slot is taken directly without a
+// queue token. Regression for the bug where the queue was the first gate,
+// so a big-box config (large max_concurrency, small queue_size) rejected
+// arrivals while capacity sat idle.
+func TestAcquireIdleConcurrencyIgnoresQueue(t *testing.T) {
+	release := make(chan struct{})
+	admitted := make(chan struct{}, 16)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		admitted <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	// max_concurrency=8 with queue_size=1: the queue is much smaller than
+	// the concurrency ceiling, so the old gate (queue first) would reject
+	// everything beyond a single arrival.
+	o := testOptions(t, ts.URL)
+	o.Cfg.MaxConcurrency = 8
+	o.Cfg.QueueSize = 1
+	o.Cfg.QueueTimeout = config.Duration(200 * time.Millisecond)
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const arrivals = 8
+	start := make(chan struct{})
+	errs := make(chan error, arrivals)
+	for i := 0; i < arrivals; i++ {
+		go func() {
+			<-start
+			res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
+			if res != nil {
+				res.Close()
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+
+	// Every arrival must be admitted (reach the handler): reaching the
+	// handler proves it passed admission, so waiting for all `arrivals`
+	// proves idle concurrency is never gated by queue_size.
+	for i := 0; i < arrivals; i++ {
+		select {
+		case <-admitted:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d/%d arrivals admitted while concurrency idle", i, arrivals)
+		}
+	}
+	close(release)
+
+	// None of the admitted requests may report an admission error.
+	for i := 0; i < arrivals; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("admitted arrival errored: %v", err)
+		}
+	}
+}
+
 func TestInflightSnapshot(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
@@ -733,6 +799,7 @@ func TestStreamHoldsAdmissionUntilClosed(t *testing.T) {
 
 	streamStarted := make(chan struct{})
 	closeBody := make(chan struct{})
+	var onceStreamStarted sync.Once
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f, ok := w.(http.Flusher)
 		if !ok {
@@ -742,7 +809,7 @@ func TestStreamHoldsAdmissionUntilClosed(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		f.Flush()
-		close(streamStarted)
+		onceStreamStarted.Do(func() { close(streamStarted) })
 		<-closeBody // hold the stream open until the test drains it
 		_, _ = w.Write([]byte("data: done\n\n"))
 		f.Flush()

@@ -282,7 +282,7 @@ are in `docs/COMPATIBILITY.md`.
   creates secrets — those remain operator-authored steps printed after
   provisioning. The unit's `ExecStart` is rendered from the installed binary
   path (`--prefix` aware); a sync test proves the embedded asset matches
-  `deploy/mellomting.service`. See also `docs/HARDENING.md`.
+  `deploy/mellomting.service`. See also `HARDENING.md`.
 - **systemd** — a hardened unit is in `deploy/mellomting.service`.
 
 ## Security

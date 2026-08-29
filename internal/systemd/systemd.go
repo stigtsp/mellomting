@@ -24,6 +24,14 @@ const (
 	LogrotatePath = "/etc/logrotate.d/mellomting"
 )
 
+// UnitName is the systemd unit basename (mellomting.service without the
+// suffix), i.e. the name passed to `systemctl enable --now`. It is derived
+// from UnitPath so it cannot diverge from the installed unit. It is
+// distinct from DefaultServiceUser (the account the daemon runs under) —
+// the two happen to share the string "mellomting" today but must not be
+// conflated.
+const UnitName = "mellomting"
+
 // dirSpec describes an operational directory the daemon needs but does not
 // create; provisioning creates it with a strict mode and owner.
 type dirSpec struct {
@@ -107,9 +115,35 @@ type preflightEnv struct {
 	systemdActive bool
 }
 
+// CheckHost verifies the host-level preconditions (Linux, root, systemd
+// active) without mutating the host and without requiring the binary to
+// exist yet. installCmd runs it before writing the binary so a doomed run
+// (e.g. on a non-Linux host) fails closed before any file is written.
+func (p *Provision) CheckHost() error {
+	return p.checkHost(preflightEnv{
+		goos:          runtime.GOOS,
+		euid:          os.Geteuid(),
+		systemdActive: systemdActive(),
+	})
+}
+
 // preflight verifies every precondition that must hold before provisioning
 // mutates the host. It fails closed: nothing runs on a partial match.
 func (p *Provision) preflight(env preflightEnv) error {
+	if err := p.checkHost(env); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(p.BinaryPath) {
+		return fmt.Errorf("binary path %q is not absolute", p.BinaryPath)
+	}
+	if st, err := os.Stat(p.BinaryPath); err != nil || !st.Mode().IsRegular() {
+		return fmt.Errorf("binary %q not found or not a regular file", p.BinaryPath)
+	}
+	return nil
+}
+
+// checkHost validates the host-level preconditions only.
+func (p *Provision) checkHost(env preflightEnv) error {
 	if env.goos != "linux" {
 		return fmt.Errorf("--install --systemd requires a Linux host (got %q)", env.goos)
 	}
@@ -118,12 +152,6 @@ func (p *Provision) preflight(env preflightEnv) error {
 	}
 	if !env.systemdActive {
 		return errors.New("systemd is not the active init (no /run/systemd/system); refusing to provision")
-	}
-	if !filepath.IsAbs(p.BinaryPath) {
-		return fmt.Errorf("binary path %q is not absolute", p.BinaryPath)
-	}
-	if st, err := os.Stat(p.BinaryPath); err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("binary %q not found or not a regular file", p.BinaryPath)
 	}
 	return nil
 }

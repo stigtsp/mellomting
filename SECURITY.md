@@ -4,8 +4,8 @@
 and multiplexer. Its security boundary is defined in `docs/PLAN.md`:
 
 - `docs/PLAN.md` §4 — security invariants (the contract)
-- `docs/THREAT_MODEL.md` — the threat model
-- `docs/HARDENING.md` — the concrete controls and deployment hardening
+- `THREAT_MODEL.md` — the threat model
+- `HARDENING.md` — the concrete controls and deployment hardening
 
 ## Reporting a vulnerability
 

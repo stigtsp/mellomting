@@ -26,10 +26,18 @@ type dualEnv struct {
 }
 
 func newDualEnv(t *testing.T, maxAttempts int, b1, b2 http.HandlerFunc) *dualEnv {
-	return newDualEnvIdle(t, maxAttempts, 2*time.Second, b1, b2)
+	return newDualEnvStrategy(t, "least-inflight", maxAttempts, b1, b2)
+}
+
+func newDualEnvStrategy(t *testing.T, strategy string, maxAttempts int, b1, b2 http.HandlerFunc) *dualEnv {
+	return newDualEnvStrategyIdle(t, strategy, maxAttempts, 2*time.Second, b1, b2)
 }
 
 func newDualEnvIdle(t *testing.T, maxAttempts int, idle time.Duration, b1, b2 http.HandlerFunc) *dualEnv {
+	return newDualEnvStrategyIdle(t, "least-inflight", maxAttempts, idle, b1, b2)
+}
+
+func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle time.Duration, b1, b2 http.HandlerFunc) *dualEnv {
 	t.Helper()
 	e := &dualEnv{body: `{"model":"gen-1","messages":[{"role":"u","content":"x"}]}`}
 	e.f1n.Store(0)
@@ -61,7 +69,7 @@ func newDualEnvIdle(t *testing.T, maxAttempts int, idle time.Duration, b1, b2 ht
 	be.UpstreamModel = "Up/B"
 	cfg.Backends["b2"] = be
 	m := cfg.Models["gen-1"]
-	m.Strategy = "least-inflight"
+	m.Strategy = strategy
 	m.Backends = []config.BackendRef{{Name: "b1"}, {Name: "b2"}}
 	cfg.Models["gen-1"] = m
 	cfg.Retry = config.Retry{
@@ -303,17 +311,37 @@ func TestAttemptsGloballyBounded(t *testing.T) {
 }
 
 // PLAN §22: an exhausted admission queue falls back to another eligible
-// backend instead of failing the request.
+// backend instead of failing the request. Under the corrected admission
+// (a free concurrency slot admits directly without a queue token), "queue
+// full" occurs only when the backend's concurrency is saturated and its
+// queue has no room, so this test saturates b1's single concurrency slot
+// before issuing the request.
 func TestQueueFullFallsBack(t *testing.T) {
 	t.Parallel()
-	e := newDualEnv(t, 2, okJSON, okJSON)
-	// b1's queue is empty-sized: every admission is "queue full".
+
+	releaseB1 := make(chan struct{})
+	b1Started := make(chan struct{}, 1)
+	b1Hold := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b1Started <- struct{}{}
+		select {
+		case <-releaseB1:
+		case <-r.Context().Done():
+		}
+		okJSON(w, r)
+	})
+
+	// Pin the model to b1 (single strategy) so the request attempts b1
+	// even while it is busy, then falls back to b2 on admission failure.
+	e := newDualEnvStrategy(t, "single", 2, b1Hold, okJSON)
+
+	// b1's queue is empty-sized and its concurrency is a single slot:
+	// once that slot is held, every admission is "queue full".
 	cfg := e.p.cfg
 	b := cfg.Backends["b1"]
+	b.MaxConcurrency = 1
 	b.QueueSize = 0
 	b.QueueTimeout = config.Duration(50 * time.Millisecond)
 	cfg.Backends["b1"] = b
-	// Rebuild b1's client with the zero queue.
 	c, err := backend.New(backend.Options{
 		Name: "b1", Cfg: b, Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
@@ -323,6 +351,21 @@ func TestQueueFullFallsBack(t *testing.T) {
 	}
 	e.p.clients["b1"] = c
 
+	// Hold b1's single concurrency slot with a blocking request.
+	holderDone := make(chan struct{})
+	go func() {
+		defer close(holderDone)
+		run(t, e.p, http.MethodPost, "/v1/chat/completions", e.body, testKey())
+	}()
+	select {
+	case <-b1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("holder request never reached b1")
+	}
+	defer func() { close(releaseB1); <-holderDone }()
+
+	// b1 is saturated and its queue is empty: the request must fall back
+	// to b2.
 	rec := e.chat(t)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d body = %s (want 200 via queue fallback)", rec.Code, rec.Body.String())
