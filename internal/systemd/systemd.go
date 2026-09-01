@@ -18,6 +18,9 @@ import (
 // host (see Provision.preflight).
 const (
 	ConfigDir     = "/etc/mellomting"
+	ConfigPath    = "/etc/mellomting/config.yaml"
+	UsersPath     = "/etc/mellomting/users.yaml"
+	PepperPath    = "/etc/mellomting/auth.pepper"
 	LogDir        = "/var/log/mellomting"
 	StateDir      = "/var/lib/mellomting"
 	RunDir        = "/run/mellomting"
@@ -57,30 +60,35 @@ type Provision struct {
 //  1. fail-closed preflight (Linux, root, systemd active, valid binary);
 //  2. ensure the unprivileged service account exists;
 //  3. create the operational directories with strict owner/mode;
-//  4. install the unit and logrotate atomically;
-//  5. systemctl daemon-reload so the unit is picked up.
-func (p *Provision) Run() error {
+//  4. write the commented scaffold into the config directory when no
+//     config file exists (never touching one that does);
+//  5. install the unit and logrotate atomically;
+//  6. systemctl daemon-reload so the unit is picked up.
+//
+// It reports whether the config file was created, so the installer can
+// say what was set up and what remains operator-authored.
+func (p *Provision) Run() (configCreated bool, err error) {
 	if err := p.preflight(preflightEnv{
 		goos:          runtime.GOOS,
 		euid:          os.Geteuid(),
 		systemdActive: systemdActive(),
 	}); err != nil {
-		return err
+		return false, err
 	}
 	if p.User == "" {
 		p.User = DefaultServiceUser
 	}
 	u, err := ensureAccount(p.User)
 	if err != nil {
-		return err
+		return false, err
 	}
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		return fmt.Errorf("service user uid %q is not numeric: %w", u.Uid, err)
+		return false, fmt.Errorf("service user uid %q is not numeric: %w", u.Uid, err)
 	}
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		return fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
+		return false, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
 	}
 
 	dirs := []dirSpec{
@@ -91,25 +99,62 @@ func (p *Provision) Run() error {
 	}
 	for _, d := range dirs {
 		if err := ensureDir(d.path, d.mode, d.uid, d.gid); err != nil {
-			return err
+			return false, err
 		}
 	}
 
+	// Config file before the unit: once the unit is enabled a half-
+	// configured config is the first thing the daemon will read, so the
+	// scaffold (invalid until filled in) makes the remaining work
+	// explicit instead of leaving an empty config directory.
+	configCreated, err = ensureConfig(ConfigPath, 0o640, 0, gid)
+	if err != nil {
+		return false, err
+	}
+
 	if err := writeFileAtomic(RenderService(p.BinaryPath), UnitPath, 0o644); err != nil {
-		return err
+		return false, err
 	}
 	if err := writeFileAtomic(string(Logrotate()), LogrotatePath, 0o644); err != nil {
-		return err
+		return false, err
 	}
 
 	systemctlPath, err := resolveBinary("systemctl", "/usr/bin/systemctl", "/bin/systemctl")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := exec.Command(systemctlPath, "daemon-reload").Run(); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %w", err)
+		return false, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	return nil
+	return configCreated, nil
+}
+
+// ensureConfig guarantees the config file the daemon will read (path):
+// when no file is present it writes the scaffold — deliberately invalid
+// until the operator fills in backends and models — with the given mode
+// and owner, so the service user can read it. An existing config is the
+// operator's work (secrets, limits, backend choices) and is never
+// rewritten; a non-regular file at the path (a symlink among them) is
+// refused, in line with the project's symlink stance. It reports whether
+// it created the file.
+func ensureConfig(path string, mode os.FileMode, uid, gid int) (bool, error) {
+	st, err := os.Lstat(path)
+	if err == nil {
+		if !st.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %q: %w", path, err)
+	}
+	if err := writeFileAtomic(string(ConfigTemplate()), path, mode); err != nil {
+		return false, err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return false, fmt.Errorf("chown %q: %w", path, err)
+	}
+	return true, nil
 }
 
 // resolveBinary returns the first existing regular file among a fixed

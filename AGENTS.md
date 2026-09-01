@@ -168,7 +168,14 @@ startup FDs are settled and before the listener accepts (PLAN §57);
 `security.landlock.mode: required` fails closed, `best-effort` warns and
 continues (never a partial policy). MPTCP is explicitly disabled on every
 listener/dialer it owns (PLAN §61). `deploy/mellomting.service` ships the
-hardened systemd unit (PLAN §64).
+hardened systemd unit (PLAN §64). `mellomting --install --systemd` (via
+`internal/systemd`, assets embedded byte-identical to `deploy/`) provisions
+the service end-to-end: system user, config/log/state/run dirs, the unit,
+logrotate, and — when no config exists — a **commented scaffold** at
+`/etc/mellomting/config.yaml` (0640 root:mellomting). The scaffold is
+deliberately invalid until `backends:`/`models:` are filled in (it is not a
+default config; serve stays fail-closed), and an existing config.yaml is
+never rewritten; secrets (pepper, users file) remain operator-authored.
 
 Phase 6 adds static TLS (PLAN §97, §67): `internal/tlsconfig` loads the
 configured certificate/key before the sandbox is applied (PLAN §57 step 9),

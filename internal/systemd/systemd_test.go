@@ -1,15 +1,19 @@
 package systemd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"mellomting/internal/config"
 )
 
 // TestSyncEmbeddedMatchesDeploy proves the embedded unit (rendered with the
-// default prefix) and logrotate are byte-identical to the canonical
-// operator-facing copies in deploy/, so the two can never drift.
+// default prefix), the logrotate, and the config scaffold are byte-identical
+// to the canonical operator-facing copies in deploy/, so the two sets can
+// never drift.
 func TestSyncEmbeddedMatchesDeploy(t *testing.T) {
 	repo := filepath.Join("..", "..")
 
@@ -27,6 +31,14 @@ func TestSyncEmbeddedMatchesDeploy(t *testing.T) {
 	}
 	if string(Logrotate()) != string(logrotate) {
 		t.Errorf("embedded logrotate differs from deploy/mellomting.logrotate")
+	}
+
+	scaffold, err := os.ReadFile(filepath.Join(repo, "deploy", "mellomting-config.yaml.example"))
+	if err != nil {
+		t.Fatalf("read deploy/mellomting-config.yaml.example: %v", err)
+	}
+	if string(ConfigTemplate()) != string(scaffold) {
+		t.Errorf("embedded config scaffold differs from deploy/mellomting-config.yaml.example")
 	}
 }
 
@@ -94,6 +106,85 @@ func TestResolveBinaryNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nosuchbinary") {
 		t.Fatalf("error does not name the binary: %v", err)
+	}
+}
+
+// TestEnsureConfig covers the scaffold step of provisioning: it creates
+// the scaffold with the requested mode when the config is absent, never
+// rewrites an existing config, and refuses a non-regular file at the path.
+func TestEnsureConfig(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+
+	t.Run("creates scaffold", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		created, err := ensureConfig(path, 0o640, uid, gid)
+		if err != nil || !created {
+			t.Fatalf("ensureConfig = created:%v err:%v (want created)", created, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read created config: %v", err)
+		}
+		if !bytes.Equal(got, ConfigTemplate()) {
+			t.Fatalf("created config differs from the scaffold")
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o640 {
+			t.Errorf("mode = %o, want 640", st.Mode().Perm())
+		}
+	})
+
+	t.Run("never rewrites an existing config", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte("version: 1\n# operator's file\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensureConfig(path, 0o640, uid, gid)
+		if err != nil || created {
+			t.Fatalf("ensureConfig on an existing config = created:%v err:%v (want untouched)", created, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "version: 1\n# operator's file\n" {
+			t.Fatalf("existing config was modified: %q", got)
+		}
+	})
+
+	t.Run("refuses a symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "real.yaml")
+		if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "config.yaml")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensureConfig(link, 0o640, uid, gid)
+		if err == nil || created || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("ensureConfig over a symlink = created:%v err:%v (want refusal)", created, err)
+		}
+	})
+}
+
+// TestScaffoldFailsValidationUntilCompleted proves the scaffold is
+// well-formed YAML (it decodes cleanly) that validation rejects on exactly
+// the operator's remaining work — backends and models — so `config check`
+// guides the edit and serve stays fail-closed until it is filled in.
+func TestScaffoldFailsValidationUntilCompleted(t *testing.T) {
+	_, err := config.Parse(ConfigTemplate())
+	if err == nil {
+		t.Fatal("scaffold passed validation: it must require backends and models before serve can start")
+	}
+	s := err.Error()
+	if !strings.Contains(s, "backends") || !strings.Contains(s, "models") {
+		t.Fatalf("scaffold validation error does not point at the missing sections: %v", err)
 	}
 }
 

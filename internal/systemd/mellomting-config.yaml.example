@@ -1,0 +1,180 @@
+# Mellomting configuration scaffold.
+#
+# Written by `mellomting --install --systemd` when no config exists. It is
+# a commented skeleton to help you edit your own config, and it is
+# deliberately INCOMPLETE: with no backends and no models it does not pass
+# validation, so the daemon refuses to start until you fill them in
+# (fail-closed, PLAN §5). After each edit run
+#
+#   <mellomting binary> config check -config /etc/mellomting/config.yaml
+#
+# to see exactly what is still missing. Edit this file only as root; the
+# daemon reads it as the mellomting service user (0640 root:mellomting).
+#
+# Checklist:
+#   1. Fill in your local vLLM backends in the `backends:` section.
+#   2. Expose them under public names in the `models:` section.
+#   3. Create the auth pepper ONCE (as root):
+#        umask 077 && head -c 64 /dev/urandom | base64 \
+#          > /etc/mellomting/auth.pepper
+#        chown root:mellomting /etc/mellomting/auth.pepper
+#        chmod 640 /etc/mellomting/auth.pepper
+#   4. Create your first API key (as root). `key create` leaves
+#      users.yaml at 0600 root:root, so make it readable by the
+#      service group:
+#        <mellomting binary> key create \
+#          --name <key-name> --models <public-model> \
+#          -config /etc/mellomting/config.yaml
+#        chown root:mellomting /etc/mellomting/users.yaml
+#        chmod 640 /etc/mellomting/users.yaml
+#   5. Validate and start:
+#        <mellomting binary> config check -config /etc/mellomting/config.yaml
+#        systemctl enable --now mellomting
+#
+# The <mellomting binary> placeholder is your installed binary, e.g.
+# /usr/local/bin/mellomting. Full field reference: docs/PLAN.md.
+
+version: 1
+
+# --- Where Mellomting listens (PLAN §8) ------------------------------------
+server:
+  listen:
+    # A unix socket under systemd's RuntimeDirectory: the hardened unit
+    # (/etc/systemd/system/mellomting.service) provides /run/mellomting.
+    # Or use a loopback TCP listener instead:
+    #   network: tcp
+    #   address: 127.0.0.1:8080
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660" # unix socket mode (default 0660)
+
+  # TLS is only valid with a tcp listener (PLAN §67). Native ACME is
+  # shelved for a later release.
+  # tls:
+  #   mode: files
+  #   cert_file: /etc/mellomting/tls/cert.pem
+  #   key_file: /etc/mellomting/tls/key.pem
+
+  # Server-wide limits and timeouts; the documented defaults apply when
+  # a field is absent (PLAN §9.1).
+  # max_header_bytes: 32768
+  # max_body_bytes: 16777216
+  # max_response_bytes: 67108864
+  # max_inflight_requests: 32
+  # max_buffered_request_bytes: 67108864
+  # max_connections: 1024 # matches the unit's LimitNOFILE; raise both
+  # read_header_timeout: 5s
+  # read_body_timeout: 60s
+  # idle_timeout: 120s
+  # stream_idle_timeout: 120s
+  # stream_write_timeout: 30s
+
+# --- Authentication (PLAN §25-27) -------------------------------------------
+auth:
+  users_file: /etc/mellomting/users.yaml # created by `mellomting key create`
+  pepper_file: /etc/mellomting/auth.pepper # create it once; step 3 above
+
+# --- Security policy (PLAN §40-47) -------------------------------------------
+security:
+  backend_network:
+    # loopback-only (default): every backend must resolve to loopback.
+    # any: allow non-loopback backends.
+    # allowed-cidrs: pick explicitly, with a `cidrs:` list below.
+    mode: loopback-only
+    # mode: allowed-cidrs
+    # cidrs:
+    #   - 192.168.1.0/24
+    #   - ::1/128
+  landlock:
+    # required (default): post-startup Landlock enforcement, fail closed.
+    # best-effort: warn and continue when the kernel cannot enforce
+    # (never a half-policy). disabled: no enforcement (development only).
+    mode: required
+    minimum_abi: 8
+
+# --- Operational log: structured JSON to stdout/stderr (PLAN §43) ------------
+logging:
+  format: json # default; the only format
+  level: info # debug | info | warn | error
+
+# --- Token accounting and quotas (PLAN §36-44) --------------------------------
+# Off by default; enable to write the JSONL accounting log and to apply
+# per-key token windows. The other fields then default sensibly (path
+# /var/log/mellomting/usage.jsonl, drop-and-alert overflow, interval fsync).
+accounting:
+  # enabled: true
+  # ensure_stream_usage: true
+  # replay_on_start: true
+  # queue_size: 4096
+  # overflow: drop-and-alert
+  # fsync: interval
+  # fsync_interval: 5s
+
+# --- Rate limiting (PLAN §32-35) -----------------------------------------------
+# Per-key limits come from the `key create` flags (--requests-per-second,
+# --burst, --concurrent-requests); these are the host-wide ceiling.
+limits:
+  # global_requests_per_second: 100
+  # global_burst: 200
+
+# --- Pre-stream retry/fallback budget (PLAN §23) --------------------------------
+# Defaults: 3 global attempts, 50ms..5s exponential backoff, jitter on.
+# Nothing is retried once any byte reached the client (PLAN §24).
+retry:
+  # max_attempts: 3
+  # initial_backoff: 50ms
+  # max_backoff: 5s
+  # jitter: true
+
+# --- Backends: local vLLM instances (PLAN §12) ----------------------------------
+# At least one is required. base_url must carry an explicit port.
+# upstream_model is the name the vLLM serves, NOT the public name.
+backends:
+  # main-a:
+  #   base_url: http://127.0.0.1:8001
+  #   upstream_model: <vLLM model name>
+  #   connect_timeout: 3s
+  #   header_timeout: 30s
+  #   request_timeout: 20m
+  #   stream_idle_timeout: 120s
+  #   max_concurrency: 4
+  #   queue_size: 8
+  #   queue_timeout: 5s
+  #
+  # main-b:
+  #   base_url: http://127.0.0.1:8002
+  #   upstream_model: <vLLM model name>
+  #   connect_timeout: 3s
+  #   header_timeout: 30s
+  #   request_timeout: 20m
+  #   stream_idle_timeout: 120s
+  #   max_concurrency: 4
+  #   queue_size: 8
+  #   queue_timeout: 5s
+
+# --- Public model names clients address (PLAN §19-21) ---------------------------
+# At least one is required. Strategies: single | round-robin |
+# weighted-round-robin | least-inflight | weighted-least-inflight.
+models:
+  # my-model:
+  #   type: generation
+  #   strategy: least-inflight
+  #   policy:
+  #     max_output_tokens: 32768 # generative output cap (PLAN §38)
+  #   backends:
+  #     - main-a
+  #     - main-b
+
+# --- Qualifiers are shelved beyond the first release (PLAN §96) ------------------
+# The config schema stays forward-compatible, but serve refuses to start
+# while a qualifier is configured. Leave this section absent.
+# qualifiers:
+#   safety-audit:
+#     backend: <guard backend>
+#     model: <guard model>
+#     timeout: 3s
+#     failure_policy: allow # required: allow | audit | block (PLAN §46)
+#     input:
+#       mode: audit
+#     output:
+#       mode: disabled

@@ -274,15 +274,22 @@ are in `docs/COMPATIBILITY.md`.
   single binary: it creates the unprivileged `mellomting` service account
   (system user, `nologin` shell), the config/log/state/run dirs with strict
   owners and modes (`/etc/mellomting` root:mellomting 0750; the rest
-  mellomting:mellomting 0750), installs the hardened unit at
+  mellomting:mellomting 0750), writes a **commented scaffold config** at
+  `/etc/mellomting/config.yaml` (0640 root:mellomting) when no config
+  exists — a byte-identical copy of
+  `deploy/mellomting-config.yaml.example`, deliberately incomplete (no
+  `backends:`/`models:`) so `mellomting config check` shows exactly what is
+  left and the daemon stays fail-closed until it is filled in; an existing
+  `config.yaml` is never touched — installs the hardened unit at
   `/etc/systemd/system/mellomting.service` and the logrotate policy at
   `/etc/logrotate.d/mellomting`, then runs `systemctl daemon-reload`. It is
   fail-closed: it refuses to run on non-Linux, as non-root, or when systemd
-  is not the active init, and never overwrites an existing `config.yaml` or
-  creates secrets — those remain operator-authored steps printed after
-  provisioning. The unit's `ExecStart` is rendered from the installed binary
-  path (`--prefix` aware); a sync test proves the embedded asset matches
-  `deploy/mellomting.service`. See also `HARDENING.md`.
+  is not the active init, and never creates secrets — the pepper and the
+  users file remain operator-authored steps printed after provisioning
+  (including `chmod 640` so the daemon user can read them). The unit's
+  `ExecStart` is rendered from the installed binary path (`--prefix`
+  aware); sync tests prove the embedded assets match `deploy/`. See also
+  `HARDENING.md`.
 - **systemd** — a hardened unit is in `deploy/mellomting.service`.
 
 ## Security

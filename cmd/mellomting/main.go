@@ -533,8 +533,8 @@ key subcommands (docs/PLAN.md §29):
                                symlink destinations refused
   --install --systemd          also provision as a systemd service (Linux
                                root): service user, config/log/state/run
-                               dirs, hardened unit + logrotate, and a
-                               daemon-reload; config secrets remain
-                               operator-authored
+                               dirs, scaffold config.yaml if absent,
+                               hardened unit + logrotate, and a
+                               daemon-reload; secrets remain operator-authored
 `)
 }

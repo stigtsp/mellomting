@@ -27,6 +27,9 @@ var serviceTemplate string
 //go:embed mellomting.logrotate
 var logrotateAsset []byte
 
+//go:embed mellomting-config.yaml.example
+var configTemplateAsset []byte
+
 // RenderService renders the hardened systemd unit with the given binary
 // path substituted into ExecStart. It matches deploy/mellomting.service
 // byte-for-byte when binaryPath is /usr/local/bin/mellomting (asserted in
@@ -38,4 +41,14 @@ func RenderService(binaryPath string) string {
 // Logrotate returns the accounting-log rotation policy (PLAN §42).
 func Logrotate() []byte {
 	return logrotateAsset
+}
+
+// ConfigTemplate returns the scaffold written into the config directory
+// by --install --systemd when no config file exists. It is deliberately
+// incomplete — no backends and no models — so it does not pass validation
+// and the daemon stays fail-closed until the operator fills those in; the
+// commented stubs document every field. It is byte-identical to
+// deploy/mellomting-config.yaml.example (asserted by the sync test).
+func ConfigTemplate() []byte {
+	return configTemplateAsset
 }

@@ -35,7 +35,7 @@ var errAlreadyInstalled = errors.New("already installed")
 func installCmd(args []string) int {
 	flags := flag.NewFlagSet("mellomting --install", flag.ContinueOnError)
 	prefix := flags.String("prefix", defaultInstallPrefix, "destination prefix: the binary is installed at <prefix>/bin/"+version.Name)
-	systemdInstall := flags.Bool("systemd", false, "also provision as a systemd service (Linux root): service user, dirs, unit, logrotate")
+	systemdInstall := flags.Bool("systemd", false, "also provision as a systemd service (Linux root): service user, config/log/state/run dirs, scaffold config.yaml if absent, unit, logrotate")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -70,11 +70,12 @@ func installCmd(args []string) int {
 	}
 	if *systemdInstall {
 		p := &systemd.Provision{BinaryPath: dest}
-		if err := p.Run(); err != nil {
+		configCreated, err := p.Run()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "mellomting: --install --systemd: %v\n", err)
 			return 1
 		}
-		printSystemdNextSteps(dest)
+		printSystemdNextSteps(dest, configCreated)
 	}
 	return 0
 }
@@ -105,34 +106,50 @@ func performInstall(src, prefix string) (dest string, code int) {
 // destination host must provide them. systemd's deploy/mellomting.service
 // auto-creates them (RuntimeDirectory/StateDirectory/LogsDirectory); the
 // install command's --systemd flag provisions them and the service on
-// Linux. The install command deliberately does not create them and does
-// not ship config templates or secrets (they are operator-authored).
+// Linux, and writes a commented scaffold into the config directory when
+// no config file exists. Plain --install creates nothing beyond the
+// binary and ships no secrets (they are operator-authored).
 func printInstallNote() {
 	fmt.Fprintln(os.Stdout, "mellomting: note: the daemon creates neither its config nor its log/runtime directories")
 	fmt.Fprintln(os.Stdout, "             config /etc/mellomting/ (config.yaml, users.yaml, auth.pepper),")
 	fmt.Fprintln(os.Stdout, "             log /var/log/mellomting/, socket /run/mellomting/.")
 	fmt.Fprintln(os.Stdout, "             deploy/mellomting.service (systemd) creates them automatically;")
-	fmt.Fprintln(os.Stdout, "             run `mellomting --install --systemd` (Linux root) to provision them.")
+	fmt.Fprintln(os.Stdout, "             run `mellomting --install --systemd` (Linux root) to provision them")
+	fmt.Fprintln(os.Stdout, "             and write a commented scaffold config (secrets remain operator-authored).")
 }
 
-// printSystemdNextSteps reports what provisioning created and the manual
-// steps that remain. Secrets are operator-authored: the installer never
-// writes config.yaml, users.yaml, or the pepper file. The config dir is
-// root:mellomting 0750 (the group cannot write), so these remaining steps
-// run as root (as the operator did for --install --systemd); the pepper is
-// created 0640 root:mellomting so the daemon (which runs as the service
-// user) can read it, per HARDENING.
-func printSystemdNextSteps(binaryPath string) {
+// printSystemdNextSteps reports what provisioning created (configCreated
+// says whether the scaffold config was written or an existing config was
+// left in place) and the manual steps that remain. Secrets are
+// operator-authored: the installer never writes users.yaml or the pepper
+// file, and it never rewrites an existing config.yaml. The config dir is
+// root:mellomting 0750 (only root can write it), so these steps run as
+// root; the files they create are then made group-readable (0640
+// root:mellomting) so the daemon, which runs as the service user, can
+// read them — including users.yaml, which `key create` writes as 0600
+// root:root.
+func printSystemdNextSteps(binaryPath string, configCreated bool) {
 	fmt.Fprintln(os.Stdout, "mellomting: systemd provisioning complete")
-	fmt.Fprintf(os.Stdout, "  service account: %s (created if absent)\n", systemd.DefaultServiceUser)
-	fmt.Fprintln(os.Stdout, "  config dir:      "+systemd.ConfigDir+" (root:mellomting, 0750)")
-	fmt.Fprintln(os.Stdout, "  log/state dirs:  "+systemd.LogDir+", "+systemd.StateDir+" (mellomting, 0750); the runtime dir "+systemd.RunDir+" is recreated by systemd on each start")
-	fmt.Fprintln(os.Stdout, "  unit:            "+systemd.UnitPath)
-	fmt.Fprintln(os.Stdout, "  logrotate:       "+systemd.LogrotatePath)
+	fmt.Fprintf(os.Stdout, "  service account:  %s (created if absent)\n", systemd.DefaultServiceUser)
+	fmt.Fprintln(os.Stdout, "  log/state dirs:   "+systemd.LogDir+", "+systemd.StateDir+" (mellomting, 0750); the runtime dir "+systemd.RunDir+" is recreated by systemd on each start")
+	if configCreated {
+		fmt.Fprintln(os.Stdout, "  config:           "+systemd.ConfigPath+" (scaffold created, 0640 root:mellomting — fill it in)")
+	} else {
+		fmt.Fprintln(os.Stdout, "  config:           "+systemd.ConfigPath+" (already present — left untouched)")
+	}
+	fmt.Fprintln(os.Stdout, "  unit:             "+systemd.UnitPath)
+	fmt.Fprintln(os.Stdout, "  logrotate:        "+systemd.LogrotatePath)
 	fmt.Fprintln(os.Stdout, "next steps (run as root, as you did for --install --systemd; secrets are operator-authored):")
-	fmt.Fprintln(os.Stdout, "  editor /etc/mellomting/config.yaml")
-	fmt.Fprintln(os.Stdout, "  umask 077 && head -c 64 /dev/urandom | base64 > /etc/mellomting/auth.pepper && chown root:"+systemd.DefaultServiceUser+" /etc/mellomting/auth.pepper && chmod 640 /etc/mellomting/auth.pepper")
-	fmt.Fprintln(os.Stdout, "  "+binaryPath+" key create --config /etc/mellomting/config.yaml ...")
+	if configCreated {
+		fmt.Fprintln(os.Stdout, "  editor "+systemd.ConfigPath+"  # fill in the backends: and models: sections")
+	} else {
+		fmt.Fprintln(os.Stdout, "  editor "+systemd.ConfigPath)
+	}
+	fmt.Fprintln(os.Stdout, "  umask 077 && head -c 64 /dev/urandom | base64 > "+systemd.PepperPath)
+	fmt.Fprintln(os.Stdout, "  chown root:"+systemd.DefaultServiceUser+" "+systemd.PepperPath+" && chmod 640 "+systemd.PepperPath)
+	fmt.Fprintln(os.Stdout, "  "+binaryPath+" key create --name <key-name> --models <model> -config "+systemd.ConfigPath)
+	fmt.Fprintln(os.Stdout, "  chown root:"+systemd.DefaultServiceUser+" "+systemd.UsersPath+" && chmod 640 "+systemd.UsersPath)
+	fmt.Fprintln(os.Stdout, "  "+binaryPath+" config check -config "+systemd.ConfigPath)
 	fmt.Fprintln(os.Stdout, "  sudo systemctl enable --now "+systemd.UnitName)
 }
 
