@@ -2,11 +2,13 @@ package systemd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"mellomting/internal/auth"
 	"mellomting/internal/config"
 )
 
@@ -169,6 +171,151 @@ func TestEnsureConfig(t *testing.T) {
 		created, err := ensureConfig(link, 0o640, uid, gid)
 		if err == nil || created || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("ensureConfig over a symlink = created:%v err:%v (want refusal)", created, err)
+		}
+	})
+}
+
+// TestEnsurePepper covers the pepper step of provisioning: an absent
+// pepper is created with a base64 line at 0640 under the requested owner,
+// a re-run leaves an existing pepper untouched, and a non-regular file at
+// the path is refused.
+func TestEnsurePepper(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+
+	t.Run("creates a valid pepper", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "auth.pepper")
+		created, err := ensurePepper(path, uid, gid)
+		if err != nil || !created {
+			t.Fatalf("ensurePepper = created:%v err:%v (want created)", created, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSuffix(string(data), "\n")
+		if strings.Contains(line, "\n") {
+			t.Fatalf("pepper must be a single line, got %q", line)
+		}
+		raw, err := base64.StdEncoding.DecodeString(line)
+		if err != nil {
+			t.Fatalf("pepper line is not base64: %v", err)
+		}
+		if len(raw) != pepperBytes {
+			t.Fatalf("decoded pepper is %d bytes, want %d", len(raw), pepperBytes)
+		}
+		if len(line) < 16 {
+			t.Fatalf("pepper line is %d bytes, below the 16-byte minimum load would reject", len(line))
+		}
+		if _, err := auth.LoadPepper(path); err != nil {
+			t.Fatalf("generated pepper does not load through auth.LoadPepper: %v", err)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o640 {
+			t.Errorf("mode = %o, want 640", st.Mode().Perm())
+		}
+	})
+
+	t.Run("never rewrites an existing pepper", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "auth.pepper")
+		orig := "a pre-existing operator pepper of plenty of length\n"
+		if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensurePepper(path, uid, gid)
+		if err != nil || created {
+			t.Fatalf("ensurePepper on an existing pepper = created:%v err:%v (want untouched)", created, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("existing pepper was modified: %q", got)
+		}
+	})
+
+	t.Run("refuses a symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "real.pepper")
+		if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "auth.pepper")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensurePepper(link, uid, gid)
+		if err == nil || created || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("ensurePepper over a symlink = created:%v err:%v (want refusal)", created, err)
+		}
+	})
+}
+
+// TestEnsureUsers covers the key-store stub step: the absent file becomes
+// the stub at 0640, and the stub round-trips auth.LoadUsers — i.e. the
+// daemon can load it out of the box. Re-runs and symlinks follow the same
+// shape as TestEnsurePepper.
+func TestEnsureUsers(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+
+	t.Run("creates a stub the daemon can load", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "users.yaml")
+		created, err := ensureUsers(path, uid, gid)
+		if err != nil || !created {
+			t.Fatalf("ensureUsers = created:%v err:%v (want created)", created, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != usersStub {
+			t.Fatalf("created users file differs from the stub:\n%s", got)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o640 {
+			t.Errorf("mode = %o, want 640", st.Mode().Perm())
+		}
+		uf, err := auth.LoadUsers(path)
+		if err != nil {
+			t.Fatalf("stub does not round-trip auth.LoadUsers: %v", err)
+		}
+		if uf.Version != 1 || len(uf.Keys) != 0 {
+			t.Fatalf("loaded stub = version %d, %d keys (want 1, 0)", uf.Version, len(uf.Keys))
+		}
+	})
+
+	t.Run("never rewrites an existing users file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "users.yaml")
+		if err := os.WriteFile(path, []byte(usersStub), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensureUsers(path, uid, gid)
+		if err != nil || created {
+			t.Fatalf("ensureUsers on an existing users file = created:%v err:%v (want untouched)", created, err)
+		}
+	})
+
+	t.Run("refuses a symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "real.yaml")
+		if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "users.yaml")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		created, err := ensureUsers(link, uid, gid)
+		if err == nil || created || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("ensureUsers over a symlink = created:%v err:%v (want refusal)", created, err)
 		}
 	})
 }

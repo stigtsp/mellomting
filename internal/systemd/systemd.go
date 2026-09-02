@@ -1,6 +1,8 @@
 package systemd
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,6 +38,25 @@ const (
 // conflated.
 const UnitName = "mellomting"
 
+// pepperBytes is the HMAC pepper length the installer generates: 64
+// crypto-random bytes, base64-encoded on one line (the in-process
+// equivalent of the `base64(head -c 64 /dev/urandom)` format). Any pepper
+// of at least 16 bytes loads (auth.LoadPepper); a pre-existing file of any
+// format is left in place and loads unchanged.
+const pepperBytes = 64
+
+// usersStub is the empty key store the installer writes when no users file
+// exists. It is the minimal valid on-disk record (version 1, no keys) — an
+// empty store is explicitly valid (T-M10) and the daemon fails closed (401
+// for every request) until an operator creates a key — with a note that
+// the key subcommands own the file. A test asserts the stub round-trips
+// auth.LoadUsers.
+const usersStub = `# Mellomting API keys. Managed by ` + "`" + `mellomting key
+# create|list|enable|disable|revoke` + "`" + ` — do not edit by hand.
+version: 1
+keys: []
+`
+
 // dirSpec describes an operational directory the daemon needs but does not
 // create; provisioning creates it with a strict mode and owner.
 type dirSpec struct {
@@ -56,39 +77,51 @@ type Provision struct {
 	User string
 }
 
+// Report records which provisioning artifacts Run created so the
+// installer can say what was set up and what pre-existed and was left in
+// place.
+type Report struct {
+	ConfigCreated bool
+	PepperCreated bool
+	UsersCreated  bool
+}
+
 // Run performs the systemd provisioning:
 //  1. fail-closed preflight (Linux, root, systemd active, valid binary);
 //  2. ensure the unprivileged service account exists;
 //  3. create the operational directories with strict owner/mode;
 //  4. write the commented scaffold into the config directory when no
 //     config file exists (never touching one that does);
-//  5. install the unit and logrotate atomically;
-//  6. systemctl daemon-reload so the unit is picked up.
+//  5. generate the HMAC pepper when no pepper file exists and write the
+//     empty key-store stub when no users file exists, both 0640
+//     root:mellomting up front;
+//  6. install the unit and logrotate atomically;
+//  7. systemctl daemon-reload so the unit is picked up.
 //
-// It reports whether the config file was created, so the installer can
-// say what was set up and what remains operator-authored.
-func (p *Provision) Run() (configCreated bool, err error) {
+// Every step is create-only-if-absent. It reports what was created so the
+// installer can say what was set up and what was already present.
+func (p *Provision) Run() (r Report, err error) {
 	if err := p.preflight(preflightEnv{
 		goos:          runtime.GOOS,
 		euid:          os.Geteuid(),
 		systemdActive: systemdActive(),
 	}); err != nil {
-		return false, err
+		return Report{}, err
 	}
 	if p.User == "" {
 		p.User = DefaultServiceUser
 	}
 	u, err := ensureAccount(p.User)
 	if err != nil {
-		return false, err
+		return Report{}, err
 	}
 	uid, err := strconv.Atoi(u.Uid)
 	if err != nil {
-		return false, fmt.Errorf("service user uid %q is not numeric: %w", u.Uid, err)
+		return Report{}, fmt.Errorf("service user uid %q is not numeric: %w", u.Uid, err)
 	}
 	gid, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		return false, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
+		return Report{}, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
 	}
 
 	dirs := []dirSpec{
@@ -99,34 +132,48 @@ func (p *Provision) Run() (configCreated bool, err error) {
 	}
 	for _, d := range dirs {
 		if err := ensureDir(d.path, d.mode, d.uid, d.gid); err != nil {
-			return false, err
+			return Report{}, err
 		}
 	}
 
-	// Config file before the unit: once the unit is enabled a half-
-	// configured config is the first thing the daemon will read, so the
-	// scaffold (invalid until filled in) makes the remaining work
-	// explicit instead of leaving an empty config directory.
-	configCreated, err = ensureConfig(ConfigPath, 0o640, 0, gid)
+	// Config file before the secrets and the unit: once the unit is
+	// enabled a half-configured config is the first thing the daemon will
+	// read, so the scaffold (invalid until filled in) makes the remaining
+	// work explicit instead of leaving an empty config directory.
+	r.ConfigCreated, err = ensureConfig(ConfigPath, 0o640, 0, gid)
 	if err != nil {
-		return false, err
+		return Report{}, err
+	}
+	// The pepper and the empty key store before the unit: `key create`
+	// needs both a pre-existing pepper and a users file, and the daemon
+	// reads the users file it finds. The 0640 root:mellomting ownership
+	// is set up front so a later root-run `key create` cannot leave a
+	// 0600 root:root file the daemon can no longer read (its write path
+	// clamps the mode and keeps the owner).
+	r.PepperCreated, err = ensurePepper(PepperPath, 0, gid)
+	if err != nil {
+		return Report{}, err
+	}
+	r.UsersCreated, err = ensureUsers(UsersPath, 0, gid)
+	if err != nil {
+		return Report{}, err
 	}
 
 	if err := writeFileAtomic(RenderService(p.BinaryPath), UnitPath, 0o644); err != nil {
-		return false, err
+		return Report{}, err
 	}
 	if err := writeFileAtomic(string(Logrotate()), LogrotatePath, 0o644); err != nil {
-		return false, err
+		return Report{}, err
 	}
 
 	systemctlPath, err := resolveBinary("systemctl", "/usr/bin/systemctl", "/bin/systemctl")
 	if err != nil {
-		return false, err
+		return Report{}, err
 	}
 	if err := exec.Command(systemctlPath, "daemon-reload").Run(); err != nil {
-		return false, fmt.Errorf("systemctl daemon-reload: %w", err)
+		return Report{}, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	return configCreated, nil
+	return r, nil
 }
 
 // ensureConfig guarantees the config file the daemon will read (path):
@@ -149,6 +196,61 @@ func ensureConfig(path string, mode os.FileMode, uid, gid int) (bool, error) {
 		return false, fmt.Errorf("stat %q: %w", path, err)
 	}
 	if err := writeFileAtomic(string(ConfigTemplate()), path, mode); err != nil {
+		return false, err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return false, fmt.Errorf("chown %q: %w", path, err)
+	}
+	return true, nil
+}
+
+// ensurePepper generates the HMAC pepper (PLAN §27) when no file is at
+// path: pepperBytes crypto-random bytes, standard base64, one line. A
+// pre-existing file is the operator's secret and is never rewritten (it
+// loads in whatever format it already has); a non-regular file (a symlink
+// among them) is refused, in line with the project's symlink stance. It
+// reports whether it created the file.
+func ensurePepper(path string, uid, gid int) (bool, error) {
+	st, err := os.Lstat(path)
+	if err == nil {
+		if !st.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %q: %w", path, err)
+	}
+	b := make([]byte, pepperBytes)
+	if _, err := rand.Read(b); err != nil {
+		return false, fmt.Errorf("generate pepper for %q: %w", path, err)
+	}
+	// One base64 line + newline: LoadPepper trims the trailing newline.
+	if err := writeFileAtomic(base64.StdEncoding.EncodeToString(b)+"\n", path, 0o640); err != nil {
+		return false, err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return false, fmt.Errorf("chown %q: %w", path, err)
+	}
+	return true, nil
+}
+
+// ensureUsers writes the empty key-store stub (usersStub) when no users
+// file is at path, with the same create-only-if-absent and symlink-refusal
+// shape as ensurePepper. A pre-existing users file holds the operator's
+// keys and is never rewritten. It reports whether it created the file.
+func ensureUsers(path string, uid, gid int) (bool, error) {
+	st, err := os.Lstat(path)
+	if err == nil {
+		if !st.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %q: %w", path, err)
+	}
+	if err := writeFileAtomic(usersStub, path, 0o640); err != nil {
 		return false, err
 	}
 	if err := os.Chown(path, uid, gid); err != nil {
