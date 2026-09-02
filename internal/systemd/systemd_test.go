@@ -324,6 +324,30 @@ func TestEnsureUsers(t *testing.T) {
 // well-formed YAML (it decodes cleanly) that validation rejects on exactly
 // the operator's remaining work — backends and models — so `config check`
 // guides the edit and serve stays fail-closed until it is filled in.
+// TestScaffoldLineCap keeps the scaffold a stub, not a manual: it is
+// capped at 80 non-empty lines, and `config show-effective` — not this
+// file — is the field reference.
+func TestScaffoldLineCap(t *testing.T) {
+	nonEmpty := 0
+	for _, line := range strings.Split(string(ConfigTemplate()), "\n") {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty > 80 {
+		t.Errorf("scaffold is %d non-empty lines, want <= 80: keep prose in docs, not in the operator-facing file", nonEmpty)
+	}
+}
+
+// TestScaffoldHasNoPlanReferences: the scaffold is written to operator
+// hosts that have no repository; PLAN citations belong in the repo, not
+// in a file an operator edits.
+func TestScaffoldHasNoPlanReferences(t *testing.T) {
+	if strings.Contains(string(ConfigTemplate()), "PLAN") {
+		t.Error("scaffold references PLAN; the operator-facing file must not cite the design document")
+	}
+}
+
 func TestScaffoldFailsValidationUntilCompleted(t *testing.T) {
 	_, err := config.Parse(ConfigTemplate())
 	if err == nil {
