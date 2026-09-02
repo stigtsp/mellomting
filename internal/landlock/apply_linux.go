@@ -41,7 +41,7 @@ var abiPresets = map[int]ll.Config{
 func Apply(abi int, pol Policy) error {
 	cfg, ok := abiPresets[abi]
 	if !ok {
-		return fmt.Errorf("unsupported Landlock ABI %d (pinned library covers 1..%d; re-review the dependency per PLAN §54)", abi, MaxABI)
+		return fmt.Errorf("unsupported Landlock ABI %d (pinned library covers 1..%d)", abi, MaxABI)
 	}
 
 	// Minimal post-startup rights (PLAN §58). No execute rights are

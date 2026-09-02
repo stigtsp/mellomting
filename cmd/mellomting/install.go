@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"mellomting/internal/systemd"
 	"mellomting/internal/version"
@@ -118,45 +119,53 @@ func printInstallNote() {
 	fmt.Fprintln(os.Stdout, "             and write a scaffold config, pepper, and empty key file (each if absent).")
 }
 
-// printSystemdNextSteps reports what provisioning did (r records which
-// files it created and which pre-existed and were left in place) and the
-// steps that remain for the operator. The installer owns the mechanical
-// half — scaffold config, generated pepper, empty key store, unit,
-// logrotate — each create-only-if-absent at the owner/mode the daemon
-// needs (0640 root:mellomting, which a later root-run `key create` keeps
-// by design). The remaining steps are the ones only the operator can take:
-// `key create` requires a valid (filled-in) config, so the config edit
-// comes first.
-func printSystemdNextSteps(binaryPath string, r systemd.Report) {
-	fmt.Fprintln(os.Stdout, "mellomting: systemd provisioning complete")
-	fmt.Fprintf(os.Stdout, "  service account:  %s (created if absent)\n", systemd.DefaultServiceUser)
-	fmt.Fprintln(os.Stdout, "  log/state dirs:   "+systemd.LogDir+", "+systemd.StateDir+" (mellomting, 0750); the runtime dir "+systemd.RunDir+" is recreated by systemd on each start")
+// systemdNextSteps renders the post-install text: what provisioning did
+// (r records which files it created and which pre-existed and were left
+// in place) and the steps that remain for the operator. The installer
+// owns the mechanical half — scaffold config, generated pepper, empty
+// key store, unit, logrotate — each create-only-if-absent at the
+// owner/mode the daemon needs (0640 root:mellomting, which a later
+// root-run `key create` keeps by design). The remaining steps are the
+// ones only the operator can take: `key create` requires a valid
+// (filled-in) config, so the config edit comes first.
+func systemdNextSteps(binaryPath string, r systemd.Report) string {
+	var b strings.Builder
+	b.WriteString("mellomting: systemd provisioning complete\n")
+	fmt.Fprintf(&b, "  service account:  %s (created if absent)\n", systemd.DefaultServiceUser)
+	b.WriteString("  log/state dirs:   " + systemd.LogDir + ", " + systemd.StateDir + " (mellomting, 0750); the runtime dir " + systemd.RunDir + " is recreated by systemd on each start\n")
 	if r.ConfigCreated {
-		fmt.Fprintln(os.Stdout, "  config:           "+systemd.ConfigPath+" (scaffold created, 0640 root:mellomting — fill it in)")
+		b.WriteString("  config:           " + systemd.ConfigPath + " (scaffold created, 0640 root:mellomting — fill it in)\n")
 	} else {
-		fmt.Fprintln(os.Stdout, "  config:           "+systemd.ConfigPath+" (already present — left untouched)")
+		b.WriteString("  config:           " + systemd.ConfigPath + " (already present — left untouched)\n")
 	}
 	if r.PepperCreated {
-		fmt.Fprintln(os.Stdout, "  auth pepper:      "+systemd.PepperPath+" (generated, 0640 root:mellomting)")
+		b.WriteString("  auth pepper:      " + systemd.PepperPath + " (generated, 0640 root:mellomting)\n")
 	} else {
-		fmt.Fprintln(os.Stdout, "  auth pepper:      "+systemd.PepperPath+" (already present — left untouched)")
+		b.WriteString("  auth pepper:      " + systemd.PepperPath + " (already present — left untouched)\n")
 	}
 	if r.UsersCreated {
-		fmt.Fprintln(os.Stdout, "  users file:       "+systemd.UsersPath+" (created empty, 0640 root:mellomting)")
+		b.WriteString("  users file:       " + systemd.UsersPath + " (created empty, 0640 root:mellomting)\n")
 	} else {
-		fmt.Fprintln(os.Stdout, "  users file:       "+systemd.UsersPath+" (already present — left untouched)")
+		b.WriteString("  users file:       " + systemd.UsersPath + " (already present — left untouched)\n")
 	}
-	fmt.Fprintln(os.Stdout, "  unit:             "+systemd.UnitPath)
-	fmt.Fprintln(os.Stdout, "  logrotate:        "+systemd.LogrotatePath)
-	fmt.Fprintln(os.Stdout, "next steps (run as root, as you did for --install --systemd):")
+	b.WriteString("  unit:             " + systemd.UnitPath + "\n")
+	b.WriteString("  logrotate:        " + systemd.LogrotatePath + "\n")
+	b.WriteString("next steps (run as root, as you did for --install --systemd):\n")
 	if r.ConfigCreated {
-		fmt.Fprintln(os.Stdout, "  editor "+systemd.ConfigPath+"  # fill in the backends: and models: sections")
+		b.WriteString("  editor " + systemd.ConfigPath + "  # fill in the backends: and models: sections\n")
 	} else {
-		fmt.Fprintln(os.Stdout, "  editor "+systemd.ConfigPath)
+		b.WriteString("  editor " + systemd.ConfigPath + "\n")
 	}
-	fmt.Fprintln(os.Stdout, "  "+binaryPath+" key create --name <key-name> --models <model> -config "+systemd.ConfigPath)
-	fmt.Fprintln(os.Stdout, "  "+binaryPath+" config check -config "+systemd.ConfigPath)
-	fmt.Fprintln(os.Stdout, "  sudo systemctl enable --now "+systemd.UnitName)
+	b.WriteString("  " + binaryPath + " key create --name <key-name> --models <model> -config " + systemd.ConfigPath + "\n")
+	b.WriteString("  " + binaryPath + " config check -config " + systemd.ConfigPath + "\n")
+	b.WriteString("  sudo systemctl enable --now " + systemd.UnitName + "\n")
+	return b.String()
+}
+
+// printSystemdNextSteps prints the post-install text (systemdNextSteps):
+// what provisioning did and the operator's remaining steps.
+func printSystemdNextSteps(binaryPath string, r systemd.Report) {
+	fmt.Fprint(os.Stdout, systemdNextSteps(binaryPath, r))
 }
 
 // installBinary copies src to dest atomically: the copy is written to a

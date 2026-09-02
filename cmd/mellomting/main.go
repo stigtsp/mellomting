@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -504,7 +505,7 @@ func splitModels(s string) []string {
 	return out
 }
 
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: mellomting <command> [flags]
 
 commands:
@@ -515,7 +516,7 @@ commands:
   sandbox check                report Landlock capability and policy result
   key <subcommand>             offline API key management
 
-key subcommands (docs/PLAN.md §29):
+key subcommands:
   key create   --name NAME --models M[,M...] [--expires RFC3339]
                [--concurrent-requests N] [--requests-per-second R] [--burst B]
                create a key and print it once; without limits flags a
@@ -527,14 +528,15 @@ key subcommands (docs/PLAN.md §29):
   all key subcommands accept -config PATH (default: mellomting config path)
 
   serve -config PATH           run the proxy daemon (default: config path)
-  usage report                 report per-key token/request usage (docs/PLAN.md §44)
+  usage report                 report per-key token/request usage
   --install [--prefix DIR]     copy this binary to DIR/bin (default DIR:
-                               /usr/local): atomic replace, mode 0755,
-                               symlink destinations refused
+                                /usr/local): atomic replace, mode 0755,
+                                symlink destinations refused
   --install --systemd          also provision as a systemd service (Linux
-                               root): service user, config/log/state/run
-                               dirs, scaffold config.yaml if absent,
-                               hardened unit + logrotate, and a
-                               daemon-reload; secrets remain operator-authored
-`)
+                                root): service user, config/log/state/run
+                                dirs, scaffold config.yaml, generated
+                                pepper, and empty users.yaml (each if
+                                absent), hardened unit + logrotate, and
+                                a daemon-reload
+ `)
 }

@@ -1053,7 +1053,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "plaintext non-loopback TCP listener is active (PLAN §8.2)") {
+	if !strings.Contains(string(logData), "plaintext non-loopback TCP listener is active") {
 		t.Fatalf("§8.2 warning did not fire for localhost listener:\n%s", logData)
 	}
 }

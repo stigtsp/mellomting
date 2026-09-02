@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"mellomting/internal/systemd"
 	"mellomting/internal/version"
 )
 
@@ -286,5 +287,36 @@ func TestInstallCmdSystemdFailClosedBeforeWrite(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(prefix, "bin", version.Name)); !os.IsNotExist(err) {
 		t.Fatalf("binary was written before the systemd preflight failed (want not found): %v", err)
+	}
+}
+
+// TestSystemdNextSteps pins the operator-facing post-install text: no
+// PLAN references (the target host has no repository), no manual pepper
+// generation or ownership steps (the installer does them: generated
+// pepper, 0640 root:mellomting up front, and the key CLI preserves that
+// ownership/mode), and the four remaining steps in the order `key create`
+// imposes (a valid config must exist first).
+func TestSystemdNextSteps(t *testing.T) {
+	got := systemdNextSteps("/usr/local/bin/mellomting", systemd.Report{ConfigCreated: true, PepperCreated: true, UsersCreated: true})
+	if strings.Contains(got, "PLAN") {
+		t.Errorf("next steps reference PLAN:\n%s", got)
+	}
+	for _, banned := range []string{"head -c 64", "/dev/urandom", "chmod 640", "chown root:"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("next steps still mention the manual step %q (it is automated):\n%s", banned, got)
+		}
+	}
+	for _, want := range []string{"fill in the backends: and models: sections", "key create", "config check", "systemctl enable --now"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("next steps missing %q:\n%s", want, got)
+		}
+	}
+
+	gotPreexisting := systemdNextSteps("/usr/local/bin/mellomting", systemd.Report{})
+	if n := strings.Count(gotPreexisting, "left untouched"); n != 3 {
+		t.Errorf("pre-existing-install text has %d x %q, want 3 (config, pepper, users):\n%s", n, "left untouched", gotPreexisting)
+	}
+	if strings.Contains(gotPreexisting, "fill in the backends: and models: sections") {
+		t.Errorf("pre-existing-install text must not tell the operator to fill the scaffold in:\n%s", gotPreexisting)
 	}
 }

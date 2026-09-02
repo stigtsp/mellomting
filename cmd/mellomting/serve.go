@@ -108,11 +108,11 @@ func serveCmd(args []string) int {
 	if cfg.Server.TLS.Mode == "" && cfg.Server.Listen.Network == "tcp" &&
 		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
 		cfg.Server.AllowPlaintextNonLoopback {
-		log.Warn("plaintext non-loopback TCP listener is active (PLAN §8.2)")
+		log.Warn("plaintext non-loopback TCP listener is active")
 	}
 
 	if cfg.Security.BackendNetwork.Mode == "any" {
-		log.Warn("backend_network.mode is \"any\": outbound connections to inference backends are not restricted to loopback or allow-listed CIDRs (PLAN §16.3)")
+		log.Warn("backend_network.mode is \"any\": outbound connections to inference backends are not restricted to loopback or allow-listed CIDRs")
 	}
 
 	// Landlock confinement (PLAN §55-63, §95). This is the last step
@@ -222,10 +222,10 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 func rejectShelvedFeatures(cfg *config.Config) error {
 	var shelved []string
 	if len(cfg.Qualifiers) > 0 {
-		shelved = append(shelved, "qualifiers (PLAN §96)")
+		shelved = append(shelved, "qualifiers")
 	}
 	if cfg.Server.TLS.Mode == "acme" {
-		shelved = append(shelved, `tls.mode "acme" (PLAN §68)`)
+		shelved = append(shelved, `tls.mode "acme"`)
 	}
 	if len(shelved) > 0 {
 		return fmt.Errorf("%s are shelved for the first release: remove them from the configuration and retry",
@@ -383,10 +383,10 @@ func safeUnixListen(l config.Listen) (net.Listener, error) {
 	}
 	if st, err := os.Lstat(l.Address); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to unlink %q: it is a symlink (PLAN §8.3)", l.Address)
+			return nil, fmt.Errorf("refusing to unlink %q: it is a symlink", l.Address)
 		}
 		if st.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("refusing to unlink %q: it is not a unix socket (PLAN §8.3)", l.Address)
+			return nil, fmt.Errorf("refusing to unlink %q: it is not a unix socket", l.Address)
 		}
 		// Liveness check (T-L9): refuse to steal a socket a live
 		// listener is accepting on. Only a stale socket (nothing

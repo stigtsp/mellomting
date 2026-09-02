@@ -302,7 +302,7 @@ func validateServer(s *Server) []string {
 		if err != nil || host == "" {
 			errs = append(errs, fmt.Sprintf("server.listen.address: %q must be host:port for network tcp", s.Listen.Address))
 		} else if isNonLoopbackHost(host) && !tlsConfigured(s.TLS) && !s.AllowPlaintextNonLoopback {
-			errs = append(errs, "server: non-loopback TCP listener requires tls configuration or allow_plaintext_non_loopback: true (PLAN §8.2)")
+			errs = append(errs, "server: non-loopback TCP listener requires tls configuration or allow_plaintext_non_loopback: true")
 		}
 	case "unix":
 		if s.Listen.Address == "" {
@@ -360,11 +360,11 @@ func validateServer(s *Server) []string {
 	case "":
 	case "files":
 		if s.TLS.CertFile == "" || s.TLS.KeyFile == "" {
-			errs = append(errs, "server.tls: cert_file and key_file are required when mode is files (PLAN §67)")
+			errs = append(errs, "server.tls: cert_file and key_file are required when mode is files")
 		}
 	case "acme":
 		if s.TLS.Hostname == "" || s.TLS.Email == "" {
-			errs = append(errs, "server.tls: hostname and email are required when mode is acme (PLAN §68)")
+			errs = append(errs, "server.tls: hostname and email are required when mode is acme")
 		}
 	default:
 		errs = append(errs, fmt.Sprintf("server.tls.mode: %q must be \"files\" or \"acme\"", s.TLS.Mode))
@@ -533,7 +533,7 @@ func validateResponses(r *Responses) []string {
 func validateRetry(r *Retry) []string {
 	var errs []string
 	if r.MaxAttempts < 1 || r.MaxAttempts > defaultRetryMaxAttemptsMax {
-		errs = append(errs, fmt.Sprintf("retry.max_attempts: %d out of range 1..%d (PLAN §23)", r.MaxAttempts, defaultRetryMaxAttemptsMax))
+		errs = append(errs, fmt.Sprintf("retry.max_attempts: %d out of range 1..%d", r.MaxAttempts, defaultRetryMaxAttemptsMax))
 	}
 	if r.InitialBackoff.Duration() <= 0 {
 		errs = append(errs, "retry.initial_backoff: must be > 0")
@@ -577,13 +577,13 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 			errs = append(errs, fmt.Sprintf("%s.base_url: userinfo is not supported", prefix))
 		}
 		if u.RawQuery != "" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: query strings are not supported (PLAN §15.1)", prefix))
+			errs = append(errs, fmt.Sprintf("%s.base_url: query strings are not supported", prefix))
 		}
 		if u.Fragment != "" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: fragments are not supported (PLAN §15.1)", prefix))
+			errs = append(errs, fmt.Sprintf("%s.base_url: fragments are not supported", prefix))
 		}
 		if p := u.Path; p != "" && p != "/" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: path %q makes endpoint construction ambiguous (PLAN §15.1)", prefix, p))
+			errs = append(errs, fmt.Sprintf("%s.base_url: path %q makes endpoint construction ambiguous", prefix, p))
 		}
 
 		host, _, err := net.SplitHostPort(u.Host)
@@ -591,7 +591,7 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 			errs = append(errs, fmt.Sprintf("%s.base_url: host %q is malformed or missing a port", prefix, u.Host))
 		} else {
 			if bn.Mode == "loopback-only" && !isLoopbackHost(host) {
-				errs = append(errs, fmt.Sprintf("%s.base_url: %q is not a loopback IP literal; loopback-only mode requires a literal loopback destination (PLAN §16.1)", prefix, host))
+				errs = append(errs, fmt.Sprintf("%s.base_url: %q is not a loopback IP literal; loopback-only mode requires a literal loopback destination", prefix, host))
 			}
 			if bn.Mode == "allowed-cidrs" {
 				if addr, err := netip.ParseAddr(host); err == nil && !inAnyPrefix(addr, allowed) {
@@ -637,7 +637,7 @@ func validateQualifiers(qualifiers map[string]Qualifier, backends map[string]Bac
 		if q.Backend == "" {
 			errs = append(errs, prefix+".backend: required")
 		} else if _, ok := backends[q.Backend]; !ok {
-			errs = append(errs, fmt.Sprintf("%s.backend: unknown backend %q (PLAN §28)", prefix, q.Backend))
+			errs = append(errs, fmt.Sprintf("%s.backend: unknown backend %q", prefix, q.Backend))
 		}
 		if q.Model == "" {
 			errs = append(errs, prefix+".model: required")
@@ -651,7 +651,7 @@ func validateQualifiers(qualifiers map[string]Qualifier, backends map[string]Bac
 			errs = append(errs, fmt.Sprintf("%s.failure_policy: %q must be allow, audit, or block", prefix, q.FailurePolicy))
 		}
 		if q.FailurePolicy == "" {
-			errs = append(errs, prefix+".failure_policy: required, never implicit (PLAN §46)")
+			errs = append(errs, prefix+".failure_policy: required, never implicit")
 		}
 		if err := qualifierMode(q.Input.Mode, prefix+".input.mode"); err != "" {
 			errs = append(errs, err)
@@ -668,7 +668,7 @@ func validateQualifiers(qualifiers map[string]Qualifier, backends map[string]Bac
 
 		if b, ok := backends[q.Backend]; ok {
 			if host := urlHost(b.BaseURL); host != "" && isNonLoopbackHost(host) && !q.AllowRemoteContent {
-				errs = append(errs, fmt.Sprintf("%s: backend %q is not loopback; allow_remote_content: true is required (PLAN §47)", prefix, q.Backend))
+				errs = append(errs, fmt.Sprintf("%s: backend %q is not loopback; allow_remote_content: true is required", prefix, q.Backend))
 			}
 		}
 	}
@@ -731,7 +731,7 @@ func validateModels(models map[string]Model, backends map[string]Backend, qualif
 				continue
 			}
 			if _, ok := backends[ref.Name]; !ok {
-				errs = append(errs, fmt.Sprintf("%s.backends: unknown backend %q (PLAN §28)", prefix, ref.Name))
+				errs = append(errs, fmt.Sprintf("%s.backends: unknown backend %q", prefix, ref.Name))
 			}
 			if seen[ref.Name] {
 				errs = append(errs, fmt.Sprintf("%s.backends: duplicate backend %q", prefix, ref.Name))
@@ -744,7 +744,7 @@ func validateModels(models map[string]Model, backends map[string]Backend, qualif
 
 		if m.Qualifier != "" {
 			if _, ok := qualifiers[m.Qualifier]; !ok {
-				errs = append(errs, fmt.Sprintf("%s.qualifier: unknown qualifier %q (PLAN §28)", prefix, m.Qualifier))
+				errs = append(errs, fmt.Sprintf("%s.qualifier: unknown qualifier %q", prefix, m.Qualifier))
 			}
 		}
 
