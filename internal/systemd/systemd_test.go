@@ -449,3 +449,234 @@ func TestWriteFileAtomic(t *testing.T) {
 		}
 	})
 }
+
+// authFixture builds a temp directory with a config (and optional auth
+// paths) and returns the config/users/pepper paths and the effective gid.
+func authFixture(t *testing.T, configBody string) (cfgPath, usersPath, pepperPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath = filepath.Join(dir, "config.yaml")
+	if configBody != "" {
+		if err := os.WriteFile(cfgPath, []byte(configBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usersPath = filepath.Join(dir, "users.yaml")
+	pepperPath = filepath.Join(dir, "auth.pepper")
+	return cfgPath, usersPath, pepperPath
+}
+
+// TestEnsureAuthArtifactsFreshConfig: a freshly written scaffold always
+// gets the fixed default pepper and empty users file.
+func TestEnsureAuthArtifactsFreshConfig(t *testing.T) {
+	cfg, users, pepper := authFixture(t, "")
+	uid, gid := os.Getuid(), os.Getgid()
+	pc, uc, err := ensureAuthArtifacts(true, cfg, users, pepper, uid, gid)
+	if err != nil {
+		t.Fatalf("ensureAuthArtifacts: %v", err)
+	}
+	if !pc || !uc {
+		t.Fatalf("fresh config created pepper:%v users:%v (want both)", pc, uc)
+	}
+	for _, p := range []string{users, pepper} {
+		if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o640 {
+			t.Errorf("%s state = %v err:%v (want a 0640 file)", p, st, err)
+		}
+	}
+}
+
+// TestEnsureAuthArtifactsRetryPartialFresh: an existing config that
+// explicitly names the fixed default auth paths creates only the missing
+// artifact on a retry (simulating a partial fresh install that crashed
+// between pepper and users).
+func TestEnsureAuthArtifactsRetryPartialFresh(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users.yaml")
+	pepper := filepath.Join(dir, "auth.pepper")
+	cfg := filepath.Join(dir, "config.yaml")
+	body := "version: 1\nauth:\n  users_file: " + users + "\n  pepper_file: " + pepper + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a partial install: the pepper already exists, the users file is missing.
+	if err := os.WriteFile(pepper, []byte("a pre-existing pepper line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pc, uc, err := ensureAuthArtifacts(false, cfg, users, pepper, uid, gid)
+	if err != nil {
+		t.Fatalf("ensureAuthArtifacts: %v", err)
+	}
+	if pc {
+		t.Errorf("existing pepper was recreated (pepperCreated=%v)", pc)
+	}
+	if !uc {
+		t.Fatalf("missing users artifact named at its default path was not created")
+	}
+	if _, err := os.Stat(users); err != nil {
+		t.Fatalf("users file missing after retry: %v", err)
+	}
+	if b, _ := os.ReadFile(pepper); string(b) != "a pre-existing pepper line\n" {
+		t.Errorf("existing pepper bytes were rewritten: %q", b)
+	}
+}
+
+// TestEnsureAuthArtifactsCopiedScaffold: a copied or older scaffold that
+// names the exact default auth paths follows the same path-based rule. The
+// shipped scaffold names the real /etc defaults (asserted here), and a
+// scaffold-like config naming the provisioning default paths creates the
+// missing artifacts.
+func TestEnsureAuthArtifactsCopiedScaffold(t *testing.T) {
+	// The shipped scaffold explicitly names the real fixed default paths,
+	// so an operator who copies it before running install follows the
+	// path-based rule and gets the missing artifacts.
+	u, pep, err := referencedAuthPaths(filepath.Join("..", "..", "deploy", "mellomting-config.yaml.example"))
+	if err != nil {
+		t.Fatalf("parse shipped scaffold: %v", err)
+	}
+	if u != "/etc/mellomting/users.yaml" || pep != "/etc/mellomting/auth.pepper" {
+		t.Fatalf("shipped scaffold references %q, %q (want the fixed defaults)", u, pep)
+	}
+
+	uid, gid := os.Getuid(), os.Getgid()
+	cfg, users, pepper := authFixture(t, "")
+	// Write a scaffold-style config naming the same paths provisioning
+	// treats as its defaults, then confirm the missing artifacts appear.
+	body := "version: 1\nauth:\n  users_file: " + users + "\n  pepper_file: " + pepper + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pc, uc, err := ensureAuthArtifacts(false, cfg, users, pepper, uid, gid)
+	if err != nil {
+		t.Fatalf("ensureAuthArtifacts: %v", err)
+	}
+	if !pc || !uc {
+		t.Fatalf("scaffold-like config created pepper:%v users:%v (want both missing artifacts)", pc, uc)
+	}
+}
+
+// TestEnsureAuthArtifactsCustomConfigCreatesNothing: a customized or
+// unrelated existing config that does not name the fixed default paths
+// creates no auth artifact.
+func TestEnsureAuthArtifactsCustomConfigCreatesNothing(t *testing.T) {
+	cases := []string{
+		"version: 1\nauth:\n  users_file: /custom/users.yaml\n  pepper_file: /custom/auth.pepper\n",
+		"version: 1\nserver:\n  listen:\n    network: unix\n    address: /run/mellomting/mellomting.sock\n",
+	}
+	uid, gid := os.Getuid(), os.Getgid()
+	for _, body := range cases {
+		cfg, users, pepper := authFixture(t, body)
+		pc, uc, err := ensureAuthArtifacts(false, cfg, users, pepper, uid, gid)
+		if err != nil {
+			t.Fatalf("ensureAuthArtifacts: %v", err)
+		}
+		if pc || uc {
+			t.Fatalf("custom config created pepper:%v users:%v (want neither)", pc, uc)
+		}
+		if _, err := os.Stat(users); !os.IsNotExist(err) {
+			t.Errorf("users file should not exist, stat err=%v", err)
+		}
+		if _, err := os.Stat(pepper); !os.IsNotExist(err) {
+			t.Errorf("pepper file should not exist, stat err=%v", err)
+		}
+	}
+}
+
+// TestEnsureAuthArtifactsUnparseableConfigCreatesNothing: a config that
+// fails to parse creates no auth files (D15).
+func TestEnsureAuthArtifactsUnparseableConfigCreatesNothing(t *testing.T) {
+	cfg, users, pepper := authFixture(t, "not: [valid: yaml")
+	uid, gid := os.Getuid(), os.Getgid()
+	pc, uc, err := ensureAuthArtifacts(false, cfg, users, pepper, uid, gid)
+	if err != nil {
+		t.Fatalf("ensureAuthArtifacts: %v", err)
+	}
+	if pc || uc {
+		t.Fatalf("unparseable config created pepper:%v users:%v (want neither)", pc, uc)
+	}
+}
+
+// TestEnsureAuthArtifactsSymlinkConfigCreatesNothing: a config that is a
+// symlink (or otherwise non-regular) is refused and creates nothing.
+func TestEnsureAuthArtifactsSymlinkConfigCreatesNothing(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.yaml")
+	if err := os.WriteFile(real, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.Symlink(real, cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	users := filepath.Join(dir, "users.yaml")
+	pepper := filepath.Join(dir, "auth.pepper")
+	pc, uc, err := ensureAuthArtifacts(false, cfgPath, users, pepper, uid, gid)
+	if err != nil {
+		t.Fatalf("ensureAuthArtifacts: %v", err)
+	}
+	if pc || uc {
+		t.Fatalf("symlink config created pepper:%v users:%v (want neither)", pc, uc)
+	}
+	if _, err := os.Stat(users); !os.IsNotExist(err) {
+		t.Errorf("users file should not exist, stat err=%v", err)
+	}
+	if _, err := os.Stat(pepper); !os.IsNotExist(err) {
+		t.Errorf("pepper file should not exist, stat err=%v", err)
+	}
+}
+
+// TestReferencedAuthPaths covers the tolerant source parse that finds the
+// auth files an existing config names.
+func TestReferencedAuthPaths(t *testing.T) {
+	t.Run("names both defaults", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		body := "version: 1\nauth:\n  users_file: /etc/mellomting/users.yaml\n  pepper_file: /etc/mellomting/auth.pepper\n"
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		u, pep, err := referencedAuthPaths(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u != "/etc/mellomting/users.yaml" || pep != "/etc/mellomting/auth.pepper" {
+			t.Fatalf("referenced paths = %q, %q", u, pep)
+		}
+	})
+	t.Run("no auth section", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("version: 1\nserver: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		u, pep, err := referencedAuthPaths(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u != "" || pep != "" {
+			t.Fatalf("referenced paths = %q, %q (want empty)", u, pep)
+		}
+	})
+	t.Run("unparseable", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("not: [valid"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := referencedAuthPaths(p); err == nil {
+			t.Fatal("unparseable config returned no error")
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "real")
+		if err := os.WriteFile(real, []byte("version: 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "config.yaml")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := referencedAuthPaths(link); err == nil {
+			t.Fatal("symlink config returned no error")
+		}
+	})
+}

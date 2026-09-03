@@ -282,11 +282,16 @@ are in `docs/COMPATIBILITY.md`.
   left and the daemon stays fail-closed until it is filled in; an existing
   `config.yaml` is never touched — installs the hardened unit at
   `/etc/systemd/system/mellomting.service` and the logrotate policy at
-  `/etc/logrotate.d/mellomting`, then runs `systemctl daemon-reload`. It is
-  fail-closed: it refuses to run on non-Linux, as non-root, or when systemd
-  is not the active init, and never creates secrets — the pepper and the
-  users file remain operator-authored steps printed after provisioning
-  (including `chmod 640` so the daemon user can read them). The unit's
+  `/etc/logrotate.d/mellomting`, then runs `systemctl daemon-reload`. A
+  freshly written scaffold also gets the fixed default HMAC pepper
+  (`/etc/mellomting/auth.pepper`) and an empty users file
+  (`/etc/mellomting/users.yaml`), both 0640 root:mellomting, so `key create`
+  works out of the box. For an **existing** config the installer is
+  operator-managed: it creates a missing fixed default auth artifact only
+  when that config explicitly names its exact default path, and never
+  creates custom auth files or rewrites existing ones. It is fail-closed:
+  it refuses to run on non-Linux, as non-root, or when systemd is not the
+  active init. The unit's
   `ExecStart` is rendered from the installed binary path (`--prefix`
   aware); sync tests prove the embedded assets match `deploy/`. See also
   `HARDENING.md`.

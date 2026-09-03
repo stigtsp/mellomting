@@ -200,8 +200,8 @@ func TestPerformInstallFresh(t *testing.T) {
 	if !strings.Contains(out, "installed "+version.Version+" at "+dest) {
 		t.Fatalf("stdout = %q (want installed %s at %s)", out, version.Version, dest)
 	}
-	if !strings.Contains(out, "note: the daemon creates neither its config nor its log/runtime directories") {
-		t.Fatalf("stdout = %q (want the config/log/runtime directory note)", out)
+	if strings.Contains(out, "log/runtime directories") {
+		t.Fatalf("stdout = %q (the install must not print the verbose directory note)", out)
 	}
 	if st, err := os.Stat(dest); err != nil || st.Mode().Perm() != 0o755 {
 		t.Fatalf("installed file state = st:%v err:%v (want a 0755 file)", st, err)
@@ -290,33 +290,37 @@ func TestInstallCmdSystemdFailClosedBeforeWrite(t *testing.T) {
 	}
 }
 
-// TestSystemdNextSteps pins the operator-facing post-install text: no
-// PLAN references (the target host has no repository), no manual pepper
-// generation or ownership steps (the installer does them: generated
-// pepper, 0640 root:mellomting up front, and the key CLI preserves that
-// ownership/mode), and the four remaining steps in the order `key create`
-// imposes (a valid config must exist first).
+// TestSystemdNextSteps pins the concise D16 operator-facing post-install
+// text: one completion line, at most three next actions, no PLAN references
+// (the target host has no repository), no manual pepper generation or
+// ownership steps (the installer does them), and no verbose artifact/
+// permission inventory.
 func TestSystemdNextSteps(t *testing.T) {
-	got := systemdNextSteps("/usr/local/bin/mellomting", systemd.Report{ConfigCreated: true, PepperCreated: true, UsersCreated: true})
-	if strings.Contains(got, "PLAN") {
-		t.Errorf("next steps reference PLAN:\n%s", got)
-	}
-	for _, banned := range []string{"head -c 64", "/dev/urandom", "chmod 640", "chown root:"} {
-		if strings.Contains(got, banned) {
-			t.Errorf("next steps still mention the manual step %q (it is automated):\n%s", banned, got)
+	for _, r := range []systemd.Report{
+		{ConfigCreated: true, PepperCreated: true, UsersCreated: true},
+		{},
+	} {
+		got := systemdNextSteps("/usr/local/bin/mellomting", r)
+		if strings.Contains(got, "PLAN") {
+			t.Errorf("next steps reference PLAN:\n%s", got)
 		}
-	}
-	for _, want := range []string{"fill in the backends: and models: sections", "key create", "config check", "systemctl enable --now"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("next steps missing %q:\n%s", want, got)
+		for _, banned := range []string{
+			"head -c 64", "/dev/urandom", "chmod 640", "chown root:",
+			"left untouched", "service account", "log/state dirs", "0750",
+		} {
+			if strings.Contains(got, banned) {
+				t.Errorf("next steps contain the banned detail %q:\n%s", banned, got)
+			}
 		}
-	}
-
-	gotPreexisting := systemdNextSteps("/usr/local/bin/mellomting", systemd.Report{})
-	if n := strings.Count(gotPreexisting, "left untouched"); n != 3 {
-		t.Errorf("pre-existing-install text has %d x %q, want 3 (config, pepper, users):\n%s", n, "left untouched", gotPreexisting)
-	}
-	if strings.Contains(gotPreexisting, "fill in the backends: and models: sections") {
-		t.Errorf("pre-existing-install text must not tell the operator to fill the scaffold in:\n%s", gotPreexisting)
+		for _, want := range []string{
+			"Mellomting installed.",
+			"editor /etc/mellomting/config.yaml",
+			"key create --name production",
+			"systemctl enable --now " + systemd.UnitName,
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("next steps missing %q:\n%s", want, got)
+			}
+		}
 	}
 }

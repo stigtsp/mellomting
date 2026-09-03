@@ -1,10 +1,12 @@
 package systemd
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -13,6 +15,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Host paths the daemon and its provisioning use (PLAN §26-27, §64, §76).
@@ -44,6 +48,12 @@ const UnitName = "mellomting"
 // of at least 16 bytes loads (auth.LoadPepper); a pre-existing file of any
 // format is left in place and loads unchanged.
 const pepperBytes = 64
+
+// configMaxBytes bounds the size of an existing config read by the D15
+// auth-path source parse (referencedAuthPaths). It mirrors the config
+// loader's own size cap so a hostile or accidental huge file cannot make
+// provisioning allocate unboundedly.
+const configMaxBytes = 1 << 20
 
 // usersStub is the empty key store the installer writes when no users file
 // exists. It is the minimal valid on-disk record (version 1, no keys) — an
@@ -92,9 +102,10 @@ type Report struct {
 //  3. create the operational directories with strict owner/mode;
 //  4. write the commented scaffold into the config directory when no
 //     config file exists (never touching one that does);
-//  5. generate the HMAC pepper when no pepper file exists and write the
-//     empty key-store stub when no users file exists, both 0640
-//     root:mellomting up front;
+//  5. create auth artifacts per D15: a freshly written scaffold gets the
+//     fixed default pepper and empty users file; a pre-existing config is
+//     operator-managed and only a missing artifact it explicitly names at
+//     its exact default path is created;
 //  6. install the unit and logrotate atomically;
 //  7. systemctl daemon-reload so the unit is picked up.
 //
@@ -144,17 +155,11 @@ func (p *Provision) Run() (r Report, err error) {
 	if err != nil {
 		return Report{}, err
 	}
-	// The pepper and the empty key store before the unit: `key create`
-	// needs both a pre-existing pepper and a users file, and the daemon
-	// reads the users file it finds. The 0640 root:mellomting ownership
-	// is set up front so a later root-run `key create` cannot leave a
-	// 0600 root:root file the daemon can no longer read (its write path
-	// clamps the mode and keeps the owner).
-	r.PepperCreated, err = ensurePepper(PepperPath, 0, gid)
-	if err != nil {
-		return Report{}, err
-	}
-	r.UsersCreated, err = ensureUsers(UsersPath, 0, gid)
+	// Auth artifacts follow D15: a freshly written scaffold gets the
+	// fixed default pepper and empty users file; a pre-existing config is
+	// operator-managed and we create a missing fixed default artifact
+	// only when that config explicitly names its exact default path.
+	r.PepperCreated, r.UsersCreated, err = ensureAuthArtifacts(r.ConfigCreated, ConfigPath, UsersPath, PepperPath, 0, gid)
 	if err != nil {
 		return Report{}, err
 	}
@@ -257,6 +262,85 @@ func ensureUsers(path string, uid, gid int) (bool, error) {
 		return false, fmt.Errorf("chown %q: %w", path, err)
 	}
 	return true, nil
+}
+
+// ensureAuthArtifacts applies the D15 auth-artifact contract. A freshly
+// written scaffold (configCreated) gets the fixed default pepper and empty
+// users file, both 0640 root:mellomting, so `key create` works out of the
+// box. A pre-existing config is operator-managed: we create a missing
+// fixed default artifact only when that config explicitly names its exact
+// default path; a parse failure creates no auth files. It reports which of
+// the two artifacts it created. Paths are parameters so the contract is
+// testable without touching the real /etc/mellomting.
+func ensureAuthArtifacts(configCreated bool, configPath, usersPath, pepperPath string, uid, gid int) (pepperCreated, usersCreated bool, err error) {
+	if configCreated {
+		pepperCreated, err = ensurePepper(pepperPath, uid, gid)
+		if err != nil {
+			return false, false, err
+		}
+		usersCreated, err = ensureUsers(usersPath, uid, gid)
+		if err != nil {
+			return false, false, err
+		}
+		return pepperCreated, usersCreated, nil
+	}
+
+	usersRef, pepperRef, err := referencedAuthPaths(configPath)
+	if err != nil {
+		// D15: a parse failure creates no auth files.
+		return false, false, nil
+	}
+	if usersRef == usersPath {
+		usersCreated, err = ensureUsers(usersPath, uid, gid)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	if pepperRef == pepperPath {
+		pepperCreated, err = ensurePepper(pepperPath, uid, gid)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	return pepperCreated, usersCreated, nil
+}
+
+// referencedAuthPaths determines the auth files an existing config names
+// with a bounded, no-side-effect YAML source parse that does not require
+// the config to pass full validation (D15). The deliberately incomplete
+// scaffold and partially edited configs must not prevent the installer from
+// recognizing the fixed default paths they name. On any read or decode
+// failure it returns an error; the caller creates no auth files.
+func referencedAuthPaths(path string) (usersFile, pepperFile string, err error) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return "", "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", "", fmt.Errorf("%q is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, configMaxBytes+1))
+	if err != nil {
+		return "", "", err
+	}
+	if len(data) > configMaxBytes {
+		return "", "", fmt.Errorf("%q exceeds maximum size of %d bytes", path, configMaxBytes)
+	}
+	var doc struct {
+		Auth struct {
+			UsersFile  string `yaml:"users_file"`
+			PepperFile string `yaml:"pepper_file"`
+		} `yaml:"auth"`
+	}
+	if err := yaml.NewDecoder(bytes.NewReader(data)).Decode(&doc); err != nil {
+		return "", "", err
+	}
+	return doc.Auth.UsersFile, doc.Auth.PepperFile, nil
 }
 
 // resolveBinary returns the first existing regular file among a fixed

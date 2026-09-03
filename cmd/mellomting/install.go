@@ -98,67 +98,20 @@ func performInstall(src, prefix string) (dest string, code int) {
 		return dest, 1
 	}
 	fmt.Fprintf(os.Stdout, "mellomting: installed %s at %s\n", version.Version, dest)
-	printInstallNote()
 	return dest, 0
 }
 
-// printInstallNote reminds the operator that the daemon creates neither
-// its configuration directory nor its log/runtime directories, so the
-// destination host must provide them. systemd's deploy/mellomting.service
-// auto-creates them (RuntimeDirectory/StateDirectory/LogsDirectory); the
-// install command's --systemd flag provisions them and the service on
-// Linux, and — when absent — writes a commented scaffold config, a
-// generated pepper, and an empty users file into the config directory.
-// Plain --install creates nothing beyond the binary.
-func printInstallNote() {
-	fmt.Fprintln(os.Stdout, "mellomting: note: the daemon creates neither its config nor its log/runtime directories")
-	fmt.Fprintln(os.Stdout, "             config /etc/mellomting/ (config.yaml, users.yaml, auth.pepper),")
-	fmt.Fprintln(os.Stdout, "             log /var/log/mellomting/, socket /run/mellomting/.")
-	fmt.Fprintln(os.Stdout, "             deploy/mellomting.service (systemd) creates them automatically;")
-	fmt.Fprintln(os.Stdout, "             run `mellomting --install --systemd` (Linux root) to provision them")
-	fmt.Fprintln(os.Stdout, "             and write a scaffold config, pepper, and empty key file (each if absent).")
-}
-
-// systemdNextSteps renders the post-install text: what provisioning did
-// (r records which files it created and which pre-existed and were left
-// in place) and the steps that remain for the operator. The installer
-// owns the mechanical half — scaffold config, generated pepper, empty
-// key store, unit, logrotate — each create-only-if-absent at the
-// owner/mode the daemon needs (0640 root:mellomting, which a later
-// root-run `key create` keeps by design). The remaining steps are the
-// ones only the operator can take: `key create` requires a valid
-// (filled-in) config, so the config edit comes first.
+// systemdNextSteps renders the concise post-install text (D16): one
+// completion line and the three remaining operator actions in execution
+// order. It deliberately omits the artifact/permission inventory — those
+// details live in documentation, not the ordinary success path.
 func systemdNextSteps(binaryPath string, r systemd.Report) string {
 	var b strings.Builder
-	b.WriteString("mellomting: systemd provisioning complete\n")
-	fmt.Fprintf(&b, "  service account:  %s (created if absent)\n", systemd.DefaultServiceUser)
-	b.WriteString("  log/state dirs:   " + systemd.LogDir + ", " + systemd.StateDir + " (mellomting, 0750); the runtime dir " + systemd.RunDir + " is recreated by systemd on each start\n")
-	if r.ConfigCreated {
-		b.WriteString("  config:           " + systemd.ConfigPath + " (scaffold created, 0640 root:mellomting — fill it in)\n")
-	} else {
-		b.WriteString("  config:           " + systemd.ConfigPath + " (already present — left untouched)\n")
-	}
-	if r.PepperCreated {
-		b.WriteString("  auth pepper:      " + systemd.PepperPath + " (generated, 0640 root:mellomting)\n")
-	} else {
-		b.WriteString("  auth pepper:      " + systemd.PepperPath + " (already present — left untouched)\n")
-	}
-	if r.UsersCreated {
-		b.WriteString("  users file:       " + systemd.UsersPath + " (created empty, 0640 root:mellomting)\n")
-	} else {
-		b.WriteString("  users file:       " + systemd.UsersPath + " (already present — left untouched)\n")
-	}
-	b.WriteString("  unit:             " + systemd.UnitPath + "\n")
-	b.WriteString("  logrotate:        " + systemd.LogrotatePath + "\n")
-	b.WriteString("next steps (run as root, as you did for --install --systemd):\n")
-	if r.ConfigCreated {
-		b.WriteString("  editor " + systemd.ConfigPath + "  # fill in the backends: and models: sections\n")
-	} else {
-		b.WriteString("  editor " + systemd.ConfigPath + "\n")
-	}
-	b.WriteString("  " + binaryPath + " key create --name <key-name> --models <model> -config " + systemd.ConfigPath + "\n")
-	b.WriteString("  " + binaryPath + " config check -config " + systemd.ConfigPath + "\n")
-	b.WriteString("  sudo systemctl enable --now " + systemd.UnitName + "\n")
+	b.WriteString("Mellomting installed.\n\n")
+	b.WriteString("Next:\n")
+	fmt.Fprintf(&b, "  1. Run: sudo editor %s\n", systemd.ConfigPath)
+	fmt.Fprintf(&b, "  2. Run: sudo %s key create --name production\n", binaryPath)
+	fmt.Fprintf(&b, "  3. Run: sudo systemctl enable --now %s\n", systemd.UnitName)
 	return b.String()
 }
 
