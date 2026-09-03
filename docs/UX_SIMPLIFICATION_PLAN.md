@@ -1254,7 +1254,7 @@ uncommitted implementation changes or a failing required check.
 | B3 | bounded pure `/v1/models` parser | complete |
 | B4 | policy-enforced discovery HTTP client | complete |
 | B5 | deterministic multi-server aggregation | complete |
-| B6 | init flags, listener parsing, and preflight | pending |
+| B6 | init flags, listener parsing, and preflight | complete |
 | B7 | in-memory config/auth rendering and validation | pending |
 | B8 | create-only init filesystem commit | pending |
 | B9 | end-to-end init command and documentation | pending |
