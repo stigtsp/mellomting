@@ -27,6 +27,8 @@ func main() {
 		usage(os.Stdout)
 	case "--install", "-install":
 		os.Exit(installCmd(os.Args[2:]))
+	case "init":
+		os.Exit(initCmd(os.Args[2:]))
 	case "config":
 		os.Exit(configCmd(os.Args[2:]))
 	case "sandbox":
@@ -529,6 +531,8 @@ func usage(w io.Writer) {
 commands:
   version                      print version information
   help                         print this help
+  init --server URL|NAME=URL   prepare local config and auth files from
+                               explicitly supplied inference servers
   config check                 validate configuration (exit 0 when valid)
   config show-effective        print the effective configuration with defaults
   sandbox check                report Landlock capability and policy result
