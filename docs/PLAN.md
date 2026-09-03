@@ -327,21 +327,23 @@ Executable name:
 mellomting
 ```
 
-Initial commands:
+Command surface:
 
 ```text
+mellomting init
 mellomting serve
-mellomting config check
-mellomting config show-effective
-mellomting key create
-mellomting key list
-mellomting key disable
-mellomting key enable
-mellomting key revoke
-mellomting usage
+mellomting install
+mellomting key create|list|enable|disable|revoke
+mellomting config check|show-effective
+mellomting usage report
 mellomting sandbox check
 mellomting version
 ```
+
+`mellomting install [--systemd]` is the sole installation command shape; a
+top-level `--install` alias MUST NOT exist. `mellomting init` is the
+initialization shortcut for a local deployment and requires at least one
+`--server`. Every command MUST support focused `--help`.
 
 The daemon should be a single process.
 
@@ -645,20 +647,28 @@ A request that cannot acquire memory budget quickly should receive a bounded ove
 
 # 13. Model aliases
 
+The operator-facing configuration is server-oriented. Operators name the
+inference servers and the public models routed to them; Mellomting normalizes
+this into the internal backend/model routing representation. Synthetic
+internal backend names never appear in operator-facing configuration.
+
 Example:
 
 ```yaml
+servers:
+  local-a:
+    url: http://127.0.0.1:8000
+  local-b:
+    url: http://127.0.0.1:8010
+
 models:
   qwen-coder:
     type: generation
     strategy: least-inflight
+    servers: [local-a, local-b]
 
     policy:
       max_output_tokens: 32768
-
-    backends:
-      - qwen-a
-      - qwen-b
 ```
 
 Clients see only:
@@ -673,7 +683,9 @@ Backend A may require:
 Qwen/Qwen3-Coder-...
 ```
 
-Backend B may use another served name.
+Backend B may use another served name. The public model map key is the public
+name; `upstream_model` selects the ID sent upstream (defaults to the public
+map key).
 
 Mellomting rewrites the outbound `model` field.
 
@@ -687,6 +699,9 @@ backend/model
 ```
 
 syntax that bypasses ACLs.
+
+The development-era `backends:` source form is not accepted; it is rejected as
+an unknown field rather than migrated or accepted in parallel.
 
 ---
 
@@ -726,32 +741,36 @@ Do not expose backend URLs or backend implementation names.
 
 # 15. Backend configuration
 
-A backend is an OpenAI-compatible inference server.
+A backend is an OpenAI-compatible inference server. The operator-facing source
+configuration names servers and public models; the loader normalizes the
+server-oriented form into the internal backend/model representation before
+strict validation. The source schema is the sole accepted schema.
 
-Example:
+Server fields:
 
 ```yaml
-backends:
-  qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder-Next
-
-    connect_timeout: 3s
-    header_timeout: 30s
-    request_timeout: 20m
-    stream_idle_timeout: 120s
-
-    max_concurrency: 4
-    queue_size: 8
-    queue_timeout: 5s
-
-  qwen-b:
-    base_url: http://127.0.0.1:8002
-    upstream_model: Qwen/Qwen3-Coder-Next
-
-    max_concurrency: 4
-    queue_size: 8
+servers:
+  NAME:
+    url: URL            # literal IPv4/IPv6 with explicit port
+    api_key_file: PATH  # optional; not accepted by init
 ```
+
+Model fields:
+
+```yaml
+models:
+  PUBLIC_NAME:
+    type: generation         # optional, default generation
+    servers: [SERVER_NAME]
+    upstream_model: ID       # optional, default public map key
+    strategy: least-inflight # optional; single when one server,
+                             # least-inflight when several
+    policy:                  # optional
+      max_output_tokens: 32768
+```
+
+Internal backend names are generated deterministically by D12 and are never
+exposed to operators.
 
 ## 15.1 Backend URL validation
 
@@ -764,7 +783,9 @@ Reject:
 - userinfo unless explicitly supported;
 - unexpected query strings;
 - malformed ports;
-- paths that make endpoint construction ambiguous.
+- paths that make endpoint construction ambiguous;
+- hostnames and empty hosts for discovery servers (literal IPv4 or IPv6 with
+  explicit port required, D6/D9).
 
 In local-only mode, require literal loopback destinations.
 
@@ -830,9 +851,9 @@ Local vLLM backends may not need credentials.
 When credentials are required, support secret files rather than embedding secrets directly in YAML:
 
 ```yaml
-backends:
+servers:
   remote-a:
-    base_url: https://provider.example
+    url: https://192.168.1.5:8443
     api_key_file: /run/credentials/mellomting/provider-a
 ```
 
@@ -1124,36 +1145,36 @@ Unknown SSE fields/events should pass through unchanged.
 
 Use opaque bearer keys.
 
-Suggested format:
+Format (D18):
 
 ```text
-mtk_<key-id>_<secret>
+sk-<username>-<keyid>-<secret>
 ```
 
 Example:
 
 ```text
-mtk_7R3F2V_Km4...base64url...
+sk-codex-4f92c16a0b7de831-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
 Properties:
 
-- random key ID, not sequential;
-- secret generated with `crypto/rand`;
-- at least 256 bits of secret entropy;
-- URL-safe encoding;
-- no padding required.
+- `username` is `^[a-z][a-z0-9]{0,31}$` and equals `key create --name`;
+- `keyid` is 8 random bytes as 16 lowercase hex characters;
+- `secret` is 32 random bytes (256 bits) as 64 lowercase hex characters;
+- ID and secret generated independently with `crypto/rand`;
+- no additional separator or suffix is accepted.
 
 Accepted headers:
 
 ```text
-Authorization: Bearer mtk_...
+Authorization: Bearer sk-...
 ```
 
 Optionally, for compatibility:
 
 ```text
-x-api-key: mtk_...
+x-api-key: sk-...
 ```
 
 Never accept credentials in query parameters.
@@ -1174,7 +1195,7 @@ Example:
 version: 1
 
 keys:
-  - id: 7R3F2V
+  - id: 4f92c16a0b7de831
     name: codex
     secret_hash: "hmac-sha256:BASE64..."
     enabled: true
@@ -1202,6 +1223,30 @@ Only the offline CLI modifies it.
 # 27. Key hashing
 
 API keys are high-entropy machine credentials, so expensive password hashing on every inference request is unnecessary.
+
+## 27.1 API-key format
+
+Every generated and accepted client API key MUST have exactly this form (D18):
+
+```text
+sk-<username>-<keyid>-<secret>
+```
+
+The grammar is strict:
+
+- `username` matches `^[a-z][a-z0-9]{0,31}$` and equals `key create --name`;
+- `keyid` is 8 random bytes encoded as exactly 16 lowercase hexadecimal
+  characters;
+- `secret` is 32 random bytes (256 bits) encoded as exactly 64 lowercase
+  hexadecimal characters;
+- no segment is empty and no additional separator or suffix is accepted.
+
+Multiple keys may share a username because `keyid` distinguishes them. Only
+this grammar is accepted; oversized inputs are rejected before segment
+parsing. ID and secret are generated independently with `crypto/rand`.
+Authentication extracts the fixed-format ID, runs the dummy-HMAC path for
+unknown IDs, verifies the HMAC of the complete raw key in constant time, and
+for a matching hash requires the parsed username to equal the stored key name.
 
 Use:
 
@@ -1280,22 +1325,22 @@ No HTTP management API.
 Commands:
 
 ```text
-mellomting key create codex --model qwen-coder
+mellomting key create --name codex --models qwen-coder
+mellomting key create --name codex        # infer sole model when unambiguous
 mellomting key list
-mellomting key disable 7R3F2V
-mellomting key enable 7R3F2V
-mellomting key revoke 7R3F2V
+mellomting key disable <keyid>
+mellomting key enable <keyid>
+mellomting key revoke <keyid>
 ```
 
-`key create` prints the full key once:
+`key create` prints the full key once and it is the only stdout content;
+explanatory text goes to stderr (D14, D18).
 
 ```text
-Created API key "codex":
-
-mtk_7R3F2V_...
+sk-codex-4f92c16a0b7de831-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
 
 The secret is not stored and cannot be displayed again.
-```
 
 Never accept a plaintext secret as a normal CLI argument.
 
@@ -1649,7 +1694,7 @@ Example:
 {
   "time": "2026-08-19T15:14:12.123Z",
   "request_id": "req_01K...",
-  "key_id": "7R3F2V",
+  "key_id": "4f92c16a0b7de831",
   "model": "qwen-coder",
   "backend": "qwen-a",
   "endpoint": "chat.completions",
@@ -1759,18 +1804,18 @@ backend_stream_error
 Initial command:
 
 ```text
-mellomting usage --since 24h
-mellomting usage --key 7R3F2V --since 7d
-mellomting usage --model qwen-coder --since 24h
-mellomting usage --backend qwen-a --since 24h
+mellomting usage report --since 24h
+mellomting usage report --key 4f92c16a0b7de831 --since 7d
+mellomting usage report --model qwen-coder --since 24h
+mellomting usage report --backend auto-local-a-xxxx --since 24h
 ```
 
 Example:
 
 ```text
-KEY       REQUESTS   INPUT       OUTPUT      TOTAL
-7R3F2V    423        8,424,331   923,122     9,347,453
-A91Q2C    118        1,842,920   310,221     2,153,141
+KEY               REQUESTS   INPUT       OUTPUT      TOTAL
+4f92c16a0b7de831  423        8,424,331   923,122     9,347,453
+a91q2c0b7de83111  118        1,842,920   310,221     2,153,141
 ```
 
 Scan JSONL initially.
@@ -2377,15 +2422,22 @@ Mellomting should not promise to sandbox vLLM itself.
 
 Support static TLS earlier than ACME.
 
-Configuration:
+Static TLS is enabled by the presence of its two file fields; there is no
+`mode` field:
 
 ```yaml
 server:
+  listen:
+    network: tcp
+    address: :8443
   tls:
-    mode: files
     cert_file: /etc/mellomting/tls/cert.pem
     key_file: /etc/mellomting/tls/key.pem
 ```
+
+Both fields are required together; one without the other is invalid. An empty
+TLS block enables nothing. `mode` and ACME-shaped source fields are rejected
+as unknown. TLS remains invalid on a Unix socket.
 
 Load cert/key before Landlock.
 
@@ -2672,45 +2724,11 @@ limits:
   global_requests_per_second: 100
   global_burst: 200
 
-backends:
-  qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder-Next
-    connect_timeout: 3s
-    request_timeout: 20m
-    stream_idle_timeout: 120s
-    max_concurrency: 4
-    queue_size: 8
-    queue_timeout: 5s
-
-  qwen-b:
-    base_url: http://127.0.0.1:8002
-    upstream_model: Qwen/Qwen3-Coder-Next
-    connect_timeout: 3s
-    request_timeout: 20m
-    stream_idle_timeout: 120s
-    max_concurrency: 4
-    queue_size: 8
-    queue_timeout: 5s
-
-  guard-a:
-    base_url: http://127.0.0.1:8100
-    upstream_model: Qwen/Qwen3Guard-Gen-0.6B
-    max_concurrency: 2
-    queue_size: 4
-
-qualifiers:
-  safety-audit:
-    backend: guard-a
-    model: Qwen/Qwen3Guard-Gen-0.6B
-    timeout: 3s
-    failure_policy: allow
-
-    input:
-      mode: audit
-
-    output:
-      mode: disabled
+servers:
+  local-a:
+    url: http://127.0.0.1:8001
+  local-b:
+    url: http://127.0.0.1:8002
 
 models:
   qwen-coder:
@@ -2720,11 +2738,22 @@ models:
     policy:
       max_output_tokens: 32768
 
-    qualifier: safety-audit
+    servers:
+      - local-a
+      - local-b
+```
 
-    backends:
-      - qwen-a
-      - qwen-b
+Qualifiers remain shelved for the first release (§96). The development-era
+`backends:` source form and `qualifiers:` are rejected as unknown fields; the
+`qualifiers:` block shown below is retained only as a forward-compatible
+design sketch, not an accepted v1 source field:
+
+```yaml
+# Not accepted in v1 — forward-compatible design sketch only.
+qualifiers:
+  safety-audit:
+    backend: guard-a
+    model: Qwen/Qwen3Guard-Gen-0.6B
 ```
 
 ---
@@ -2735,7 +2764,7 @@ models:
 version: 1
 
 keys:
-  - id: 7R3F2V
+  - id: 4f92c16a0b7de831
     name: codex
     secret_hash: "hmac-sha256:..."
 
@@ -2752,7 +2781,7 @@ keys:
       tokens_per_hour: 500000
       tokens_per_day: 5000000
 
-  - id: A91Q2C
+  - id: b8170d34ac290fe6
     name: opencode
     secret_hash: "hmac-sha256:..."
 
@@ -2772,12 +2801,274 @@ Wildcard model permission should be explicit and easy to spot in review.
 
 ---
 
+# 77a. Operator interface, initialization, and key contracts
+
+This section fixes the operator-facing interface in RFC 2119 terms. It is the
+normative contract for `init`, `install`, configuration lookup, the source
+schema, discovery, and client API keys. The UX plan
+(`docs/UX_SIMPLIFICATION_PLAN.md`) is the execution ledger; this section is
+authoritative.
+
+## 77a.1 Configuration lookup (D1)
+
+Every config-dependent CLI command MUST use one resolver:
+
+1. an explicit `--config PATH`, when supplied;
+2. `./config.yaml`, when it exists as a regular non-symlink file; otherwise
+3. `/etc/mellomting/config.yaml` only when `./config.yaml` is absent.
+
+If the local path exists as a symlink (including dangling), directory, FIFO,
+device, or other non-regular file, the command MUST fail instead of falling
+through to `/etc`.
+
+`mellomting init` differs because it creates a file: its default destination
+is an absolute path formed from the current working directory and
+`config.yaml`, and it never falls back to `/etc`.
+
+The generated config MUST contain absolute users-file and pepper-file paths.
+There is no root-level global flag: `mellomting --config X serve` is invalid.
+The accepted shape is `mellomting <command> [subcommand] --config PATH`.
+
+## 77a.2 Initialization transaction (D3, D4, D5)
+
+`mellomting init` MUST require at least one `--server`; bare `init` is a usage
+error and MUST NOT create an incomplete scaffold. Systemd installation retains
+its separate commented scaffold behavior.
+
+For a local non-system installation, config, users, and pepper MUST share one
+parent directory. The resolved config destination is the completion marker and
+is published only after both auth entries are durably synchronized. The
+initialization order is fixed: resolve absolute paths; validate arguments,
+platform policy, every destination, and the destination directory's ownership
+and mode; complete all server discovery; render config and users bytes in
+memory and generate pepper bytes; validate the in-memory representation;
+create three mode-0600 temporary files in the destination directory; write and
+fsync each; publish pepper and users using an atomic create-only hard link from
+each temporary file to its final name, then unlink the temporary names; fsync
+the parent directory; publish the config destination with the same create-only
+link and unlink its temporary name; fsync the parent directory again.
+
+`os.Rename` MUST NOT be used to publish these files. Publication uses a
+same-directory, directory-FD-relative `linkat(temp, final)` that fails when
+the final path exists. The destination directory MUST be owned by the
+effective user and MUST NOT be group- or world-writable. Init MUST refuse if
+any destination already exists, reject symlinks and other non-regular
+destination conditions, and clean up only files created by the failed
+invocation and only when their identity can be established safely. Crash
+recovery is fail-closed: remaining create-only files are reported for manual
+inspection and are never overwritten on a re-run. This is fail-closed, not
+fully transactional across crashes.
+
+Local `init` writes config, users, and pepper as `0600`. Systemd provisioning
+retains `0640 root:mellomting` for those files.
+
+## 77a.3 Local sandbox behavior (D2)
+
+`init` defaults to `security.landlock.mode: required` with the default minimum
+ABI. Before writing, it runs the equivalent of the Landlock capability check:
+
+- supported Linux host meeting the minimum: continue;
+- unsupported/too-old host: fail without writing and show the explicit
+  `--landlock best-effort` alternative;
+- `--landlock best-effort` or `--landlock disabled`: accepted only when the
+  operator supplied it explicitly, and written into config.
+
+There is no platform-dependent silent downgrade.
+
+## 77a.4 Discovery scope, limits, and response (D6, D7, D8, D9, D10)
+
+Discovery MUST query only server URLs explicitly provided by the operator. It
+MUST NOT scan the host, network, DNS, container runtime, or service manager,
+and MUST NOT be performed during `serve`, config loading, reload, or any
+background task. Server URL hosts MUST be literal IPv4 or IPv6 addresses with
+explicit ports; an empty host is invalid and DNS names are not resolved.
+
+Fixed initial limits: at most 16 servers per init; 256 models per server; 1,024
+unique public models; 1 MiB response bytes per server; 256 bytes per model ID;
+3-second connect timeout; 10-second response-header timeout; 15-second total
+request timeout.
+
+Discovery uses `GET <base_url>/v1/models` with MPTCP disabled, the derived
+backend-network policy enforced on every connection, HTTP proxying disabled
+regardless of environment, redirects disabled, response compression disabled,
+no retries, no client Authorization/Proxy-Authorization/X-Api-Key/forwarding/
+proxy-identity headers, `Accept: application/json`, and no request body. Only
+HTTP 200 is accepted. A present `Content-Type` is parsed with
+`mime.ParseMediaType` and must be `application/json` (parameters allowed); a
+truly absent header is accepted. Raw response bodies are never included in
+errors or logs.
+
+The response MUST be decoded as a bounded subset: top-level `object == "list"`,
+non-null `data`, each entry `object == "model"`, and each `id` valid UTF-8,
+non-empty, at most 256 bytes, with no Unicode control/format character, no
+Unicode line/paragraph separator, and no leading/trailing Unicode whitespace,
+with no duplicate ID within one server. Capabilities are not inferred from
+other response fields; every discovered model defaults to `type: generation`.
+
+Accepted server syntax is `--server URL` and `--server NAME=URL`. A sole
+unnamed server is named `local`; multiple unnamed servers are named `local-1`,
+`local-2` in argument order. If any explicit name is used, all servers MUST
+have explicit names. Explicit names match `^[a-z][a-z0-9-]{0,62}$`, are unique,
+and URLs pass backend base-URL validation including a literal IP, explicit
+port, and no userinfo/path/query/fragment. Canonical `(scheme, IP, port)`
+destinations are unique after normalizing IP spellings and unmapping
+IPv4-mapped IPv6 addresses.
+
+If any server fails, `init` MUST fail before writing; there is no
+`--allow-partial`. `init` is non-interactive by default. `--dry-run` performs
+all validation and discovery, writes the exact config YAML and nothing else to
+stdout, writes bounded discovery context to stderr, and writes no files.
+
+## 77a.5 Source configuration schema (D11)
+
+The server-oriented form is the sole accepted source schema; the
+development-era `backends:` form is removed rather than migrated or accepted in
+parallel. Configuration keeps `version: 1`.
+
+```yaml
+version: 1
+
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+
+auth:
+  users_file: /absolute/path/users.yaml
+  pepper_file: /absolute/path/auth.pepper
+
+servers:
+  local-a:
+    url: http://127.0.0.1:8000
+  local-b:
+    url: http://127.0.0.1:8010
+
+models:
+  qwen3.8-27b:
+    servers: [local-a, local-b]
+  qwen-coder:
+    servers: [local-b]
+```
+
+Server fields are `url` (required) and `api_key_file` (optional). Model fields
+are `type` (optional, default generation), `servers` (required), `upstream_model`
+(optional, default public map key), `strategy` (optional; single when one
+server, least-inflight when several), and `policy` (optional). `backends:` and
+`qualifiers:` are rejected as unknown source fields.
+
+Static TLS uses the presence of its two file fields with no `mode` field; both
+`cert_file` and `key_file` are required together, an empty TLS block enables
+nothing, and `mode`/`acme` source fields are rejected. Native ACME remains
+shelved.
+
+## 77a.6 Deterministic normalization (D12)
+
+Normalize source form before applying defaults and validation. For each compact
+public model in UTF-8 bytewise sorted public-model order and each referenced
+server in YAML order: verify the server exists and is not repeated; compute
+`sha256(publicModel + "\x00" + serverName)`; create the internal backend name
+`"auto-" + serverName + "-" + first 12 lowercase hex characters of the digest`;
+reject the impossible generated-name collision; copy server URL and API-key
+path into the backend; set `upstream_model` to the public/discovered model ID;
+create a backend reference with weight 1. The normalized model copies `type`,
+`strategy`, and `policy`; empty type defaults to `generation`, empty strategy
+defaults to `single` for one server, otherwise `least-inflight`.
+
+The resulting runtime `Config.Backends` and `Config.Models` use the existing
+types and contain no source-only state. `config show-effective` emits a fully
+defaulted server-oriented version-1 document that can be fed back into
+`config check`; synthetic internal backend names never appear in
+operator-facing configuration.
+
+## 77a.7 Key creation and API-key format (D14, D18)
+
+When `--models` is absent: exactly one configured public model is inferred;
+zero models fails; two or more models fails and lists only the model names,
+sorted, with a request to pass `--models`; wildcard access is never inferred.
+
+Every generated and accepted client API key MUST have exactly the form
+`sk-<username>-<keyid>-<secret>` with `username` matching
+`^[a-z][a-z0-9]{0,31}$`, `keyid` 8 random bytes as 16 lowercase hex characters,
+`secret` 32 random bytes (256 bits) as 64 lowercase hex characters, no empty
+segment, and no additional separator or suffix. Only this grammar is accepted;
+oversized inputs are rejected before segment parsing. The username equals
+`key create --name` and is stored as the key's human-visible name.
+
+On success, `key create` stdout contains the raw key and a trailing newline
+only; all human context goes to stderr. The raw key is printed exactly once.
+
+## 77a.8 Installation command (D15, D16)
+
+`mellomting install [--systemd]` is the sole installation command shape; a
+top-level `--install` alias MUST NOT exist. For an existing systemd config the
+installer MUST NOT require it to validate (a previously installed scaffold is
+deliberately invalid until edited). If the regular, non-symlink config
+explicitly names a fixed default auth path, create that artifact only when it
+is missing; otherwise never create custom auth files, parent directories, or
+unrelated default auth files. Existing config and auth files are never
+rewritten. Referenced default auth paths are determined with a bounded,
+no-side-effect YAML source parse; a parse failure creates no auth files. For a
+newly created default scaffold, generate the fixed default pepper and empty
+users file. The installer MUST NOT start a deliberately invalid configuration
+automatically.
+
+Routine success output follows the human-output policy: one completion line
+and at most three next actions, with no artifact/permission inventory and no
+design rationale.
+
+## 77a.9 Listener syntax (D17)
+
+`init --listen` defaults to `127.0.0.1:8080`. A value beginning with `/` is a
+Unix socket and must be an absolute, cleaned path; every other value is parsed
+with `net.SplitHostPort`; the host is empty or a literal IP address; the port
+is decimal in 1..65535. Empty TCP hosts are accepted as a wildcard bind subject
+to the same TLS-or-explicit-plaintext policy as `0.0.0.0` and `[::]`. Relative
+paths, hostnames, URL schemes, bare ports, zone-scoped IPv6, and unbracketed
+IPv6 are rejected. For Unix, generate `network: unix`, the path, and the
+default socket mode; for TCP generate `network: tcp` and the address. If the
+TCP host is empty, unspecified, or non-loopback and static TLS is absent, also
+generate `allow_plaintext_nonloopback: true`.
+
+## 77a.10 Security invariants
+
+- Discovery never connects outside the policy derived from explicit servers.
+- Every discovery connection has MPTCP disabled.
+- Redirects cannot escape the validated destination.
+- No client credential or proxy identity header reaches a server.
+- Init accepts no backend credentials and never invents authentication policy.
+- Raw discovery error bodies are never logged or returned.
+- All discovery inputs and outputs are bounded.
+- Discovery completes before filesystem mutation.
+- Init never overwrites an existing final path and never follows a
+  final-component symlink.
+- New local config, users, and pepper files are mode 0600.
+- Pepper comes from `crypto/rand` with 64 random bytes before base64.
+- The empty users file authenticates nobody.
+- Server-oriented source config is normalized before the strict internal
+  validation boundary.
+- Development-era `backends:` source config is rejected.
+- Runtime never discovers, adds, removes, or remaps models.
+- Wildcard key authorization is never inferred.
+- Raw API keys and peppers are never logged.
+- A username parsed from a presented credential is never logged.
+- API-key usernames and both hexadecimal segments satisfy the D18 grammar.
+- Only the D18 key format is accepted.
+
+---
+
 # 78. Suggested package layout
 
 ```text
 cmd/
   mellomting/
     main.go
+    config_path.go
+    init.go
+    install.go
+    serve.go
+
+integration/
+  ux_journey_test.go
 
 internal/
   accounting/
@@ -2801,6 +3092,10 @@ internal/
     config.go
     load.go
     validate.go
+    source.go
+
+  discovery/
+    discovery.go
 
   guard/
     guard.go
