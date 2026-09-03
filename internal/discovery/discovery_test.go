@@ -646,3 +646,147 @@ func TestFetchPolicyEnforcement(t *testing.T) {
 		}
 	})
 }
+
+func TestAggregate(t *testing.T) {
+	ordered := []Server{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+
+	t.Run("overlapping and disjoint sets", func(t *testing.T) {
+		t.Parallel()
+		got, err := Aggregate(ordered, map[string][]string{
+			"a": {"x", "y"},
+			"b": {"y", "z"},
+			"c": nil,
+		})
+		if err != nil {
+			t.Fatalf("Aggregate: %v", err)
+		}
+		want := map[string][]string{
+			"x": {"a"},
+			"y": {"a", "b"},
+			"z": {"b"},
+		}
+		if !reflect.DeepEqual(got.Models, want) {
+			t.Fatalf("models = %v, want %v", got.Models, want)
+		}
+		if !reflect.DeepEqual(got.SortedModels(), []string{"x", "y", "z"}) {
+			t.Fatalf("sorted = %v", got.SortedModels())
+		}
+	})
+
+	t.Run("stable server order", func(t *testing.T) {
+		t.Parallel()
+		got, err := Aggregate(ordered, map[string][]string{
+			"c": {"m"},
+			"a": {"m"},
+			"b": {"m"},
+		})
+		if err != nil {
+			t.Fatalf("Aggregate: %v", err)
+		}
+		if !reflect.DeepEqual(got.Models["m"], []string{"a", "b", "c"}) {
+			t.Fatalf("replicas = %v, want server argument order", got.Models["m"])
+		}
+	})
+
+	t.Run("empty results", func(t *testing.T) {
+		t.Parallel()
+		got, err := Aggregate(ordered, map[string][]string{"a": nil, "b": nil, "c": nil})
+		if err != nil {
+			t.Fatalf("Aggregate: %v", err)
+		}
+		if len(got.Models) != 0 {
+			t.Fatalf("models = %v, want empty", got.Models)
+		}
+	})
+
+	t.Run("missing result", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate(ordered, map[string][]string{"a": nil, "c": nil})
+		if err == nil || !strings.Contains(err.Error(), `missing result for server "b"`) {
+			t.Fatalf("err = %v, want missing b", err)
+		}
+	})
+
+	t.Run("unexpected result", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate(ordered, map[string][]string{"a": nil, "b": nil, "c": nil, "d": nil})
+		if err == nil || !strings.Contains(err.Error(), `unexpected result for server "d"`) {
+			t.Fatalf("err = %v, want unexpected d", err)
+		}
+	})
+
+	t.Run("duplicate server name", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate([]Server{{Name: "a"}, {Name: "a"}}, map[string][]string{"a": nil})
+		if err == nil || !strings.Contains(err.Error(), "duplicate server name") {
+			t.Fatalf("err = %v, want duplicate server", err)
+		}
+	})
+
+	t.Run("empty server name", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate([]Server{{Name: ""}}, map[string][]string{"": nil})
+		if err == nil || !strings.Contains(err.Error(), "server name is required") {
+			t.Fatalf("err = %v, want server name required", err)
+		}
+	})
+
+	t.Run("too many servers", func(t *testing.T) {
+		t.Parallel()
+		servers := make([]Server, MaxServers+1)
+		discovered := make(map[string][]string, len(servers))
+		for i := range servers {
+			servers[i] = Server{Name: fmt.Sprintf("s%d", i)}
+			discovered[servers[i].Name] = nil
+		}
+		_, err := Aggregate(servers, discovered)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d servers", MaxServers)) {
+			t.Fatalf("err = %v, want server bound", err)
+		}
+	})
+
+	t.Run("server model bound", func(t *testing.T) {
+		t.Parallel()
+		ids := make([]string, MaxModels+1)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("m%d", i)
+		}
+		_, err := Aggregate([]Server{{Name: "a"}}, map[string][]string{"a": ids})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d models", MaxModels)) {
+			t.Fatalf("err = %v, want model bound", err)
+		}
+	})
+
+	t.Run("global unique model bound", func(t *testing.T) {
+		t.Parallel()
+		ordered := []Server{{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}, {Name: "e"}}
+		discovered := make(map[string][]string, len(ordered))
+		for i, s := range ordered {
+			ids := make([]string, 205)
+			for j := range ids {
+				ids[j] = fmt.Sprintf("s%d-m%d", i, j)
+			}
+			discovered[s.Name] = ids
+		}
+		_, err := Aggregate(ordered, discovered)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d unique models", MaxUniqueModels)) {
+			t.Fatalf("err = %v, want unique model bound", err)
+		}
+	})
+
+	t.Run("duplicate model within server", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate([]Server{{Name: "a"}}, map[string][]string{"a": {"m", "m"}})
+		if err == nil || !strings.Contains(err.Error(), "duplicate model") {
+			t.Fatalf("err = %v, want duplicate model", err)
+		}
+	})
+
+	t.Run("empty model ID", func(t *testing.T) {
+		t.Parallel()
+		_, err := Aggregate([]Server{{Name: "a"}}, map[string][]string{"a": {""}})
+		if err == nil || !strings.Contains(err.Error(), "empty model ID") {
+			t.Fatalf("err = %v, want empty model ID", err)
+		}
+	})
+}

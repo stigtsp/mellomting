@@ -313,6 +313,8 @@ func jsonHex16(b []byte) (uint16, error) {
 const (
 	MaxResponseBytes = 1 << 20
 	MaxModels        = 256
+	MaxServers       = 16
+	MaxUniqueModels  = 1024
 
 	defaultConnectTimeout = 3 * time.Second
 	defaultHeaderTimeout  = 10 * time.Second
@@ -553,6 +555,84 @@ func classifyContextError(err error) error {
 		return ErrTimeout
 	}
 	return err
+}
+
+// Result is the deterministic multi-server discovery aggregate (B5).
+// Models maps each public model ID to the server names that expose it, in
+// original server argument order.
+type Result struct {
+	Models map[string][]string
+}
+
+// SortedModels returns the public model names in UTF-8 bytewise order for
+// rendering.
+func (r Result) SortedModels() []string {
+	names := make([]string, 0, len(r.Models))
+	for name := range r.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Aggregate merges per-server discovery results into one deterministic
+// routing table. It preserves server argument order within each model's
+// replica list, applies the D6 global bounds, and fails closed on missing,
+// duplicate, or oversized entries. It is deliberately sequential: no
+// goroutines, deterministic errors, small footprint.
+func Aggregate(ordered []Server, discovered map[string][]string) (Result, error) {
+	if len(ordered) == 0 {
+		return Result{}, errors.New("discovery: at least one server is required")
+	}
+	if len(ordered) > MaxServers {
+		return Result{}, fmt.Errorf("discovery exceeds %d servers", MaxServers)
+	}
+
+	serverOrder := make([]string, 0, len(ordered))
+	serverSeen := make(map[string]bool, len(ordered))
+	for _, s := range ordered {
+		if s.Name == "" {
+			return Result{}, errors.New("discovery: server name is required")
+		}
+		if serverSeen[s.Name] {
+			return Result{}, fmt.Errorf("discovery: duplicate server name %q", s.Name)
+		}
+		serverSeen[s.Name] = true
+		serverOrder = append(serverOrder, s.Name)
+		if _, ok := discovered[s.Name]; !ok {
+			return Result{}, fmt.Errorf("discovery: missing result for server %q", s.Name)
+		}
+	}
+	for name := range discovered {
+		if !serverSeen[name] {
+			return Result{}, fmt.Errorf("discovery: unexpected result for server %q", name)
+		}
+	}
+
+	models := make(map[string][]string)
+	for _, name := range serverOrder {
+		ids := discovered[name]
+		if len(ids) > MaxModels {
+			return Result{}, fmt.Errorf("discovery: server %q exceeds %d models", name, MaxModels)
+		}
+		seenInServer := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			if id == "" {
+				return Result{}, fmt.Errorf("discovery: server %q has an empty model ID", name)
+			}
+			if seenInServer[id] {
+				return Result{}, fmt.Errorf("discovery: server %q has duplicate model %q", name, id)
+			}
+			seenInServer[id] = true
+			models[id] = append(models[id], name)
+		}
+	}
+
+	if len(models) > MaxUniqueModels {
+		return Result{}, fmt.Errorf("discovery exceeds %d unique models", MaxUniqueModels)
+	}
+
+	return Result{Models: models}, nil
 }
 
 func invalidJSON(err error) error {
