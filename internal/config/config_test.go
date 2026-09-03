@@ -11,22 +11,19 @@ import (
 
 const validYAML = `
 version: 1
-
 server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
-
-backends:
+    mode: '0660'
+servers:
   qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder-Next
-
+    url: http://127.0.0.1:8001
 models:
   qwen-coder:
-    backends:
-      - qwen-a
+    upstream_model: Qwen/Qwen3-Coder-Next
+    servers:
+    - qwen-a
 `
 
 func TestParsePlan76SampleConfig(t *testing.T) {
@@ -40,16 +37,15 @@ func TestParsePlan76SampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse plan §76 sample: %v", err)
 	}
-	if len(cfg.Backends) != 3 || len(cfg.Models) != 1 || len(cfg.Qualifiers) != 1 {
-		t.Fatalf("parsed %d backends, %d models, %d qualifiers; want 3/1/1",
+	if len(cfg.Backends) != 2 || len(cfg.Models) != 1 || len(cfg.Qualifiers) != 0 {
+		t.Fatalf("parsed %d backends, %d models, %d qualifiers; want 2/1/0",
 			len(cfg.Backends), len(cfg.Models), len(cfg.Qualifiers))
 	}
 	if cfg.Server.MaxInflightRequests != 32 {
 		t.Fatalf("explicit limit lost: max_inflight = %d, want 32", cfg.Server.MaxInflightRequests)
 	}
-	q := cfg.Qualifiers["safety-audit"]
-	if q.FailurePolicy != "allow" || q.Input.Mode != "audit" || q.Output.Mode != "disabled" {
-		t.Fatalf("qualifier parsed wrong: %+v", q)
+	if cfg.Models["qwen-coder"].Strategy != "least-inflight" {
+		t.Fatalf("model strategy = %q, want least-inflight", cfg.Models["qwen-coder"].Strategy)
 	}
 }
 
@@ -98,7 +94,7 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 		t.Fatalf("retry defaults wrong: %+v", cfg.Retry)
 	}
 
-	b := cfg.Backends["qwen-a"]
+	b := cfg.Backends[defaultBackendName("qwen-coder", "qwen-a")]
 	if b.ConnectTimeout.Duration() != 3*time.Second ||
 		b.HeaderTimeout.Duration() != 30*time.Second ||
 		b.RequestTimeout.Duration() != 20*time.Minute ||
@@ -122,13 +118,14 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `))
 	if err != nil {
 		t.Fatalf("Parse without listen.mode: %v", err)
@@ -156,13 +153,14 @@ server:
     network: unix
     address: /run/mellomting/mellomting.sock
     mode: "0660"
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 ---
 security:
   something: bad
@@ -189,15 +187,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   bogus: true
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "field bogus not found",
 		},
@@ -244,15 +243,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   read_header_timeout: 5
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "malformed duration",
 		},
@@ -261,33 +261,32 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends:
-      - qa
-      - qa
+    upstream_model: M
+    servers:
+    - qa
+    - qa
 `,
-			wantErr: "duplicate backend",
+			wantErr: "duplicate server",
 		},
 		{
 			name: "unknown backend reference",
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends:
-      - missing
+    servers:
+    - missing
 `,
-			wantErr: "unknown backend",
+			wantErr: "unknown server",
 		},
 		{
 			name: "malformed backend_network cidr fails closed",
@@ -298,16 +297,16 @@ security:
   backend_network:
     mode: allowed-cidrs
     cidrs:
-      - 10.0.0.0/8
-      - not-a-cidr
-backends:
+    - 10.0.0.0/8
+    - not-a-cidr
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends:
-      - qa
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "not a valid CIDR",
 		},
@@ -316,33 +315,35 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
     qualifier: ghost
+    upstream_model: M
+    servers:
+    - qa
 `,
-			wantErr: "unknown qualifier",
+			wantErr: "field qualifier not found",
 		},
 		{
 			name: "strategy single with two backends",
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
   qb:
-    base_url: http://127.0.0.1:8002
-    upstream_model: M
+    url: http://127.0.0.1:8002
 models:
   m1:
     strategy: single
-    backends: [qa, qb]
+    upstream_model: M
+    servers:
+    - qa
+    - qb
 `,
 			wantErr: "exactly one backend",
 		},
@@ -351,27 +352,27 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1: {}
 `,
-			wantErr: "at least one backend reference",
+			wantErr: "at least one server is required",
 		},
 		{
 			name: "non-loopback backend in loopback-only mode",
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://vllm.internal:8001
-    upstream_model: M
+    url: http://vllm.internal:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "not a loopback IP literal",
 		},
@@ -380,13 +381,14 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001/?x=1
-    upstream_model: M
+    url: http://127.0.0.1:8001/?x=1
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "query strings are not supported",
 		},
@@ -395,13 +397,14 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001#frag
-    upstream_model: M
+    url: http://127.0.0.1:8001#frag
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "fragments are not supported",
 		},
@@ -410,13 +413,14 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://user@127.0.0.1:8001
-    upstream_model: M
+    url: http://user@127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "userinfo",
 		},
@@ -425,13 +429,14 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001/v1
-    upstream_model: M
+    url: http://127.0.0.1:8001/v1
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "ambiguous",
 		},
@@ -440,29 +445,16 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: ftp://127.0.0.1:8001
-    upstream_model: M
+    url: ftp://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "unsupported scheme",
-		},
-		{
-			name: "missing upstream model",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "upstream_model: required",
 		},
 		{
 			name: "tcp listener without port",
@@ -472,13 +464,14 @@ server:
   listen:
     network: tcp
     address: 127.0.0.1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "host:port",
 		},
@@ -490,13 +483,14 @@ server:
   listen:
     network: tcp
     address: 10.0.0.5:8080
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "allow_plaintext_non_loopback",
 		},
@@ -508,14 +502,15 @@ server:
   listen:
     network: tcp
     address: 127.0.0.1:8080
-    mode: "0660"
-backends:
+    mode: '0660'
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "server.listen.mode: only valid for network unix",
 		},
@@ -527,13 +522,14 @@ server:
   listen:
     network: tcp
     address: localhost:8080
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "allow_plaintext_non_loopback",
 		},
@@ -546,13 +542,14 @@ server:
     network: tcp
     address: 10.0.0.5:8080
   allow_plaintext_non_loopback: true
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "",
 		},
@@ -567,13 +564,14 @@ server:
   tls:
     cert_file: /etc/mellomting/tls/cert.pem
     key_file: /etc/mellomting/tls/key.pem
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "",
 		},
@@ -585,13 +583,14 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "",
 		},
@@ -603,17 +602,18 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   tls:
     cert_file: /etc/mellomting/tls/cert.pem
     key_file: /etc/mellomting/tls/key.pem
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "only valid when listen network is tcp",
 		},
@@ -626,13 +626,14 @@ server:
     network: unix
     address: /run/mellomting/mellomting.sock
     mode: "09999"
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "octal mode",
 		},
@@ -644,15 +645,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_body_bytes: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_body_bytes: must be > 0",
 		},
@@ -664,13 +666,14 @@ version: 1
 security:
   backend_network:
     mode: allowed-cidrs
-backends:
+servers:
   qa:
-    base_url: http://10.1.0.4:8001
-    upstream_model: M
+    url: http://10.1.0.4:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "cidrs: required",
 		},
@@ -682,14 +685,16 @@ version: 1
 security:
   backend_network:
     mode: allowed-cidrs
-    cidrs: [10.1.0.0/24]
-backends:
+    cidrs:
+    - 10.1.0.0/24
+servers:
   qa:
-    base_url: http://10.1.0.4:8001
-    upstream_model: M
+    url: http://10.1.0.4:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "",
 		},
@@ -701,72 +706,18 @@ version: 1
 security:
   backend_network:
     mode: allowed-cidrs
-    cidrs: [10.1.0.0/24]
-backends:
+    cidrs:
+    - 10.1.0.0/24
+servers:
   qa:
-    base_url: http://10.9.9.9:8001
-    upstream_model: M
+    url: http://10.9.9.9:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "not within",
-		},
-		{
-			name: "qualifier without failure policy",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "failure_policy: required",
-		},
-		{
-			name: "remote qualifier without opt-in",
-			yaml: `
-version: 1
-` + minimalServer + `
-security:
-  backend_network:
-    mode: any
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://10.1.1.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "allow_remote_content",
 		},
 		{
 			name: "accounting disabled but fields set",
@@ -776,13 +727,14 @@ version: 1
 accounting:
   enabled: false
   path: /var/log/mellomting/usage.jsonl
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "must be empty when enabled is false",
 		},
@@ -794,13 +746,14 @@ version: 1
 accounting:
   enabled: true
   overflow: panic
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "overflow",
 		},
@@ -812,13 +765,14 @@ version: 1
 accounting:
   enabled: true
   unknown_usage_reservation: -5
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "unknown_usage_reservation",
 		},
@@ -830,13 +784,14 @@ version: 1
 accounting:
   enabled: false
   unknown_usage_reservation: -5
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "unknown_usage_reservation",
 		},
@@ -849,13 +804,14 @@ accounting:
   enabled: false
   ensure_stream_usage: true
   unknown_usage_reservation: 500
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "",
 		},
@@ -867,13 +823,14 @@ version: 1
 security:
   landlock:
     mode: off
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "landlock.mode",
 		},
@@ -885,26 +842,27 @@ version: 1
 security:
   landlock:
     minimum_abi: 99
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "minimum_abi",
 		},
 		{
-			name: "no backends",
+			name: "no servers",
 			yaml: `
 version: 1
 ` + minimalServer + `
 models:
   m1:
-    backends: [qa]
+    servers: []
 `,
-			wantErr: "at least one backend is required",
+			wantErr: "at least one server is required",
 		},
 		{
 			name: "no models",
@@ -914,13 +872,12 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
-backends:
+    mode: '0660'
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 `,
-			wantErr: "at least one public model is required",
+			wantErr: "models: at least one model is required",
 		},
 		{
 			name: "unix listener without address",
@@ -929,14 +886,15 @@ version: 1
 server:
   listen:
     network: unix
-    mode: "0660"
-backends:
+    mode: '0660'
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "address: required for network unix",
 		},
@@ -947,13 +905,14 @@ version: 1
 server:
   listen:
     address: /run/mellomting/mellomting.sock
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "server.listen.network: required",
 		},
@@ -964,14 +923,15 @@ version: 1
 server:
   listen:
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
-backends:
+    mode: '0660'
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "listen.mode: only valid for network unix",
 		},
@@ -983,15 +943,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_header_bytes: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_header_bytes: must be > 0",
 		},
@@ -1003,15 +964,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_response_bytes: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_response_bytes: must be > 0",
 		},
@@ -1023,15 +985,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_inflight_requests: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_inflight_requests: must be > 0",
 		},
@@ -1043,15 +1006,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_buffered_request_bytes: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_buffered_request_bytes: must be > 0",
 		},
@@ -1063,15 +1027,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   max_connections: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_connections: must be > 0",
 		},
@@ -1083,15 +1048,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   read_header_timeout: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "read_header_timeout: must be > 0",
 		},
@@ -1103,15 +1069,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   read_body_timeout: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "read_body_timeout: must be > 0",
 		},
@@ -1123,15 +1090,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   idle_timeout: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "idle_timeout: must be > 0",
 		},
@@ -1143,15 +1111,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   stream_idle_timeout: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "stream_idle_timeout: must be > 0",
 		},
@@ -1163,15 +1132,16 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
+    mode: '0660'
   stream_write_timeout: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "stream_write_timeout: must be > 0",
 		},
@@ -1185,13 +1155,14 @@ server:
     address: 127.0.0.1:8080
   tls:
     cert_file: /etc/mellomting/tls/cert.pem
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "cert_file and key_file are required",
 		},
@@ -1207,13 +1178,14 @@ server:
     mode: acme
     hostname: llm.example.net
     email: admin@example.net
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "field mode not found",
 		},
@@ -1226,14 +1198,15 @@ security:
   backend_network:
     mode: loopback-only
     cidrs:
-      - 10.0.0.0/8
-backends:
+    - 10.0.0.0/8
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "only valid when mode is allowed-cidrs",
 		},
@@ -1245,13 +1218,14 @@ version: 1
 security:
   backend_network:
     mode: nope
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "must be loopback-only, allowed-cidrs, or any",
 		},
@@ -1262,13 +1236,14 @@ version: 1
 ` + minimalServer + `
 logging:
   format: xml
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "logging.format",
 		},
@@ -1279,13 +1254,14 @@ version: 1
 ` + minimalServer + `
 logging:
   level: loud
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "logging.level",
 		},
@@ -1297,13 +1273,14 @@ version: 1
 accounting:
   enabled: true
   replay_max_bytes: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "replay_max_bytes: must be >= 0",
 		},
@@ -1316,13 +1293,14 @@ accounting:
   enabled: true
   fsync: never
   fsync_interval: 1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "fsync_interval: only valid when fsync is interval",
 		},
@@ -1334,13 +1312,14 @@ version: 1
 accounting:
   enabled: true
   fsync: never
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 		},
 		{
@@ -1351,13 +1330,14 @@ version: 1
 accounting:
   enabled: true
   fsync: every
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 		},
 		{
@@ -1368,13 +1348,14 @@ version: 1
 accounting:
   enabled: true
   fsync: always
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "accounting.fsync",
 		},
@@ -1385,13 +1366,14 @@ version: 1
 ` + minimalServer + `
 limits:
   global_requests_per_second: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "global_requests_per_second",
 		},
@@ -1402,13 +1384,14 @@ version: 1
 ` + minimalServer + `
 limits:
   global_burst: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "global_burst",
 		},
@@ -1419,13 +1402,14 @@ version: 1
 ` + minimalServer + `
 limits:
   preauth_requests_per_second: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "preauth_requests_per_second",
 		},
@@ -1436,13 +1420,14 @@ version: 1
 ` + minimalServer + `
 limits:
   preauth_burst: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "preauth_burst",
 		},
@@ -1453,13 +1438,14 @@ version: 1
 ` + minimalServer + `
 limits:
   auth_failure_log_rate: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "auth_failure_log_rate",
 		},
@@ -1470,13 +1456,14 @@ version: 1
 ` + minimalServer + `
 shutdown:
   grace_period: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "grace_period",
 		},
@@ -1487,13 +1474,14 @@ version: 1
 ` + minimalServer + `
 responses:
   affinity_ttl: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "affinity_ttl",
 		},
@@ -1504,13 +1492,14 @@ version: 1
 ` + minimalServer + `
 responses:
   max_affinity_entries: -1
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_affinity_entries",
 		},
@@ -1521,13 +1510,14 @@ version: 1
 ` + minimalServer + `
 retry:
   initial_backoff: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "retry.initial_backoff",
 		},
@@ -1538,355 +1528,31 @@ version: 1
 ` + minimalServer + `
 retry:
   max_backoff: -1s
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "retry.max_backoff",
-		},
-		{
-			name: "backend negative connect_timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    connect_timeout: -1s
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "connect_timeout",
-		},
-		{
-			name: "backend negative header_timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    header_timeout: -1s
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "header_timeout",
-		},
-		{
-			name: "backend negative request_timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    request_timeout: -1s
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "request_timeout",
-		},
-		{
-			name: "backend negative stream_idle_timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    stream_idle_timeout: -1s
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "stream_idle_timeout",
-		},
-		{
-			name: "backend max_concurrency below one",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    max_concurrency: -1
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "max_concurrency: must be >= 1",
-		},
-		{
-			name: "backend negative queue_size",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    queue_size: -1
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "queue_size: must be >= 0",
-		},
-		{
-			name: "backend negative queue_timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-    queue_timeout: -1s
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "queue_timeout",
-		},
-		{
-			name: "qualifier missing backend",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    model: G
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "qualifiers.s.backend: required",
-		},
-		{
-			name: "qualifier unknown backend",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-qualifiers:
-  s:
-    backend: ghost
-    model: G
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "unknown backend",
-		},
-		{
-			name: "qualifier missing model",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "qualifiers.s.model: required",
-		},
-		{
-			name: "qualifier negative timeout",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    timeout: -1s
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "qualifiers.s.timeout",
-		},
-		{
-			name: "qualifier invalid failure_policy",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    failure_policy: nope
-    input:
-      mode: audit
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "must be allow, audit, or block",
-		},
-		{
-			name: "qualifier invalid input mode",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    failure_policy: allow
-    input:
-      mode: peek
-    output:
-      mode: disabled
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "input.mode",
-		},
-		{
-			name: "qualifier negative max_concurrency",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-    max_concurrency: -1
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "max_concurrency: must be >= 0",
-		},
-		{
-			name: "qualifier negative queue_size",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-  guard:
-    base_url: http://127.0.0.1:8100
-    upstream_model: G
-qualifiers:
-  s:
-    backend: guard
-    model: G
-    failure_policy: allow
-    input:
-      mode: audit
-    output:
-      mode: disabled
-    queue_size: -1
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "queue_size: must be >= 0",
 		},
 		{
 			name: "model type invalid",
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
     type: weird
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "must be generation or embedding",
 		},
@@ -1895,14 +1561,15 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
     strategy: nope
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "not a supported routing strategy",
 		},
@@ -1911,46 +1578,31 @@ models:
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [""]
+    servers:
+    - ''
 `,
-			wantErr: "empty backend reference",
-		},
-		{
-			name: "model negative weight",
-			yaml: `
-version: 1
-` + minimalServer + `
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-models:
-  m1:
-    backends:
-      - {name: qa, weight: -1}
-`,
-			wantErr: "negative weight",
+			wantErr: "unknown server",
 		},
 		{
 			name: "model negative max_output_tokens",
 			yaml: `
 version: 1
 ` + minimalServer + `
-backends:
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
     policy:
       max_output_tokens: -1
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `,
 			wantErr: "max_output_tokens: must be >= 0",
 		},
@@ -1991,7 +1643,7 @@ func TestMalformedBaseURLCredentialsRedacted(t *testing.T) {
 		"http://user:" + secret + "@vllm.internal:8001", // well-formed userinfo branch
 	}
 	for _, base := range cases {
-		cfg := fmt.Sprintf("version: 1\n%s\nbackends:\n  qa:\n    base_url: %q\n    upstream_model: M\nmodels:\n  m1:\n    backends: [qa]\n", minimalServer, base)
+		cfg := fmt.Sprintf("version: 1\n%s\nservers:\n  qa:\n    url: %q\nmodels:\n  m1:\n    upstream_model: M\n    servers: [qa]\n", minimalServer, base)
 		if _, err := Parse([]byte(cfg)); err == nil {
 			t.Fatalf("Parse succeeded for %q; want a validation error", base)
 		} else if strings.Contains(err.Error(), secret) {
@@ -2021,14 +1673,15 @@ server:
   listen:
     network: unix
     address: /run/mellomting/mellomting.sock
-    mode: "0660"
-backends:
+    mode: '0660'
+servers:
   qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
+    url: http://127.0.0.1:8001
 models:
   m1:
-    backends: [qa]
+    upstream_model: M
+    servers:
+    - qa
 `
 
 const minimalServer = `
@@ -2116,8 +1769,8 @@ func TestParseWildcardListener(t *testing.T) {
 			}
 			yaml := "version: 1\nserver:\n  listen:\n    network: tcp\n    address: \"" + tc.address + "\"\n" +
 				tlsBlock + plainBlock +
-				"backends:\n  qa:\n    base_url: http://127.0.0.1:8001\n    upstream_model: M\n" +
-				"models:\n  m1:\n    backends: [qa]\n"
+				"servers:\n  qa:\n    url: http://127.0.0.1:8001\n" +
+				"models:\n  m1:\n    upstream_model: M\n    servers: [qa]\n"
 			_, err := Parse([]byte(yaml))
 			if tc.wantErr && err == nil {
 				t.Fatalf("Parse(%q) succeeded, want error", tc.address)

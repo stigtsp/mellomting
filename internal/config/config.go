@@ -30,7 +30,12 @@ const (
 	MaxFileBytes = 1 << 20
 )
 
-// Config is the Mellomting configuration (PLAN §76).
+// Config is the normalized runtime configuration (PLAN §76). It is not the
+// operator-facing source schema (D11): Parse decodes the source document
+// (sourceDoc) and deterministically normalizes it (D12) into this value.
+// Backends here are the synthetic internal backends derived from the
+// operator's servers; the source form is rejected and no source-only state
+// is retained.
 type Config struct {
 	Version    int                  `yaml:"version"`
 	Server     Server               `yaml:"server"`

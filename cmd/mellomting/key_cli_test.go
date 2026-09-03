@@ -38,16 +38,16 @@ auth:
   users_file: ` + dir + `/users.yaml
   pepper_file: ` + dir + `/auth.pepper
 
-backends:
+servers:
   qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder-Next
+    url: http://127.0.0.1:8001
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder-Next
+    servers:
       - qwen-a
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o600); err != nil {

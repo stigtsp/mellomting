@@ -354,7 +354,7 @@ func TestScaffoldFailsValidationUntilCompleted(t *testing.T) {
 		t.Fatal("scaffold passed validation: it must require backends and models before serve can start")
 	}
 	s := err.Error()
-	if !strings.Contains(s, "backends") || !strings.Contains(s, "models") {
+	if !strings.Contains(s, "servers") || !strings.Contains(s, "models") {
 		t.Fatalf("scaffold validation error does not point at the missing sections: %v", err)
 	}
 }

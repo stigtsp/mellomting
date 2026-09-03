@@ -1,5 +1,5 @@
 # Mellomting configuration scaffold, written by `mellomting
-# --install --systemd`. It is deliberately incomplete: with no backends
+# --install --systemd`. It is deliberately incomplete: with no servers
 # and no models it does not pass validation, so the daemon refuses to
 # start until you fill them in. After each edit run
 #
@@ -22,7 +22,6 @@ server:
 
   # TLS only with a tcp listener:
   # tls:
-  #   mode: files
   #   cert_file: /etc/mellomting/tls/cert.pem
   #   key_file: /etc/mellomting/tls/key.pem
 
@@ -58,30 +57,23 @@ logging:
 # retry:
 #   max_attempts: 3
 
-backends:
-  # At least one. base_url needs an explicit port; upstream_model is
-  # the name the vLLM serves, not the public name. Repeat per replica.
+servers:
+  # At least one. url needs an explicit port; the server name is
+  # operator-chosen and referenced by models.
   # main-a:
-  #   base_url: http://127.0.0.1:8001
-  #   upstream_model: <vLLM model name>
-  #   connect_timeout: 3s
-  #   header_timeout: 30s
-  #   request_timeout: 20m
-  #   stream_idle_timeout: 120s
-  #   max_concurrency: 4
-  #   queue_size: 8
-  #   queue_timeout: 5s
+  #   url: http://127.0.0.1:8001
+  #   api_key_file: /etc/mellomting/keys/main-a
 
 models:
-  # At least one. Strategies: single | round-robin |
-  # weighted-round-robin | least-inflight | weighted-least-inflight.
+  # At least one. servers lists the replica names in routing order.
   # my-model:
   #   type: generation
   #   strategy: least-inflight
+  #   upstream_model: <vLLM model name>
   #   policy:
   #     max_output_tokens: 32768
-  #   backends:
+  #   servers:
   #     - main-a
 
-# Qualifiers are shelved beyond the first release; serve refuses to
-# start while a qualifier is configured. Leave this section absent.
+# Qualifiers are shelved beyond the first release; do not add a
+# qualifiers section.

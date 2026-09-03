@@ -48,45 +48,11 @@ limits:
   global_requests_per_second: 100
   global_burst: 200
 
-backends:
-  qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder-Next
-    connect_timeout: 3s
-    request_timeout: 20m
-    stream_idle_timeout: 120s
-    max_concurrency: 4
-    queue_size: 8
-    queue_timeout: 5s
-
-  qwen-b:
-    base_url: http://127.0.0.1:8002
-    upstream_model: Qwen/Qwen3-Coder-Next
-    connect_timeout: 3s
-    request_timeout: 20m
-    stream_idle_timeout: 120s
-    max_concurrency: 4
-    queue_size: 8
-    queue_timeout: 5s
-
-  guard-a:
-    base_url: http://127.0.0.1:8100
-    upstream_model: Qwen/Qwen3Guard-Gen-0.6B
-    max_concurrency: 2
-    queue_size: 4
-
-qualifiers:
-  safety-audit:
-    backend: guard-a
-    model: Qwen/Qwen3Guard-Gen-0.6B
-    timeout: 3s
-    failure_policy: allow
-
-    input:
-      mode: audit
-
-    output:
-      mode: disabled
+servers:
+  local-a:
+    url: http://127.0.0.1:8001
+  local-b:
+    url: http://127.0.0.1:8002
 
 models:
   qwen-coder:
@@ -96,8 +62,6 @@ models:
     policy:
       max_output_tokens: 32768
 
-    qualifier: safety-audit
-
-    backends:
-      - qwen-a
-      - qwen-b
+    servers:
+      - local-a
+      - local-b

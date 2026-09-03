@@ -32,16 +32,16 @@ accounting:
   enabled: true
   path: ` + usagePath + `
 
-backends:
+servers:
   qwen-a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: Qwen/Qwen3-Coder
+    url: http://127.0.0.1:8001
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - qwen-a
 `
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {

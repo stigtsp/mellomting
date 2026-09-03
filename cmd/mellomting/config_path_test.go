@@ -157,15 +157,15 @@ server:
 auth:
   users_file: ` + dir + `/users.yaml
   pepper_file: ` + dir + `/auth.pepper
-backends:
+servers:
   a:
-    base_url: http://127.0.0.1:8001
-    upstream_model: m
+    url: http://127.0.0.1:8001
 models:
   m:
     type: generation
     strategy: single
-    backends: [a]
+    upstream_model: m
+    servers: [a]
 `
 	if err := os.WriteFile(cfg, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)

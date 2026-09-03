@@ -211,16 +211,16 @@ security:
   landlock:
     mode: %s
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, landlockMode, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -551,16 +551,16 @@ security:
   landlock:
     mode: required
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Up/Model
+    url: %s
 
 models:
   m:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Up/Model
+    servers:
       - local-a
 `, filepath.Join(dir, "s.sock"), filepath.Join(dir, "users.yaml"), filepath.Join(dir, "p"), backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -710,16 +710,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, addr, certPath, keyPath, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -834,16 +834,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, addr, certPath, keyPath, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -983,16 +983,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, strings.Split(addr, ":")[1], usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -1057,9 +1057,9 @@ models:
 }
 
 // TestServeRejectsShelved verifies that serve fails closed when a shelved
-// feature is configured (PLAN §96): qualifiers. (ACME TLS source fields are
-// rejected as unknown at parse time, so there is no longer a shelved TLS
-// mode to exercise here.)
+// source form is configured. Qualifiers (PLAN §96) and ACME TLS source
+// fields are rejected as unknown fields at parse time, so serve never
+// reaches the point where a shelved feature could be silently enabled.
 func TestServeRejectsShelved(t *testing.T) {
 	bin := buildCLI(t)
 	backend := fakeChatBackend(t)
@@ -1082,10 +1082,9 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Up/Model
+    url: %s
 
 qualifiers:
   safety-audit:
@@ -1101,11 +1100,11 @@ models:
   m:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Up/Model
+    servers:
       - local-a
-    qualifier: safety-audit
 `, sock, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "pepper"), backend.URL)
-		if err := assertServeRefused(t, bin, dir, cfg, "shelved"); err != nil {
+		if err := assertServeRefused(t, bin, dir, cfg, "field qualifiers not found"); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -1278,16 +1277,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -1436,16 +1435,16 @@ accounting:
   enabled: true
   path: %s
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, accPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -1622,16 +1621,16 @@ security:
 shutdown:
   grace_period: 3s
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -1819,16 +1818,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: M
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: M
+    servers:
       - local-a
 `, addr, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -1933,16 +1932,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: M
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: M
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -2052,16 +2051,16 @@ security:
   landlock:
     mode: required
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -2193,18 +2192,18 @@ security:
 accounting:
   enabled: false
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
+    upstream_model: Qwen/Qwen3-Coder
     policy:
       max_output_tokens: 100
-    backends:
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -2312,18 +2311,18 @@ accounting:
   ensure_stream_usage: true
   unknown_usage_reservation: 500
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
+    upstream_model: Qwen/Qwen3-Coder
     policy:
       max_output_tokens: 100
-    backends:
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
@@ -2415,16 +2414,16 @@ security:
   landlock:
     mode: disabled
 
-backends:
+servers:
   local-a:
-    base_url: %s
-    upstream_model: Qwen/Qwen3-Coder
+    url: %s
 
 models:
   qwen-coder:
     type: generation
     strategy: single
-    backends:
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
       - local-a
 `, sock, usersPath, pepperPath, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {

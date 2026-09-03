@@ -53,6 +53,9 @@ func readBounded(path string) ([]byte, error) {
 // Decoding is strict per PLAN §28: YAML aliases/anchors, custom tags,
 // unknown fields, and duplicate keys are all rejected, and multi-document
 // YAML (T-M7) is rejected so configuration is never silently discarded.
+// The document is decoded through the operator-facing source schema (D11)
+// and deterministically normalized (D12) into the runtime Config before
+// defaults and strict internal validation are applied.
 func Parse(data []byte) (*Config, error) {
 	if err := checkShape(data); err != nil {
 		return nil, wrapYAML(err)
@@ -61,18 +64,23 @@ func Parse(data []byte) (*Config, error) {
 		return nil, wrapYAML(err)
 	}
 
-	var cfg Config
+	var doc sourceDoc
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return nil, wrapYAML(err)
 	}
 
-	applyDefaults(&cfg)
-	if err := validate(&cfg); err != nil {
+	cfg, err := normalizeSource(doc)
+	if err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+
+	applyDefaults(cfg)
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // checkShape ensures the document is a single mapping with a single copy
