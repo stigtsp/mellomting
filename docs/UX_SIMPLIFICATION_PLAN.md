@@ -1246,7 +1246,7 @@ uncommitted implementation changes or a failing required check.
 | Task | Deliverable | Status |
 |---|---|---|
 | A0 | promote fixed UX contracts into `docs/PLAN.md` | complete |
-| A1 | truthful systemd provisioning and concise install output | pending |
+| A1 | truthful systemd provisioning and concise install output | complete |
 | A2 | shared CLI config-path resolver | pending |
 | A3 | static TLS source fields without a mode selector | pending |
 | B1 | server-oriented source config and normalization | pending |
