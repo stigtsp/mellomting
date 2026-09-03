@@ -57,30 +57,66 @@ func readBounded(path string) ([]byte, error) {
 // and deterministically normalized (D12) into the runtime Config before
 // defaults and strict internal validation are applied.
 func Parse(data []byte) (*Config, error) {
+	cfg, _, err := parse(data)
+	return cfg, err
+}
+
+// ParseEffective accepts raw configuration bytes and returns both the
+// normalized runtime Config and the fully defaulted server-oriented source
+// projection (D11). The projection is the canonical output of
+// `config show-effective`; it never exposes synthetic internal backend
+// names.
+func ParseEffective(data []byte) (*Config, []byte, error) {
+	cfg, doc, err := parse(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err := doc.MarshalEffectiveSource()
+	if err != nil {
+		return nil, nil, fmt.Errorf("render effective configuration: %w", err)
+	}
+	return cfg, out, nil
+}
+
+// LoadEffective reads the configuration file at path and returns both the
+// normalized runtime Config and the fully defaulted source projection.
+func LoadEffective(path string) (*Config, []byte, error) {
+	data, err := readBounded(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	cfg, out, err := ParseEffective(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, out, nil
+}
+
+func parse(data []byte) (*Config, effectiveDoc, error) {
 	if err := checkShape(data); err != nil {
-		return nil, wrapYAML(err)
+		return nil, effectiveDoc{}, wrapYAML(err)
 	}
 	if err := CheckYAMLTree(data); err != nil {
-		return nil, wrapYAML(err)
+		return nil, effectiveDoc{}, wrapYAML(err)
 	}
 
 	var doc sourceDoc
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&doc); err != nil {
-		return nil, wrapYAML(err)
+		return nil, effectiveDoc{}, wrapYAML(err)
 	}
 
 	cfg, err := normalizeSource(doc)
 	if err != nil {
-		return nil, err
+		return nil, effectiveDoc{}, err
 	}
 
 	applyDefaults(cfg)
 	if err := validate(cfg); err != nil {
-		return nil, err
+		return nil, effectiveDoc{}, err
 	}
-	return cfg, nil
+	return cfg, effectiveSource(doc, cfg), nil
 }
 
 // checkShape ensures the document is a single mapping with a single copy

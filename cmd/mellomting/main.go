@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
 	"mellomting/internal/landlock"
@@ -81,23 +79,21 @@ func configCmd(args []string) int {
 		return 1
 	}
 
-	cfg, err := config.Load(resolved)
+	if sub == "check" {
+		if _, err := config.Load(resolved); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: config %s failed: %v\n", sub, err)
+			return 1
+		}
+		fmt.Fprintf(os.Stdout, "mellomting: configuration at %s is valid\n", resolved)
+		return 0
+	}
+
+	_, out, err := config.LoadEffective(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: config %s failed: %v\n", sub, err)
 		return 1
 	}
-
-	switch sub {
-	case "check":
-		fmt.Fprintf(os.Stdout, "mellomting: configuration at %s is valid\n", resolved)
-	case "show-effective":
-		out, err := yaml.Marshal(cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: show-effective failed: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(os.Stdout, string(out))
-	}
+	fmt.Fprint(os.Stdout, string(out))
 	return 0
 }
 

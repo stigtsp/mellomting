@@ -69,7 +69,7 @@ type Retry struct {
 	MaxBackoff     Duration `yaml:"max_backoff"`
 	// Jitter enables full jitter on the exponential backoff. A nil
 	// pointer means the default (true).
-	Jitter *bool `yaml:"jitter"`
+	Jitter *bool `yaml:"jitter,omitempty"`
 }
 
 // JitterEnabled reports whether backoff jitter is on (default true).
@@ -110,7 +110,7 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 // Server is the listen and HTTP limit configuration (PLAN §8, §9).
 type Server struct {
 	Listen                  Listen `yaml:"listen"`
-	TLS                     TLS    `yaml:"tls"`
+	TLS                     TLS    `yaml:"tls,omitempty"`
 	MaxHeaderBytes          int    `yaml:"max_header_bytes"`
 	MaxBodyBytes            int    `yaml:"max_body_bytes"`
 	MaxResponseBytes        int    `yaml:"max_response_bytes"`
@@ -129,7 +129,7 @@ type Server struct {
 
 	// AllowPlaintextNonLoopback opts in to a plaintext non-loopback TCP
 	// listener when TLS is not configured (PLAN §8.2).
-	AllowPlaintextNonLoopback bool `yaml:"allow_plaintext_non_loopback"`
+	AllowPlaintextNonLoopback bool `yaml:"allow_plaintext_non_loopback,omitempty"`
 }
 
 // Listen selects the ingress listener (PLAN §8.1).
@@ -138,7 +138,7 @@ type Listen struct {
 	Address string `yaml:"address"`
 	// Mode is the Unix socket mode, e.g. "0660". Optional; defaults to
 	// DefaultUnixSocketMode for network unix.
-	Mode string `yaml:"mode"`
+	Mode string `yaml:"mode,omitempty"`
 }
 
 // TLS is native listener TLS (PLAN §67). Configuring either file field
@@ -147,8 +147,8 @@ type Listen struct {
 // are required together (D11). Native ACME (PLAN §68) is shelved and its
 // source fields (mode, hostname, email) are rejected as unknown.
 type TLS struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
 }
 
 // Auth selects the key store and pepper files (PLAN §26, §27).
@@ -185,19 +185,19 @@ type Logging struct {
 // Accounting configures token-usage JSONL recording (PLAN §38-42).
 type Accounting struct {
 	Enabled           bool     `yaml:"enabled"`
-	Path              string   `yaml:"path"`
-	EnsureStreamUsage *bool    `yaml:"ensure_stream_usage"`
-	ReplayOnStart     *bool    `yaml:"replay_on_start"`
-	ReplayMaxBytes    int64    `yaml:"replay_max_bytes"`
-	QueueSize         int      `yaml:"queue_size"`
-	Overflow          string   `yaml:"overflow"`
-	FSync             string   `yaml:"fsync"`
-	FSyncInterval     Duration `yaml:"fsync_interval"`
+	Path              string   `yaml:"path,omitempty"`
+	EnsureStreamUsage *bool    `yaml:"ensure_stream_usage,omitempty"`
+	ReplayOnStart     *bool    `yaml:"replay_on_start,omitempty"`
+	ReplayMaxBytes    int64    `yaml:"replay_max_bytes,omitempty"`
+	QueueSize         int      `yaml:"queue_size,omitempty"`
+	Overflow          string   `yaml:"overflow,omitempty"`
+	FSync             string   `yaml:"fsync,omitempty"`
+	FSyncInterval     Duration `yaml:"fsync_interval,omitempty"`
 	// UnknownUsageReservation is the fixed token charge applied to a
 	// successful request whose usage is unknown (PLAN §39). It is a
 	// conservative total (covers input and output). 0 falls back to the
 	// model's configured output cap.
-	UnknownUsageReservation int64 `yaml:"unknown_usage_reservation"`
+	UnknownUsageReservation int64 `yaml:"unknown_usage_reservation,omitempty"`
 }
 
 // Limits holds the global admission limits (PLAN §34).
@@ -264,7 +264,7 @@ type Model struct {
 
 // ModelPolicy is per-model request policy.
 type ModelPolicy struct {
-	MaxOutputTokens int `yaml:"max_output_tokens"`
+	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
 }
 
 // BackendRef names a backend plus an optional routing weight. It accepts

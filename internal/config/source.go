@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // sourceServer is one inference server in the operator-facing source
@@ -159,4 +161,89 @@ func sortedModelKeys(models map[string]sourceModel) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// effectiveServer is the operator-facing projection of one inference
+// server for `config show-effective` (D11). It carries the credential path
+// but never the credential contents.
+type effectiveServer struct {
+	URL        string `yaml:"url"`
+	APIKeyFile string `yaml:"api_key_file,omitempty"`
+}
+
+// effectiveModel is the fully defaulted operator-facing projection of one
+// compact public model (D11, D12).
+type effectiveModel struct {
+	Type          string      `yaml:"type"`
+	Strategy      string      `yaml:"strategy"`
+	Policy        ModelPolicy `yaml:"policy,omitempty"`
+	Servers       []string    `yaml:"servers"`
+	UpstreamModel string      `yaml:"upstream_model,omitempty"`
+}
+
+// effectiveDoc is the fully defaulted, server-oriented source projection
+// emitted by `config show-effective` (D11). It preserves operator server
+// names and replica order, applies the D12 model defaults, and contains no
+// synthetic internal backend names.
+type effectiveDoc struct {
+	Version    int                        `yaml:"version"`
+	Server     Server                     `yaml:"server"`
+	Auth       *Auth                      `yaml:"auth,omitempty"`
+	Security   *Security                  `yaml:"security,omitempty"`
+	Logging    *Logging                   `yaml:"logging,omitempty"`
+	Accounting *Accounting                `yaml:"accounting,omitempty"`
+	Limits     *Limits                    `yaml:"limits,omitempty"`
+	Shutdown   *Shutdown                  `yaml:"shutdown,omitempty"`
+	Responses  *Responses                 `yaml:"responses,omitempty"`
+	Retry      *Retry                     `yaml:"retry,omitempty"`
+	Servers    map[string]effectiveServer `yaml:"servers"`
+	Models     map[string]effectiveModel  `yaml:"models"`
+}
+
+// effectiveSource builds the fully defaulted source projection from the
+// original operator document and the normalized, defaulted runtime Config.
+// It never reconstructs server names or replica order from synthetic
+// backend names (D11).
+func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
+	servers := make(map[string]effectiveServer, len(doc.Servers))
+	for name, s := range doc.Servers {
+		servers[name] = effectiveServer{URL: s.URL, APIKeyFile: s.APIKeyFile}
+	}
+
+	models := make(map[string]effectiveModel, len(doc.Models))
+	for name, sm := range doc.Models {
+		m := cfg.Models[name]
+		upstream := sm.UpstreamModel
+		if upstream == "" {
+			upstream = name
+		}
+		models[name] = effectiveModel{
+			Type:          m.Type,
+			Strategy:      m.Strategy,
+			Policy:        m.Policy,
+			Servers:       append([]string(nil), sm.Servers...),
+			UpstreamModel: upstream,
+		}
+	}
+
+	return effectiveDoc{
+		Version:    cfg.Version,
+		Server:     cfg.Server,
+		Auth:       &cfg.Auth,
+		Security:   &cfg.Security,
+		Logging:    &cfg.Logging,
+		Accounting: &cfg.Accounting,
+		Limits:     &cfg.Limits,
+		Shutdown:   &cfg.Shutdown,
+		Responses:  &cfg.Responses,
+		Retry:      &cfg.Retry,
+		Servers:    servers,
+		Models:     models,
+	}
+}
+
+// MarshalEffectiveSource renders the effective source projection as
+// deterministic YAML.
+func (e effectiveDoc) MarshalEffectiveSource() ([]byte, error) {
+	return yaml.Marshal(e)
 }

@@ -4,9 +4,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"mellomting/internal/config"
 )
+
+const cliTestCredentialSecret = "credential-content-must-not-appear"
 
 // captureOutput runs fn while os.Stdout and os.Stderr are redirected to
 // in-memory pipes, and returns the exit code plus the captured output.
@@ -64,6 +69,7 @@ auth:
 servers:
   qwen-a:
     url: http://127.0.0.1:8001
+    api_key_file: ` + dir + `/qwen-a.key
 
 models:
   qwen-coder:
@@ -75,6 +81,9 @@ models:
 `
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "qwen-a.key"), []byte(cliTestCredentialSecret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -162,10 +171,37 @@ func TestConfigShowEffective(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("show-effective exit = %d", code)
 	}
-	for _, want := range []string{"version: 1", "users_file", "loopback-only"} {
+	for _, want := range []string{
+		"version: 1",
+		"servers:",
+		"models:",
+		"qwen-a",
+		"upstream_model: Qwen/Qwen3-Coder-Next",
+		"users_file",
+		"loopback-only",
+		filepath.Join(filepath.Dir(cfgPath), "qwen-a.key"),
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("show-effective missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "auto-") {
+		t.Fatalf("show-effective leaked a synthetic backend name:\n%s", out)
+	}
+	if strings.Contains(out, cliTestCredentialSecret) {
+		t.Fatalf("show-effective leaked credential contents:\n%s", out)
+	}
+
+	original, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load original: %v", err)
+	}
+	reparsed, err := config.Parse([]byte(out))
+	if err != nil {
+		t.Fatalf("effective config did not re-parse: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(original, reparsed) {
+		t.Fatalf("effective config did not round-trip:\noriginal = %+v\nreparsed = %+v", original, reparsed)
 	}
 }
 
