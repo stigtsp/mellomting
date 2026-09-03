@@ -1251,7 +1251,7 @@ uncommitted implementation changes or a failing required check.
 | A3 | static TLS source fields without a mode selector | complete |
 | B1 | server-oriented source config and normalization | complete |
 | B2 | canonical server-oriented effective config | complete |
-| B3 | bounded pure `/v1/models` parser | pending |
+| B3 | bounded pure `/v1/models` parser | complete |
 | B4 | policy-enforced discovery HTTP client | pending |
 | B5 | deterministic multi-server aggregation | pending |
 | B6 | init flags, listener parsing, and preflight | pending |
