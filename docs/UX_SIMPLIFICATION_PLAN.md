@@ -1252,7 +1252,7 @@ uncommitted implementation changes or a failing required check.
 | B1 | server-oriented source config and normalization | complete |
 | B2 | canonical server-oriented effective config | complete |
 | B3 | bounded pure `/v1/models` parser | complete |
-| B4 | policy-enforced discovery HTTP client | pending |
+| B4 | policy-enforced discovery HTTP client | complete |
 | B5 | deterministic multi-server aggregation | pending |
 | B6 | init flags, listener parsing, and preflight | pending |
 | B7 | in-memory config/auth rendering and validation | pending |
