@@ -1249,7 +1249,7 @@ uncommitted implementation changes or a failing required check.
 | A1 | truthful systemd provisioning and concise install output | complete |
 | A2 | shared CLI config-path resolver | complete |
 | A3 | static TLS source fields without a mode selector | complete |
-| B1 | server-oriented source config and normalization | pending |
+| B1 | server-oriented source config and normalization | complete |
 | B2 | canonical server-oriented effective config | pending |
 | B3 | bounded pure `/v1/models` parser | pending |
 | B4 | policy-enforced discovery HTTP client | pending |
