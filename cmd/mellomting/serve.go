@@ -54,12 +54,18 @@ type daemon struct {
 // 2 usage error.
 func serveCmd(args []string) int {
 	fs := flag.NewFlagSet("mellomting serve", flag.ContinueOnError)
-	configPath := fs.String("config", config.DefaultConfigPath, "configuration file path")
+	var configPath string
+	fs.StringVar(&configPath, "config", "", "configuration file path")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return 2
 	}
+	resolved, err := ResolveConfigPath(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
+		return 1
+	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: serve: invalid configuration: %v\n", err)
 		return 1

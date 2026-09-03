@@ -23,7 +23,7 @@ func usageCmd(args []string) int {
 
 	fs := flag.NewFlagSet("mellomting usage "+sub, flag.ContinueOnError)
 	var configPath string
-	fs.StringVar(&configPath, "config", config.DefaultConfigPath, "configuration file path")
+	fs.StringVar(&configPath, "config", "", "configuration file path")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -31,8 +31,13 @@ func usageCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: usage %s: unexpected arguments %q\n", sub, fs.Args())
 		return 2
 	}
+	resolved, err := ResolveConfigPath(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: usage %s: %v\n", sub, err)
+		return 1
+	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: usage %s: %v\n", sub, err)
 		return 1

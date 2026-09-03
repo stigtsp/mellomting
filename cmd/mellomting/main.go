@@ -70,12 +70,18 @@ func configCmd(args []string) int {
 	}
 
 	fs := flag.NewFlagSet("mellomting config "+sub, flag.ContinueOnError)
-	configPath := fs.String("config", config.DefaultConfigPath, "configuration file path")
+	var configPath string
+	fs.StringVar(&configPath, "config", "", "configuration file path")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
+	resolved, err := ResolveConfigPath(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: config %s: %v\n", sub, err)
+		return 1
+	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: config %s failed: %v\n", sub, err)
 		return 1
@@ -83,7 +89,7 @@ func configCmd(args []string) int {
 
 	switch sub {
 	case "check":
-		fmt.Fprintf(os.Stdout, "mellomting: configuration at %s is valid\n", *configPath)
+		fmt.Fprintf(os.Stdout, "mellomting: configuration at %s is valid\n", resolved)
 	case "show-effective":
 		out, err := yaml.Marshal(cfg)
 		if err != nil {
@@ -108,24 +114,35 @@ func sandboxCmd(args []string) int {
 	}
 
 	fs := flag.NewFlagSet("mellomting sandbox check", flag.ContinueOnError)
-	configPath := fs.String("config", "", "configuration file for landlock mode/minimum_abi (optional)")
+	var configPath string
+	fs.StringVar(&configPath, "config", "", "configuration file for landlock mode/minimum_abi (optional)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
+	}
+
+	resolved, err := ResolveConfigPath(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: sandbox check: %v\n", err)
+		return 1
 	}
 
 	report := landlock.Check()
 	mode := landlock.ModeRequired
 	minABI := landlock.DefaultMinimumABI
 	enforce := false
-	if *configPath != "" {
-		cfg, err := config.Load(*configPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: sandbox check failed: %v\n", err)
-			return 1
-		}
+	local := resolved == "./config.yaml"
+	if cfg, loadErr := config.Load(resolved); loadErr == nil {
 		mode = cfg.Security.Landlock.Mode
 		minABI = cfg.Security.Landlock.MinimumABI
 		enforce = true
+	} else if local || configPath != "" {
+		// A discovered local ./config.yaml or an explicit --config must be
+		// loadable; report the failure rather than silently running
+		// report-only. An absent or unreadable system default (/etc) is
+		// allowed to fall back to report-only so the check works without a
+		// configuration.
+		fmt.Fprintf(os.Stderr, "mellomting: sandbox check failed: %v\n", loadErr)
+		return 1
 	}
 
 	fmt.Println("mellomting: sandbox check")
@@ -216,7 +233,7 @@ type keyFlags struct {
 func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	fs := flag.NewFlagSet("mellomting key "+sub, flag.ContinueOnError)
 	c := &keyFlags{}
-	fs.StringVar(&c.configPath, "config", config.DefaultConfigPath, "configuration file path")
+	fs.StringVar(&c.configPath, "config", "", "configuration file path")
 	if sub == "create" {
 		fs.StringVar(&c.name, "name", "", "human-readable key name (required)")
 		fs.StringVar(&c.models, "models", "", "comma-separated model names, or * (required)")
@@ -288,7 +305,12 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 
 // keyState loads configuration and resolves the users-file and pepper paths.
 func keyState(c *keyFlags) (cfg *config.Config, usersPath, pepperPath string, exit int) {
-	cfg, err := config.Load(c.configPath)
+	resolved, err := ResolveConfigPath(c.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: key: %v\n", err)
+		return nil, "", "", 1
+	}
+	cfg, err = config.Load(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: key: load config: %v\n", err)
 		return nil, "", "", 1
