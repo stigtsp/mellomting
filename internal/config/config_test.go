@@ -565,7 +565,6 @@ server:
     network: tcp
     address: 10.0.0.5:8443
   tls:
-    mode: files
     cert_file: /etc/mellomting/tls/cert.pem
     key_file: /etc/mellomting/tls/key.pem
 backends:
@@ -606,7 +605,6 @@ server:
     address: /run/mellomting/mellomting.sock
     mode: "0660"
   tls:
-    mode: files
     cert_file: /etc/mellomting/tls/cert.pem
     key_file: /etc/mellomting/tls/key.pem
 backends:
@@ -1178,7 +1176,7 @@ models:
 			wantErr: "stream_write_timeout: must be > 0",
 		},
 		{
-			name: "tls files without cert and key",
+			name: "tls cert without key rejected",
 			yaml: `
 version: 1
 server:
@@ -1186,7 +1184,7 @@ server:
     network: tcp
     address: 127.0.0.1:8080
   tls:
-    mode: files
+    cert_file: /etc/mellomting/tls/cert.pem
 backends:
   qa:
     base_url: http://127.0.0.1:8001
@@ -1198,7 +1196,7 @@ models:
 			wantErr: "cert_file and key_file are required",
 		},
 		{
-			name: "tls acme without hostname and email",
+			name: "tls mode field rejected as unknown",
 			yaml: `
 version: 1
 server:
@@ -1207,6 +1205,8 @@ server:
     address: 127.0.0.1:8080
   tls:
     mode: acme
+    hostname: llm.example.net
+    email: admin@example.net
 backends:
   qa:
     base_url: http://127.0.0.1:8001
@@ -1215,27 +1215,7 @@ models:
   m1:
     backends: [qa]
 `,
-			wantErr: "hostname and email are required",
-		},
-		{
-			name: "tls mode invalid",
-			yaml: `
-version: 1
-server:
-  listen:
-    network: tcp
-    address: 127.0.0.1:8080
-  tls:
-    mode: quic
-backends:
-  qa:
-    base_url: http://127.0.0.1:8001
-    upstream_model: M
-models:
-  m1:
-    backends: [qa]
-`,
-			wantErr: "tls.mode",
+			wantErr: "field mode not found",
 		},
 		{
 			name: "backend cidrs with loopback-only mode",
@@ -2097,5 +2077,54 @@ func TestLoadRejectsOversizedFile(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "maximum size") {
 		t.Fatalf("oversized file: err = %v, want maximum size error", err)
+	}
+}
+
+// TestParseWildcardListener covers D17: an empty host in a TCP listen
+// address (:PORT) is a valid wildcard bind, subject to the same
+// TLS-or-explicit-plaintext policy as 0.0.0.0 and [::].
+func TestParseWildcardListener(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		address string
+		tls     bool
+		plain   bool
+		wantErr bool
+	}{
+		{name: "port wildcard rejected without opt-in", address: ":8080", wantErr: true},
+		{name: "port wildcard accepted with plaintext opt-in", address: ":8080", plain: true},
+		{name: "port wildcard accepted with tls", address: ":8443", tls: true},
+		{name: "ipv4 wildcard rejected without opt-in", address: "0.0.0.0:8080", wantErr: true},
+		{name: "ipv4 wildcard accepted with plaintext opt-in", address: "0.0.0.0:8080", plain: true},
+		{name: "ipv4 wildcard accepted with tls", address: "0.0.0.0:8443", tls: true},
+		{name: "ipv6 wildcard rejected without opt-in", address: "[::]:8080", wantErr: true},
+		{name: "ipv6 wildcard accepted with plaintext opt-in", address: "[::]:8080", plain: true},
+		{name: "ipv6 wildcard accepted with tls", address: "[::]:8443", tls: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tlsBlock string
+			if tc.tls {
+				tlsBlock = "  tls:\n    cert_file: /etc/mellomting/tls/cert.pem\n    key_file: /etc/mellomting/tls/key.pem\n"
+			}
+			var plainBlock string
+			if tc.plain {
+				plainBlock = "  allow_plaintext_non_loopback: true\n"
+			}
+			yaml := "version: 1\nserver:\n  listen:\n    network: tcp\n    address: \"" + tc.address + "\"\n" +
+				tlsBlock + plainBlock +
+				"backends:\n  qa:\n    base_url: http://127.0.0.1:8001\n    upstream_model: M\n" +
+				"models:\n  m1:\n    backends: [qa]\n"
+			_, err := Parse([]byte(yaml))
+			if tc.wantErr && err == nil {
+				t.Fatalf("Parse(%q) succeeded, want error", tc.address)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Parse(%q): %v", tc.address, err)
+			}
+		})
 	}
 }

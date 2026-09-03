@@ -111,7 +111,7 @@ func serveCmd(args []string) int {
 	// unlinking a start-before-stop / blue-green replacement's fresh
 	// socket and taking it off the path while its process keeps running.
 
-	if cfg.Server.TLS.Mode == "" && cfg.Server.Listen.Network == "tcp" &&
+	if !staticTLSConfigured(cfg.Server.TLS) && cfg.Server.Listen.Network == "tcp" &&
 		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
 		cfg.Server.AllowPlaintextNonLoopback {
 		log.Warn("plaintext non-loopback TCP listener is active")
@@ -229,9 +229,6 @@ func rejectShelvedFeatures(cfg *config.Config) error {
 	var shelved []string
 	if len(cfg.Qualifiers) > 0 {
 		shelved = append(shelved, "qualifiers")
-	}
-	if cfg.Server.TLS.Mode == "acme" {
-		shelved = append(shelved, `tls.mode "acme"`)
 	}
 	if len(shelved) > 0 {
 		return fmt.Errorf("%s are shelved for the first release: remove them from the configuration and retry",
@@ -502,7 +499,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// loaded once, before the sandbox, and are reloaded only by a process
 	// restart in v1.
 	var tlsConfig *tls.Config
-	if cfg.Server.TLS.Mode == "files" {
+	if staticTLSConfigured(cfg.Server.TLS) {
 		tlsCfg, err := tlsconfig.Files(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
 		if err != nil {
 			return nil, err
@@ -661,4 +658,10 @@ func isNonLoopbackListenAddr(addr string) bool {
 	// a hostname listener is refused without allow_plaintext_non_loopback
 	// and the §8.2 warning fires when the opt-in is set.
 	return true
+}
+
+// staticTLSConfigured reports whether static TLS is enabled (D11): either
+// file field being set enables it, and validation requires both.
+func staticTLSConfigured(t config.TLS) bool {
+	return t.CertFile != "" || t.KeyFile != ""
 }

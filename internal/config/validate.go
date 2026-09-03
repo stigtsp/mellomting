@@ -299,7 +299,7 @@ func validateServer(s *Server) []string {
 			errs = append(errs, "server.listen.mode: only valid for network unix")
 		}
 		host, _, err := net.SplitHostPort(s.Listen.Address)
-		if err != nil || host == "" {
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("server.listen.address: %q must be host:port for network tcp", s.Listen.Address))
 		} else if isNonLoopbackHost(host) && !tlsConfigured(s.TLS) && !s.AllowPlaintextNonLoopback {
 			errs = append(errs, "server: non-loopback TCP listener requires tls configuration or allow_plaintext_non_loopback: true")
@@ -352,28 +352,18 @@ func validateServer(s *Server) []string {
 		errs = append(errs, "server.stream_write_timeout: must be > 0")
 	}
 
-	if s.Listen.Network == "unix" && s.TLS.Mode != "" {
+	if s.Listen.Network == "unix" && tlsConfigured(s.TLS) {
 		errs = append(errs, "server.tls: only valid when listen network is tcp")
 	}
 
-	switch s.TLS.Mode {
-	case "":
-	case "files":
-		if s.TLS.CertFile == "" || s.TLS.KeyFile == "" {
-			errs = append(errs, "server.tls: cert_file and key_file are required when mode is files")
-		}
-	case "acme":
-		if s.TLS.Hostname == "" || s.TLS.Email == "" {
-			errs = append(errs, "server.tls: hostname and email are required when mode is acme")
-		}
-	default:
-		errs = append(errs, fmt.Sprintf("server.tls.mode: %q must be \"files\" or \"acme\"", s.TLS.Mode))
+	if tlsConfigured(s.TLS) && (s.TLS.CertFile == "" || s.TLS.KeyFile == "") {
+		errs = append(errs, "server.tls: cert_file and key_file are required together")
 	}
 
 	return errs
 }
 
-func tlsConfigured(t TLS) bool { return t.Mode != "" }
+func tlsConfigured(t TLS) bool { return t.CertFile != "" || t.KeyFile != "" }
 
 func validateAuth(a *Auth) []string {
 	var errs []string

@@ -699,7 +699,6 @@ server:
     network: tcp
     address: %s
   tls:
-    mode: files
     cert_file: %s
     key_file: %s
 
@@ -824,7 +823,6 @@ server:
     network: tcp
     address: %s
   tls:
-    mode: files
     cert_file: %s
     key_file: %s
 
@@ -1059,48 +1057,12 @@ models:
 }
 
 // TestServeRejectsShelved verifies that serve fails closed when a shelved
-// feature is configured (PLAN §68, §96): ACME TLS and qualifiers.
+// feature is configured (PLAN §96): qualifiers. (ACME TLS source fields are
+// rejected as unknown at parse time, so there is no longer a shelved TLS
+// mode to exercise here.)
 func TestServeRejectsShelved(t *testing.T) {
 	bin := buildCLI(t)
 	backend := fakeChatBackend(t)
-
-	t.Run("acme_tls", func(t *testing.T) {
-		dir := shortTempDir(t)
-		cfg := fmt.Sprintf(`version: 1
-
-server:
-  listen:
-    network: tcp
-    address: 127.0.0.1:18080
-  tls:
-    mode: acme
-    hostname: llm.example.net
-    email: admin@example.net
-
-auth:
-  users_file: %s
-  pepper_file: %s
-
-security:
-  landlock:
-    mode: disabled
-
-backends:
-  local-a:
-    base_url: %s
-    upstream_model: Up/Model
-
-models:
-  m:
-    type: generation
-    strategy: single
-    backends:
-      - local-a
-`, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "pepper"), backend.URL)
-		if err := assertServeRefused(t, bin, dir, cfg, "shelved"); err != nil {
-			t.Fatal(err)
-		}
-	})
 
 	t.Run("qualifier", func(t *testing.T) {
 		dir := shortTempDir(t)
