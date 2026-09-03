@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"mellomting/internal/auth"
 )
 
 // Host paths the daemon and its provisioning use (PLAN §26-27, §64, §76).
@@ -61,11 +63,7 @@ const configMaxBytes = 1 << 20
 // for every request) until an operator creates a key — with a note that
 // the key subcommands own the file. A test asserts the stub round-trips
 // auth.LoadUsers.
-const usersStub = `# Mellomting API keys. Managed by ` + "`" + `mellomting key
-# create|list|enable|disable|revoke` + "`" + ` — do not edit by hand.
-version: 1
-keys: []
-`
+const usersStub = auth.EmptyUsers
 
 // dirSpec describes an operational directory the daemon needs but does not
 // create; provisioning creates it with a strict mode and owner.

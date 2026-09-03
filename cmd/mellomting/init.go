@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -10,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
+	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
 	"mellomting/internal/discovery"
@@ -329,4 +335,136 @@ func initPreflightLandlock(mode string, explicit bool, check func() landlock.Rep
 		}
 	}
 	return nil
+}
+
+// initPepperBytes is the D4 pepper entropy: 64 random bytes before base64.
+const initPepperBytes = 64
+
+// initPepperRand is the pepper entropy source. Tests replace it with a
+// deterministic source while the production path remains crypto/rand.
+var initPepperRand = func(n int) ([]byte, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate pepper: %w", err)
+	}
+	return b, nil
+}
+
+// initArtifacts is the fully rendered and validated in-memory output of
+// init. No byte in this value has been written to disk.
+type initArtifacts struct {
+	Config     []byte
+	Users      []byte
+	Pepper     []byte
+	Normalized *config.Config
+}
+
+// renderInitArtifacts builds the exact config, users, and pepper bytes from
+// parsed arguments and discovered models (B7). It parses and validates the
+// rendered config and users representation before returning, and it never
+// touches the filesystem.
+func renderInitArtifacts(args initArguments, discovered discovery.Result) (initArtifacts, error) {
+	if len(discovered.Models) == 0 {
+		return initArtifacts{}, errors.New("discovery returned no models")
+	}
+	policy, err := discovery.DerivePolicy(args.Servers)
+	if err != nil {
+		return initArtifacts{}, err
+	}
+
+	pepper, err := initPepperRand(initPepperBytes)
+	if err != nil {
+		return initArtifacts{}, err
+	}
+	if err := auth.ValidatePepper(pepper); err != nil {
+		return initArtifacts{}, err
+	}
+	pepperBytes := []byte(base64.StdEncoding.EncodeToString(pepper) + "\n")
+
+	usersBytes := auth.EmptyUsersBytes()
+	if _, err := auth.ParseUsers(usersBytes); err != nil {
+		return initArtifacts{}, fmt.Errorf("render empty users file: %w", err)
+	}
+
+	configBytes, err := renderInitConfig(args, discovered, policy)
+	if err != nil {
+		return initArtifacts{}, err
+	}
+	cfg, err := config.Parse(configBytes)
+	if err != nil {
+		return initArtifacts{}, fmt.Errorf("rendered configuration failed validation: %w", err)
+	}
+
+	return initArtifacts{
+		Config:     configBytes,
+		Users:      usersBytes,
+		Pepper:     pepperBytes,
+		Normalized: cfg,
+	}, nil
+}
+
+func renderInitConfig(args initArguments, discovered discovery.Result, policy config.BackendNetwork) ([]byte, error) {
+	listen := map[string]any{
+		"network": args.Listener.Network,
+		"address": args.Listener.Address,
+	}
+	if args.Listener.Network == "unix" {
+		listen["mode"] = config.DefaultUnixSocketMode
+	}
+	server := map[string]any{
+		"listen": listen,
+	}
+	if args.Listener.Network == "tcp" && args.Listener.AllowPlaintext {
+		server["allow_plaintext_non_loopback"] = true
+	}
+
+	var networkDoc map[string]any
+	switch policy.Mode {
+	case "loopback-only":
+		networkDoc = map[string]any{"mode": policy.Mode}
+	case "allowed-cidrs":
+		networkDoc = map[string]any{
+			"mode":  policy.Mode,
+			"cidrs": policy.CIDRs,
+		}
+	default:
+		return nil, fmt.Errorf("unsupported derived backend network policy %q", policy.Mode)
+	}
+
+	servers := make(map[string]any, len(args.Servers))
+	for _, s := range args.Servers {
+		servers[s.Name] = map[string]any{"url": s.BaseURL}
+	}
+
+	models := make(map[string]any, len(discovered.Models))
+	for _, name := range discovered.SortedModels() {
+		replicas := append([]string(nil), discovered.Models[name]...)
+		models[name] = map[string]any{
+			"type":    "generation",
+			"servers": replicas,
+		}
+	}
+
+	doc := map[string]any{
+		"version": 1,
+		"server":  server,
+		"auth": map[string]any{
+			"pepper_file": args.PepperPath,
+			"users_file":  args.UsersPath,
+		},
+		"security": map[string]any{
+			"backend_network": networkDoc,
+			"landlock": map[string]any{
+				"mode":        args.LandlockMode,
+				"minimum_abi": landlock.DefaultMinimumABI,
+			},
+		},
+		"servers": servers,
+		"models":  models,
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("render configuration: %w", err)
+	}
+	return out, nil
 }

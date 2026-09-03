@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"mellomting/internal/auth"
 	"mellomting/internal/config"
 	"mellomting/internal/discovery"
 	"mellomting/internal/landlock"
@@ -480,6 +482,281 @@ func TestInitCmd(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "at most") {
 			t.Fatalf("stderr = %q", stderr)
+		}
+	})
+}
+
+func withInitPepper(t *testing.T, pepper []byte) {
+	t.Helper()
+	old := initPepperRand
+	initPepperRand = func(int) ([]byte, error) { return pepper, nil }
+	t.Cleanup(func() { initPepperRand = old })
+}
+
+func TestRenderInitArtifacts(t *testing.T) {
+	deterministicPepper := make([]byte, 64)
+	for i := range deterministicPepper {
+		deterministicPepper[i] = byte(i)
+	}
+
+	t.Run("loopback config fixture", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"alpha": {"local"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		wantConfig := fmt.Sprintf(`auth:
+    pepper_file: %s
+    users_file: %s
+models:
+    alpha:
+        servers:
+            - local
+        type: generation
+security:
+    backend_network:
+        mode: loopback-only
+    landlock:
+        minimum_abi: %d
+        mode: required
+server:
+    listen:
+        address: 127.0.0.1:8080
+        network: tcp
+servers:
+    local:
+        url: http://127.0.0.1:8000
+version: 1
+`, args.PepperPath, args.UsersPath, landlock.DefaultMinimumABI)
+		if string(got.Config) != wantConfig {
+			t.Fatalf("config =\n%s\nwant\n%s", got.Config, wantConfig)
+		}
+		if string(got.Users) != auth.EmptyUsers {
+			t.Fatalf("users = %q", got.Users)
+		}
+		wantPepper := base64.StdEncoding.EncodeToString(deterministicPepper) + "\n"
+		if string(got.Pepper) != wantPepper {
+			t.Fatalf("pepper = %q", got.Pepper)
+		}
+		if got.Normalized.Auth.UsersFile != args.UsersPath || got.Normalized.Auth.PepperFile != args.PepperPath {
+			t.Fatalf("normalized auth = %+v", got.Normalized.Auth)
+		}
+		if got.Normalized.Security.Landlock.Mode != landlock.ModeRequired {
+			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
+		}
+		if got.Normalized.Security.BackendNetwork.Mode != "loopback-only" {
+			t.Fatalf("backend network = %+v", got.Normalized.Security.BackendNetwork)
+		}
+		m := got.Normalized.Models["alpha"]
+		if m.Type != "generation" || m.Strategy != "single" || len(m.Backends) != 1 {
+			t.Fatalf("model = %+v", m)
+		}
+
+		again, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(again.Config) != string(got.Config) {
+			t.Fatalf("render not stable:\n%s\n%s", got.Config, again.Config)
+		}
+	})
+
+	t.Run("multiple replicas use default strategy", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"a=http://127.0.0.1:8000", "b=http://127.0.0.1:8001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"m": {"a", "b"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := got.Normalized.Models["m"]
+		if m.Strategy != "least-inflight" || len(m.Backends) != 2 {
+			t.Fatalf("model = %+v", m)
+		}
+		cfg := string(got.Config)
+		ia := strings.Index(cfg, "- a\n")
+		ib := strings.Index(cfg, "- b\n")
+		if ia < 0 || ib < 0 || ia > ib {
+			t.Fatalf("config =\n%s", cfg)
+		}
+	})
+
+	t.Run("wildcard listener enables plaintext", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, "0.0.0.0:8080", "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"m": {"local"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Normalized.Server.AllowPlaintextNonLoopback {
+			t.Fatalf("normalized server = %+v", got.Normalized.Server)
+		}
+		if !strings.Contains(string(got.Config), "allow_plaintext_non_loopback: true") {
+			t.Fatalf("config =\n%s", got.Config)
+		}
+	})
+
+	t.Run("unix listener uses default socket mode", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		sock := filepath.Join(dir, "mellomting.sock")
+		args, err := parseInitArguments(cfgPath, sock, "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"m": {"local"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Normalized.Server.Listen.Network != "unix" || got.Normalized.Server.Listen.Mode != config.DefaultUnixSocketMode {
+			t.Fatalf("listen = %+v", got.Normalized.Server.Listen)
+		}
+		if !strings.Contains(string(got.Config), "mode: \"0660\"") {
+			t.Fatalf("config =\n%s", got.Config)
+		}
+		if strings.Contains(string(got.Config), "allow_plaintext_non_loopback") {
+			t.Fatalf("config =\n%s", got.Config)
+		}
+	})
+
+	t.Run("mixed servers derive allowed-cidrs", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"a=http://192.168.1.20:8000", "b=http://127.0.0.1:8001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"m": {"a", "b"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Normalized.Security.BackendNetwork.Mode != "allowed-cidrs" {
+			t.Fatalf("backend network = %+v", got.Normalized.Security.BackendNetwork)
+		}
+		want := []string{"127.0.0.1/32", "192.168.1.20/32"}
+		if !reflect.DeepEqual(got.Normalized.Security.BackendNetwork.CIDRs, want) {
+			t.Fatalf("cidrs = %v, want %v", got.Normalized.Security.BackendNetwork.CIDRs, want)
+		}
+	})
+
+	t.Run("selected landlock mode is rendered", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "best-effort", true, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered := discovery.Result{Models: map[string][]string{"m": {"local"}}}
+		got, err := renderInitArtifacts(args, discovered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Normalized.Security.Landlock.Mode != landlock.ModeBestEffort {
+			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
+		}
+		if !strings.Contains(string(got.Config), "mode: best-effort") {
+			t.Fatalf("config =\n%s", got.Config)
+		}
+	})
+
+	t.Run("empty discovery fails", func(t *testing.T) {
+		withInitPepper(t, deterministicPepper)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := renderInitArtifacts(args, discovery.Result{Models: map[string][]string{}}); err == nil || !strings.Contains(err.Error(), "no models") {
+			t.Fatalf("err = %v, want no models", err)
+		}
+	})
+
+	t.Run("pepper source receives 64 bytes", func(t *testing.T) {
+		var got int
+		old := initPepperRand
+		initPepperRand = func(n int) ([]byte, error) {
+			got = n
+			return make([]byte, n), nil
+		}
+		t.Cleanup(func() { initPepperRand = old })
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := renderInitArtifacts(args, discovery.Result{Models: map[string][]string{"m": {"local"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if got != initPepperBytes {
+			t.Fatalf("pepper length = %d, want %d", got, initPepperBytes)
+		}
+	})
+
+	t.Run("short pepper rejected", func(t *testing.T) {
+		old := initPepperRand
+		initPepperRand = func(int) ([]byte, error) { return make([]byte, 15), nil }
+		t.Cleanup(func() { initPepperRand = old })
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := renderInitArtifacts(args, discovery.Result{Models: map[string][]string{"m": {"local"}}}); err == nil || !strings.Contains(err.Error(), "pepper too short") {
+			t.Fatalf("err = %v, want pepper too short", err)
+		}
+	})
+}
+
+func TestAuthInitByteParsers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty users parses", func(t *testing.T) {
+		t.Parallel()
+		uf, err := auth.ParseUsers(auth.EmptyUsersBytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(uf.Keys) != 0 {
+			t.Fatalf("keys = %v", uf.Keys)
+		}
+	})
+
+	t.Run("pepper validation", func(t *testing.T) {
+		t.Parallel()
+		if err := auth.ValidatePepper(make([]byte, 15)); err == nil || !strings.Contains(err.Error(), "pepper too short") {
+			t.Fatalf("err = %v, want too short", err)
+		}
+		if err := auth.ValidatePepper(make([]byte, 16)); err != nil {
+			t.Fatalf("err = %v", err)
 		}
 	})
 }

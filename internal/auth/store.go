@@ -75,12 +75,29 @@ type UsersFile struct {
 	Keys    []Key `yaml:"keys"`
 }
 
+// EmptyUsers is the canonical empty key store written by init and
+// systemd provisioning. It is explicitly valid (T-M10) and authenticates
+// nobody until an operator creates a key.
+const EmptyUsers = `# Mellomting API keys. Managed by ` + "`" + `mellomting key
+# create|list|enable|disable|revoke` + "`" + ` — do not edit by hand.
+version: 1
+keys: []
+`
+
+// EmptyUsersBytes returns the canonical empty users-file bytes.
+func EmptyUsersBytes() []byte { return []byte(EmptyUsers) }
+
 // LoadUsers reads and validates the users file.
 func LoadUsers(path string) (*UsersFile, error) {
 	data, err := securefile.Read(path, 1<<20)
 	if err != nil {
 		return nil, err
 	}
+	return ParseUsers(data)
+}
+
+// ParseUsers validates users-file bytes without touching the filesystem.
+func ParseUsers(data []byte) (*UsersFile, error) {
 	// The users file gets the same alias/anchor/merge-key rejection as the
 	// config file (T-M9): a wildcard ACL must be explicit and easy to spot
 	// in review, not hidden inside a `<<:` merge key (PLAN §77).
@@ -171,10 +188,18 @@ func LoadPepper(path string) ([]byte, error) {
 		return nil, err
 	}
 	pepper := strings.TrimRight(string(data), "\r\n")
-	if len(pepper) < 16 {
-		return nil, fmt.Errorf("pepper too short (minimum 16 bytes)")
+	if err := ValidatePepper([]byte(pepper)); err != nil {
+		return nil, err
 	}
 	return []byte(pepper), nil
+}
+
+// ValidatePepper checks pepper bytes without writing them to disk.
+func ValidatePepper(pepper []byte) error {
+	if len(pepper) < 16 {
+		return fmt.Errorf("pepper too short (minimum 16 bytes)")
+	}
+	return nil
 }
 
 // Store is the in-memory, read-only key table used by the daemon.
