@@ -256,6 +256,23 @@ func New(o Options) (*Client, error) {
 	}, nil
 }
 
+// ParsePolicy validates a policy (fail closed). It is the exported seam
+// used by discovery to apply the production egress rules without copying
+// policy logic.
+func ParsePolicy(p Policy) (Policy, error) {
+	return parsePolicy(p)
+}
+
+// ParseBaseURL applies the production base-URL validation rules.
+func ParseBaseURL(raw string) (*url.URL, error) {
+	return parseBaseURL(raw)
+}
+
+// DialContext returns the production policy-checked, MPTCP-off dialer.
+func DialContext(p Policy, connectTimeout time.Duration, resolver Resolver) func(context.Context, string, string) (net.Conn, error) {
+	return policyDial(p, connectTimeout, resolver)
+}
+
 // parsePolicy validates a policy at startup (fail closed).
 func parsePolicy(p Policy) (Policy, error) {
 	switch p.Mode {

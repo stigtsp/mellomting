@@ -5,14 +5,22 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"mellomting/internal/backend"
+	"mellomting/internal/config"
 )
 
 // MaxModelIDBytes is the D7 byte bound for one discovered model ID.
@@ -298,6 +306,253 @@ func jsonHex16(b []byte) (uint16, error) {
 		v = v<<4 | d
 	}
 	return v, nil
+}
+
+// Discovery bounds (D6). These are fixed for the first implementation;
+// they are not configuration.
+const (
+	MaxResponseBytes = 1 << 20
+	MaxModels        = 256
+
+	defaultConnectTimeout = 3 * time.Second
+	defaultHeaderTimeout  = 10 * time.Second
+	defaultTotalTimeout   = 15 * time.Second
+
+	maxResponseHeaderBytes = 64 << 10
+)
+
+var (
+	// ErrConnect is a connection failure before a response was observed.
+	ErrConnect = errors.New("discovery_connect")
+	// ErrDialTimeout is a connect-phase timeout.
+	ErrDialTimeout = errors.New("discovery_dial_timeout")
+	// ErrHeaderTimeout is a response-header timeout.
+	ErrHeaderTimeout = errors.New("discovery_header_timeout")
+	// ErrTimeout is a total request timeout.
+	ErrTimeout = errors.New("discovery_timeout")
+	// ErrPolicy is a backend-network policy refusal.
+	ErrPolicy = errors.New("discovery_network_policy")
+	// ErrStatus is a non-200 upstream response.
+	ErrStatus = errors.New("discovery_upstream_status")
+	// ErrContentType is a rejected response media type.
+	ErrContentType = errors.New("discovery_content_type")
+	// ErrTooLarge is a response or model-count bound violation.
+	ErrTooLarge = errors.New("discovery_response_too_large")
+)
+
+// Server is one ordered inference server to probe.
+type Server struct {
+	Name    string
+	BaseURL string
+}
+
+// newDialerFunc is the production dialer constructor. It is a variable so
+// tests can verify that Fetch uses the MPTCP-off backend dialer by
+// default without weakening the production path.
+var newDialerFunc = backend.DialContext
+
+// Options configures discovery. Network is the production egress policy
+// (D6). The unexported fields are testing seams; zero values select the
+// production behavior.
+type Options struct {
+	Network config.BackendNetwork
+
+	resolver       backend.Resolver
+	parseNetwork   func(config.BackendNetwork) (backend.Policy, error)
+	newDialer      func(backend.Policy, time.Duration, backend.Resolver) func(context.Context, string, string) (net.Conn, error)
+	do             func(*http.Client, *http.Request) (*http.Response, error)
+	connectTimeout time.Duration
+	headerTimeout  time.Duration
+	totalTimeout   time.Duration
+}
+
+// Fetch performs one bounded, unauthenticated GET <base>/v1/models
+// request against server and returns the discovered model IDs in sorted
+// order (D6). It never retries and never includes response bytes in
+// errors.
+func Fetch(ctx context.Context, server Server, opts Options) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if opts.connectTimeout == 0 {
+		opts.connectTimeout = defaultConnectTimeout
+	}
+	if opts.headerTimeout == 0 {
+		opts.headerTimeout = defaultHeaderTimeout
+	}
+	if opts.totalTimeout == 0 {
+		opts.totalTimeout = defaultTotalTimeout
+	}
+	if opts.parseNetwork == nil {
+		opts.parseNetwork = parseNetwork
+	}
+	if opts.newDialer == nil {
+		opts.newDialer = newDialerFunc
+	}
+	resolver := opts.resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+
+	policy, err := opts.parseNetwork(opts.Network)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPolicy, err)
+	}
+	base, err := backend.ParseBaseURL(server.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := base.Scheme + "://" + base.Host + "/v1/models"
+
+	reqCtx, cancel := context.WithTimeout(ctx, opts.totalTimeout)
+	defer cancel()
+
+	transport := &http.Transport{
+		Proxy:                  nil,
+		DialContext:            opts.newDialer(policy, opts.connectTimeout, resolver),
+		DisableCompression:     true,
+		ResponseHeaderTimeout:  opts.headerTimeout,
+		MaxResponseHeaderBytes: maxResponseHeaderBytes,
+		MaxIdleConns:           1,
+		MaxIdleConnsPerHost:    1,
+		MaxConnsPerHost:        1,
+		IdleConnTimeout:        0,
+	}
+	defer transport.CloseIdleConnections()
+
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnect, err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	var resp *http.Response
+	if opts.do != nil {
+		resp, err = opts.do(client, req)
+	} else {
+		resp, err = client.Do(req)
+	}
+	if err != nil {
+		return nil, classifyRequestError(reqCtx, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d", ErrStatus, resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil {
+			return nil, fmt.Errorf("%w: malformed media type", ErrContentType)
+		}
+		if mediaType != "application/json" {
+			return nil, fmt.Errorf("%w: %q", ErrContentType, mediaType)
+		}
+	}
+
+	ids, err := ParseModels(resp.Body, MaxResponseBytes, MaxModels)
+	if err != nil {
+		if ctxErr := reqCtx.Err(); ctxErr != nil {
+			return nil, classifyContextError(ctxErr)
+		}
+		if strings.Contains(err.Error(), "exceeds") {
+			return nil, fmt.Errorf("%w: %v", ErrTooLarge, err)
+		}
+		return nil, err
+	}
+	return ids, nil
+}
+
+// DerivePolicy derives the D6 egress policy from an ordered server list:
+// loopback-only when every server is loopback, otherwise allowed-cidrs
+// containing every unique server IP as an exact /32 or /128 prefix.
+func DerivePolicy(servers []Server) (config.BackendNetwork, error) {
+	if len(servers) == 0 {
+		return config.BackendNetwork{}, errors.New("discovery: at least one server is required")
+	}
+
+	ips := make([]net.IP, 0, len(servers))
+	allLoopback := true
+	for _, s := range servers {
+		u, err := backend.ParseBaseURL(s.BaseURL)
+		if err != nil {
+			return config.BackendNetwork{}, err
+		}
+		ip := net.ParseIP(u.Hostname())
+		if ip == nil {
+			return config.BackendNetwork{}, errors.New("discovery: server URL must use a literal IP host")
+		}
+		if !ip.IsLoopback() {
+			allLoopback = false
+		}
+		ips = append(ips, ip)
+	}
+
+	if allLoopback {
+		return config.BackendNetwork{Mode: "loopback-only"}, nil
+	}
+
+	seen := make(map[string]bool, len(ips))
+	cidrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		var cidr string
+		if v4 := ip.To4(); v4 != nil {
+			cidr = v4.String() + "/32"
+		} else {
+			cidr = ip.String() + "/128"
+		}
+		if !seen[cidr] {
+			seen[cidr] = true
+			cidrs = append(cidrs, cidr)
+		}
+	}
+	sort.Strings(cidrs)
+	return config.BackendNetwork{Mode: "allowed-cidrs", CIDRs: cidrs}, nil
+}
+
+func parseNetwork(bn config.BackendNetwork) (backend.Policy, error) {
+	p := backend.Policy{Mode: bn.Mode}
+	for _, cidr := range bn.CIDRs {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return backend.Policy{}, fmt.Errorf("network policy cidr %q is not a CIDR", cidr)
+		}
+		p.CIDRs = append(p.CIDRs, ipnet)
+	}
+	return backend.ParsePolicy(p)
+}
+
+func classifyRequestError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return classifyContextError(ctxErr)
+	}
+	if errors.Is(err, backend.ErrDialTimeout) {
+		return ErrDialTimeout
+	}
+	if errors.Is(err, backend.ErrConnect) {
+		return ErrConnect
+	}
+	if errors.Is(err, backend.ErrPolicy) {
+		return ErrPolicy
+	}
+	if strings.Contains(err.Error(), "timeout awaiting response headers") {
+		return ErrHeaderTimeout
+	}
+	return ErrConnect
+}
+
+func classifyContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTimeout
+	}
+	return err
 }
 
 func invalidJSON(err error) error {
