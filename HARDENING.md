@@ -5,7 +5,7 @@ control lands in the implementation plan.
 
 ## Authentication and keys
 
-- Opaque bearer keys `mtk_<id>_<secret>`, 256-bit secrets from
+- Opaque bearer keys `sk-<username>-<keyid>-<secret>`, 256-bit secrets from
   `crypto/rand`, accepted only in `Authorization: Bearer` / `X-Api-Key`
   headers, never query parameters (§25). [Phase 1]
 - Keys stored only as `HMAC-SHA-256(pepper, key)`; pepper in

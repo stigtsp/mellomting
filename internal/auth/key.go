@@ -3,93 +3,108 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base32"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
-// Key format and entropy per PLAN §25:
+// Key format and entropy per D18:
 //
-//	mtk_<key-id>_<secret>
+//	sk-<username>-<keyid>-<secret>
 //
-// with a random (non-sequential) key ID and a 256-bit secret from
-// crypto/rand. Both fields are base32 over a Crockford-style alphabet
-// (A-Z minus I,L,O,U; digits 2-9) that never contains the "_" delimiter,
-// so "mtk_<id>_<secret>" always splits into exactly three parts and is
-// safe to quote in logs, URLs, and headers. The raw key is
-// high-sensitivity: it must never be logged, returned, or embedded in
-// error messages.
+// where <username> matches ^[a-z][a-z0-9]{0,31}$, <keyid> is 8 random bytes
+// encoded as exactly 16 lowercase hex characters, and <secret> is 32 random
+// bytes (256 bits) encoded as exactly 64 lowercase hex characters. The grammar
+// is deliberately strict: no segment is empty and no additional separator or
+// suffix is accepted. Multiple keys may share a username because <keyid>
+// distinguishes them. The raw key is high-sensitivity: it must never be logged,
+// returned, or embedded in error messages.
 const (
 	// Prefix is the key prefix.
-	Prefix = "mtk"
+	Prefix = "sk"
 
-	keyIDBytes  = 5  // 5 random bytes -> 8 base32 chars (~40 bits of ID space)
+	keyIDBytes  = 8  // 8 random bytes -> 16 lowercase hex chars
 	secretBytes = 32 // 256 bits of secret entropy
+
+	// MaxRawKeyBytes bounds raw key input (D18): "sk-" + 32 + "-" + 16 +
+	// "-" + 64 = 117. Oversized inputs are rejected before parsing
+	// segments.
+	MaxRawKeyBytes = 117
 )
 
-// keyIDAlphabet is Crockford-style base32 without ambiguous characters.
-// It is reused to encode the secret so the key body stays delimiter-safe.
-var keyIDAlphabet = base32.NewEncoding("ABCDEFGHJKLMNPQRSTUVWXYZ23456789").WithPadding(base32.NoPadding)
+// usernamePattern is the D18 username grammar. It equals `key create --name`
+// and is stored as the key's human-visible name.
+var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,31}$`)
 
-// Generate returns a new API key and its key ID.
-func Generate() (key, id string, err error) {
+// ValidateUsername reports whether username satisfies the D18 grammar. It is
+// the operator-facing check used before entropy use or filesystem mutation.
+func ValidateUsername(username string) error {
+	if !usernamePattern.MatchString(username) {
+		return fmt.Errorf("invalid --name: must match ^[a-z][a-z0-9]{0,31}$")
+	}
+	return nil
+}
+
+// Generate returns a new API key and its key ID for the validated username.
+// The ID and secret are generated independently with crypto/rand.
+func Generate(username string) (key, id string, err error) {
+	if !usernamePattern.MatchString(username) {
+		return "", "", fmt.Errorf("invalid username")
+	}
 	idb := make([]byte, keyIDBytes)
 	if _, err := rand.Read(idb); err != nil {
 		return "", "", fmt.Errorf("generate key ID: %w", err)
 	}
-	id = keyIDAlphabet.EncodeToString(idb)
+	id = hex.EncodeToString(idb)
 
 	sb := make([]byte, secretBytes)
 	if _, err := rand.Read(sb); err != nil {
 		return "", "", fmt.Errorf("generate key secret: %w", err)
 	}
-	return Prefix + "_" + id + "_" + keyIDAlphabet.EncodeToString(sb), id, nil
+	secret := hex.EncodeToString(sb)
+	return fmt.Sprintf("%s-%s-%s-%s", Prefix, username, id, secret), id, nil
 }
 
 // Parsed is the syntactic breakdown of a raw key. Contains the raw key
-// material; keep it out of logs.
+// material and the username; keep both out of logs.
 type Parsed struct {
-	Raw string
-	ID  string
+	Raw      string
+	ID       string
+	Username string
 }
 
-// Parse validates the key syntax (step 1-2 of PLAN §27) without
-// revealing which part, if any, was malformed.
+// Parse validates the key syntax (D18) without revealing which part, if any,
+// is malformed. Raw input is bounded before the individual segments are
+// parsed.
 func Parse(raw string) (Parsed, error) {
-	parts := strings.Split(raw, "_")
-	if len(parts) != 3 {
+	if len(raw) > MaxRawKeyBytes {
 		return Parsed{}, fmt.Errorf("invalid API key format")
 	}
-	if parts[0] != Prefix {
+	// The grammar contains no "-" inside any segment, so a valid key splits
+	// into exactly four parts: prefix, username, keyid, secret.
+	parts := strings.Split(raw, "-")
+	if len(parts) != 4 {
 		return Parsed{}, fmt.Errorf("invalid API key format")
 	}
-	id, secret := parts[1], parts[2]
-	if len(id) < 2 || len(id) > 12 || !isKeyID(id) {
+	prefix, username, id, secret := parts[0], parts[1], parts[2], parts[3]
+	if prefix != Prefix ||
+		!usernamePattern.MatchString(username) ||
+		!isLowerHex(id, keyIDBytes*2) ||
+		!isLowerHex(secret, secretBytes*2) {
 		return Parsed{}, fmt.Errorf("invalid API key format")
 	}
-	if len(secret) < 16 || len(secret) > 128 || !isSecret(secret) {
-		return Parsed{}, fmt.Errorf("invalid API key format")
-	}
-	return Parsed{Raw: raw, ID: id}, nil
+	return Parsed{Raw: raw, ID: id, Username: username}, nil
 }
 
-func isKeyID(s string) bool {
+// isLowerHex reports whether s is exactly n lowercase hexadecimal characters.
+func isLowerHex(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
 	for _, r := range s {
-		if !isIDChar(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func isIDChar(r rune) bool {
-	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-}
-
-func isSecret(s string) bool {
-	for _, r := range s {
-		if !(isIDChar(r) || r == '-' || r == '_') {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
 			return false
 		}
 	}

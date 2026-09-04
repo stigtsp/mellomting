@@ -18,7 +18,7 @@ import (
 // never a value that embeds the attempted key material.
 func FuzzAuthorize(f *testing.F) {
 	pepper := []byte("httpapi-fuzz-pepper-16")
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("f")
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func FuzzAuthorize(f *testing.F) {
 	f.Add("Bearer a b", "x")
 	f.Add("Bearer  ", " ")
 	f.Add(strings.Repeat("Bearer x ", 200), strings.Repeat("y", 200))
-	f.Add("Bearer mtk_AAAAAAAA_xxxxxxxxxxxxxxxxxxxxxxxx", "mtk_AAAAAAAA_xxxxxxxxxxxxxxxxxxxxxxxx")
+	f.Add("Bearer sk-f-0000000000000000-000000000000000000000000000000000000000000000000000000", "sk-f-0000000000000000-000000000000000000000000000000000000000000000000000000")
 	f.Fuzz(func(t *testing.T, authz, xkey string) {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		r.Header.Set("Authorization", authz)
@@ -53,7 +53,7 @@ func FuzzAuthorize(f *testing.F) {
 		_, err := s.authorize(r)
 		if err != nil {
 			// The client-facing error must never embed the raw key.
-			if strings.Contains(err.Error(), "mtk_") {
+			if strings.Contains(err.Error(), "sk-") {
 				t.Fatalf("authorize error leaks key material: %q", err)
 			}
 		}

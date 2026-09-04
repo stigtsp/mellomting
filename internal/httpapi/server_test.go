@@ -97,11 +97,11 @@ func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*confi
 
 	// Users store with two keys: one for model-a only, one wildcard.
 	pepper := []byte("httpapi-test-pepper-16b")
-	k1, id1, err := auth.Generate()
+	k1, id1, err := auth.Generate("a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	k2, id2, err := auth.Generate()
+	k2, id2, err := auth.Generate("b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func (e *env) doFrom(t *testing.T, method, path, key, body, remote string) *http
 	case "xkey":
 		r.Header.Set("X-Api-Key", e.key)
 	case "badbearer":
-		r.Header.Set("Authorization", "Bearer mtk_invalid_0000000000000000000000000000")
+		r.Header.Set("Authorization", "Bearer sk-invalid-0000000000000000-000000000000000000000000000000000000000000000000000000")
 	}
 	w := httptest.NewRecorder()
 	e.srv.Handler().ServeHTTP(w, r)
@@ -460,7 +460,7 @@ func TestLogScrubbing(t *testing.T) {
 	}
 
 	out := buf.String()
-	badKey := "mtk_invalid_0000000000000000000000000000"
+	badKey := "sk-invalid-0000000000000000-000000000000000000000000000000000000000000000000000000"
 	for _, secret := range []string{promptMarker, respMarker, errorMarker, backendToken, e.key, badKey} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("log leaked %q; captured log:\n%s", secret, out)
@@ -472,11 +472,11 @@ func TestAuthMatrix(t *testing.T) {
 	t.Parallel()
 	// Disabled and expired keys are 401 like any other bad key; they are
 	// added to the users file so the table covers those branches (T-T4).
-	dk, did, err := auth.Generate()
+	dk, did, err := auth.Generate("disabled")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ek, eid, err := auth.Generate()
+	ek, eid, err := auth.Generate("expired")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ func TestAuthMatrix(t *testing.T) {
 		{"query param api_key ignored", "query", 401},
 	}
 	for _, tc := range cases {
-		w := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?api_key=mtk_query_mustbeignored",
+		w := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?api_key=sk_query_mustbeignored",
 			strings.NewReader(`{"model":"model-a"}`))
 		w.Header.Set("Content-Type", "application/json")
 		switch tc.key {
@@ -529,7 +529,7 @@ func TestAuthMatrix(t *testing.T) {
 		case "xkey":
 			w.Header.Set("X-Api-Key", e.key)
 		case "unknown":
-			w.Header.Set("Authorization", "Bearer mtk_9X9X9X_unknownkeyunknownkeyunknownk")
+			w.Header.Set("Authorization", "Bearer sk-unknown-9f9f9f9f9f9f9f9f-000000000000000000000000000000000000000000000000000000")
 		case "basic":
 			w.Header.Set("Authorization", "Basic abc")
 		case "dup-auth":
@@ -607,11 +607,11 @@ func TestAuthDisabledExpiredClassified(t *testing.T) {
 	// distinguish them from a bogus-token flood.
 	var buf bytes.Buffer
 	capLog := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	dk, did, err := auth.Generate()
+	dk, did, err := auth.Generate("disabled")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ek, eid, err := auth.Generate()
+	ek, eid, err := auth.Generate("expired")
 	if err != nil {
 		t.Fatal(err)
 	}

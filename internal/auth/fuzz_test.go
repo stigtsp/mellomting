@@ -14,13 +14,13 @@ import (
 // "API-key parser"). It must never panic: every malformed input returns a
 // clean error and never reveals which part was malformed.
 func FuzzParseKey(f *testing.F) {
-	f.Add("mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")
+	f.Add("sk-a-0000000000000000-000000000000000000000000000000000000000000000000000000")
 	f.Add("")
-	f.Add("mtk")
-	f.Add("mtk_1_2_3")
-	f.Add("mtk_AAAAAAAA_xxxxxxxxxxxxxxxxxxxxxxxx")
+	f.Add("sk")
+	f.Add("sk-1-2-3")
+	f.Add("sk-a-0000000000000000-000000000000000000000000000000000000000000000000000000")
 	f.Add("notakey")
-	f.Add(strings.Repeat("mtk_a_b_", 100))
+	f.Add(strings.Repeat("sk-a-b-", 100))
 	f.Fuzz(func(t *testing.T, raw string) {
 		Parse(raw)
 	})
@@ -46,7 +46,7 @@ func FuzzParseHashValue(f *testing.F) {
 // unknown key must never surface the raw key in an error.
 func FuzzStoreLookup(f *testing.F) {
 	pepper := []byte("fuzz-pepper-16bytes")
-	key, id, err := Generate()
+	key, id, err := Generate("f")
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func FuzzStoreLookup(f *testing.F) {
 	}
 	f.Add(key)
 	f.Add("")
-	f.Add("mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")
+	f.Add("sk-f-0000000000000000-000000000000000000000000000000000000000000000000000000")
 	f.Add(strings.Repeat("x", 512))
 	f.Fuzz(func(t *testing.T, raw string) {
 		_, err := store.Lookup(raw)
@@ -81,11 +81,11 @@ func FuzzStoreLookup(f *testing.F) {
 // strict KnownFields decode, and validation LoadUsers applies. It must
 // never panic; malformed files return a clean error.
 func FuzzUsersParser(f *testing.F) {
-	f.Add([]byte("version: 1\nkeys:\n  - id: AAAAAA1A\n    name: a\n    secret_hash: hmac-sha256:AA==\n    models: ['*']\n"))
+	f.Add([]byte("version: 1\nkeys:\n  - id: 0000000000000000\n    name: a\n    secret_hash: hmac-sha256:AA==\n    models: ['*']\n"))
 	f.Add([]byte("---\n- a\n- b\n"))
 	f.Add([]byte("version: 1\n"))
 	f.Add([]byte("a: &x 1\nb: *x\n"))
-	f.Add([]byte("version: 1\nkeys:\n  - id: AAAAAA1A\n    name: a\n    secret_hash: hmac-sha256:AA==\n    models: ['*']\n---\nversion: 1\n"))
+	f.Add([]byte("version: 1\nkeys:\n  - id: 0000000000000000\n    name: a\n    secret_hash: hmac-sha256:AA==\n    models: ['*']\n---\nversion: 1\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Mirror LoadUsers (store.go): alias/anchor/merge rejection,
 		// strict KnownFields decode, then validation.

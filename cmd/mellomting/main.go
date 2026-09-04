@@ -266,6 +266,12 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 			fmt.Fprintln(os.Stderr, "mellomting: key create: --name is required")
 			return nil, 2
 		}
+		// D18: --name is the key's username segment; validate it before any
+		// entropy use or filesystem mutation.
+		if err := auth.ValidateUsername(c.name); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+			return nil, 2
+		}
 		if c.expires != "" {
 			if _, err := time.Parse(time.RFC3339, c.expires); err != nil {
 				fmt.Fprintf(os.Stderr, "mellomting: key create: invalid --expires %q (want RFC3339)\n", c.expires)
@@ -330,11 +336,6 @@ func keyCreate(c *keyFlags) int {
 		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
 		return 1
 	}
-	key, id, err := auth.Generate()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-		return 1
-	}
 
 	var models []string
 	if c.models == "" {
@@ -376,7 +377,18 @@ func keyCreate(c *keyFlags) int {
 		Burst:              c.burst,
 	}
 
+	// D18: generate the key inside the exclusive update, retrying a key-ID
+	// collision against the loaded users file at most eight times before
+	// failing without mutation.
+	var key, id string
 	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		var genErr error
+		key, id, genErr = chooseKeyID(func() (string, string, error) {
+			return auth.Generate(c.name)
+		}, uf, 8)
+		if genErr != nil {
+			return genErr
+		}
 		uf.Keys = append(uf.Keys, auth.Key{
 			ID:         id,
 			Name:       c.name,
@@ -533,6 +545,35 @@ func splitModels(s string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// userIDExists reports whether the users file already holds a key with the
+// given ID (D18 collision check).
+func userIDExists(uf *auth.UsersFile, id string) bool {
+	for i := range uf.Keys {
+		if uf.Keys[i].ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// chooseKeyID returns a freshly generated key whose ID is not already present
+// in uf, retrying at most maxAttempts times (D18). A persistent collision or
+// a generator (entropy) failure is returned; the users file is not mutated by
+// the selection itself. The generator is injectable so the bounded-retry
+// behaviour is testable without real randomness.
+func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile, maxAttempts int) (string, string, error) {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		key, id, err := generate()
+		if err != nil {
+			return "", "", err
+		}
+		if !userIDExists(uf, id) {
+			return key, id, nil
+		}
+	}
+	return "", "", fmt.Errorf("key id collision after %d attempts", maxAttempts)
 }
 
 // inferSoleModel resolves the key's model list when --models is absent

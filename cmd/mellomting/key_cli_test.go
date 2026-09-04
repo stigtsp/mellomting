@@ -10,10 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"mellomting/internal/auth"
 	"mellomting/internal/config"
 )
 
-var keyRe = regexp.MustCompile(`mtk_[A-Z2-9]{8}_[A-Z2-9]{52}`)
+var keyRe = regexp.MustCompile(`sk-[a-z][a-z0-9]{0,31}-[0-9a-f]{16}-[0-9a-f]{64}`)
 
 func buildCLI(t *testing.T) string {
 	t.Helper()
@@ -100,7 +101,7 @@ func TestKeyLifecycle(t *testing.T) {
 	if n := strings.Count(out, key); n != 1 {
 		t.Fatalf("key printed %d times", n)
 	}
-	id := key[len("mtk_") : len("mtk_")+8]
+	id := strings.Split(key, "-")[2]
 
 	// List shows it enabled.
 	code, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
@@ -131,7 +132,7 @@ func TestKeyLifecycle(t *testing.T) {
 	if key2 == "" {
 		t.Fatalf("no raw key printed: %q", out)
 	}
-	id2 := key2[4:12]
+	id2 := strings.Split(key2, "-")[2]
 	if code, _, _ := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id2); code != 0 {
 		t.Fatalf("revoke exit = %d", code)
 	}
@@ -211,7 +212,7 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	if key == "" {
 		t.Fatalf("no raw key printed: %q", out)
 	}
-	id := key[4:12]
+	id := strings.Split(key, "-")[2]
 
 	// Revoking the only key must not fail with "at least one key".
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
@@ -249,7 +250,7 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if id == "" {
 		t.Fatalf("no raw key printed: %q", out)
 	}
-	id = id[4:12]
+	id = strings.Split(id, "-")[2]
 
 	// The same warning must appear on a successful revoke.
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
@@ -282,7 +283,7 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if id == "" {
 		t.Fatalf("no raw key printed: %q", out)
 	}
-	id = id[4:12]
+	id = strings.Split(id, "-")[2]
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", bePath, "-id", id); code != 0 {
 		t.Fatalf("revoke (best-effort) exit = %d stderr=%q", code, errOut)
 	} else if strings.Contains(errOut, "landlock") {
@@ -379,6 +380,94 @@ func TestInferSoleModel(t *testing.T) {
 			t.Fatalf("err = %q must omit the 25th model", err)
 		}
 	})
+}
+
+// D18: chooseKeyID retries a key-ID collision at most maxAttempts times and
+// then fails without mutation; a generator (entropy) failure is propagated.
+func TestChooseKeyID(t *testing.T) {
+	t.Run("success on first draw", func(t *testing.T) {
+		uf := &auth.UsersFile{Keys: []auth.Key{{ID: "0000000000000000"}}}
+		key, id, err := chooseKeyID(func() (string, string, error) {
+			return "sk-a-1111111111111111-000000000000000000000000000000000000000000000000000000", "1111111111111111", nil
+		}, uf, 8)
+		if err != nil || id != "1111111111111111" || !strings.HasPrefix(key, "sk-a-") {
+			t.Fatalf("got key=%q id=%q err=%v", key, id, err)
+		}
+	})
+
+	t.Run("bounded collision retry", func(t *testing.T) {
+		uf := &auth.UsersFile{Keys: []auth.Key{{ID: "2222222222222222"}}}
+		calls := 0
+		_, _, err := chooseKeyID(func() (string, string, error) {
+			calls++
+			return "sk-a-2222222222222222-000000000000000000000000000000000000000000000000000000", "2222222222222222", nil
+		}, uf, 8)
+		if err == nil || !strings.Contains(err.Error(), "collision") {
+			t.Fatalf("err = %v, want collision", err)
+		}
+		if calls != 8 {
+			t.Fatalf("generate called %d times, want exactly 8", calls)
+		}
+		if len(uf.Keys) != 1 {
+			t.Fatalf("users file mutated: %d keys", len(uf.Keys))
+		}
+	})
+
+	t.Run("entropy failure propagates", func(t *testing.T) {
+		uf := &auth.UsersFile{}
+		_, _, err := chooseKeyID(func() (string, string, error) {
+			return "", "", fmt.Errorf("entropy")
+		}, uf, 8)
+		if err == nil || !strings.Contains(err.Error(), "entropy") {
+			t.Fatalf("err = %v, want entropy", err)
+		}
+	})
+}
+
+// D18: multiple keys may share a username; the key ID distinguishes them and
+// both authenticate.
+func TestMultipleKeysShareUsername(t *testing.T) {
+	pepper := []byte("multi-username-pepper-16b")
+	k1, id1, err := auth.Generate("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, id2, err := auth.Generate("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 {
+		t.Fatal("two keys for one username got the same ID")
+	}
+	uf := &auth.UsersFile{Version: 1, Keys: []auth.Key{
+		{ID: id1, Name: "shared", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k1)), Enabled: true, Models: []string{"*"}},
+		{ID: id2, Name: "shared", SecretHash: auth.FormatHashValue(auth.Hash(pepper, k2)), Enabled: true, Models: []string{"*"}},
+	}}
+	store, err := auth.NewStore(uf, pepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{k1, k2} {
+		if _, err := store.Lookup(raw); err != nil {
+			t.Fatalf("Lookup(%q): %v", raw, err)
+		}
+	}
+}
+
+// D18: --name outside the username grammar is rejected before any entropy use
+// or filesystem mutation (exit 2, no users file).
+func TestKeyCreateRejectsBadUsername(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+	for _, name := range []string{"Bad", "1abc", "a_b", strings.Repeat("a", 33), ""} {
+		code, _, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-name", name, "-models", "qwen-coder")
+		if code != 2 {
+			t.Fatalf("--name %q: exit = %d, want 2 (stderr=%q)", name, code, errOut)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "users.yaml")); !os.IsNotExist(err) {
+		t.Fatal("users.yaml must not be created for an invalid --name")
+	}
 }
 
 // D14: key create with no --models infers the single configured model.

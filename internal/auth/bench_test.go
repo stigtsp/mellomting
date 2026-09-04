@@ -9,7 +9,7 @@ import (
 // §87). It deliberately never uses a password KDF.
 func BenchmarkAuthCheck(b *testing.B) {
 	pepper := []byte("benchmark-pepper-16b")
-	rawKey, id, err := Generate()
+	rawKey, id, err := Generate("benchmark")
 	if err != nil {
 		b.Fatal(err)
 	}

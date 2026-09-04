@@ -14,7 +14,7 @@ plugins, no telemetry.
 ```text
                  ┌────────────────────────────┐
   client ──────► │         Mellomting          │──────►  vLLM :8000
-  (Bearer mtk_)  │  auth → limit → route       │──────►  vLLM :8012
+  (Bearer sk-…)   │  auth → limit → route       │──────►  vLLM :8012
                  │  stream → account → log     │
                  └────────────────────────────┘
 ```
@@ -100,10 +100,10 @@ And use it — Mellomting is a drop-in OpenAI-compatible endpoint:
 
 ```sh
 curl http://127.0.0.1:8080/v1/models \
-  -H "Authorization: Bearer mtk_XXXXXXXX_..."
+  -H "Authorization: Bearer sk-…"
 
 curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Authorization: Bearer mtk_XXXXXXXX_..." \
+  -H "Authorization: Bearer sk-…" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3.8-27b",
@@ -113,7 +113,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 Point any OpenAI-compatible client (OpenCode, OpenAI SDKs, cURL, …) at
-`http://127.0.0.1:8080/v1` with your `mtk_…` key.
+`http://127.0.0.1:8080/v1` with your `sk-…` key.
 
 ### Troubleshooting the Quick Start
 
@@ -215,6 +215,11 @@ mellomting key revoke  --id ID
   the mode is `required`.
 - Keys are stored only as `HMAC-SHA-256(pepper, key)` hashes; the raw key is
   printed once at creation and never stored or logged.
+- A key has the form `sk-<username>-<keyid>-<secret>`: `<username>` is the
+  `--name` value (`[a-z][a-z0-9]{0,31}`), `<keyid>` is 16 lowercase hex
+  characters, and `<secret>` is 64 lowercase hex characters (256 bits).
+  `--name` is the key's username; multiple keys may share a username because
+  the key ID distinguishes them.
 
 ## API surface
 
@@ -231,7 +236,7 @@ POST /v1/responses/{id}/cancel
 GET  /v1/models
 ```
 
-Authenticate with `Authorization: Bearer mtk_…`. Errors are OpenAI-shaped JSON.
+Authenticate with `Authorization: Bearer sk-…`. Errors are OpenAI-shaped JSON.
 `/healthz` and `/readyz` return `200 ok` for health checks without
 authentication.
 

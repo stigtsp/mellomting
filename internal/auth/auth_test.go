@@ -36,7 +36,7 @@ func TestGenerateAndParseRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	for i := 0; i < 32; i++ {
-		key, id, err := Generate()
+		key, id, err := Generate("test")
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
@@ -51,25 +51,78 @@ func TestGenerateAndParseRoundTrip(t *testing.T) {
 }
 
 func TestParseRejectsMalformedKeys(t *testing.T) {
+	id16 := strings.Repeat("0", 16)
+	secret64 := strings.Repeat("0", 64)
 	cases := []string{
 		"",
-		"sk-abc_def",
-		"mtk_onlyid",
-		"mtk_A_B_extra",
-		"mtk_7R3F_secretshort!",
-		"mtk_7R3F_secret with a space",
-		"mtok_7R3F2V_secretsecretsecretsecretsecret",
-		"mtk_7R3F2V_secret_secret_split",
+		"sk",
+		"sk-",
+		"sk-abc",
+		"sk-abc-" + id16,
+		"sk-abc-" + id16 + "-" + strings.Repeat("0", 63),              // short secret
+		"sk-abc-" + id16 + "-" + secret64 + "-extra",                  // too many segments
+		"sk-ABC-" + id16 + "-" + secret64,                             // uppercase username
+		"sk-1abc-" + id16 + "-" + secret64,                            // username starts with digit
+		"sk--" + id16 + "-" + secret64,                                // empty username
+		"sk-abc-" + strings.Repeat("0", 15) + "-" + secret64,          // 15-char id
+		"sk-abc-" + strings.Repeat("0", 17) + "-" + secret64,          // 17-char id
+		"sk-abc-" + strings.Repeat("0", 15) + "g-" + secret64,         // non-hex id
+		"sk-abc-" + strings.Repeat("0", 15) + "A-" + secret64,         // uppercase id
+		"sk-abc-" + id16 + "-" + strings.Repeat("0", 63) + "A",        // uppercase secret
+		"sk-abc-" + id16 + "-" + strings.Repeat("0", 31) + "!",        // bad secret char
+		"sk-" + strings.Repeat("a", 33) + "-" + id16 + "-" + secret64, // username 33 chars
+		"sk-abc_def-" + id16 + "-" + secret64,                         // underscore in username
+		"sk-abc-def-" + id16 + "-" + secret64,                         // hyphen splits username
+		"mtk_7R3F2V_secretsecretsecretsecretsecret",                   // legacy format
 	}
 	for _, raw := range cases {
 		if _, err := Parse(raw); err == nil {
 			t.Fatalf("Parse(%q) succeeded", raw)
 		}
 	}
+	// A well-formed key parses and recovers the fixed-format fields.
+	good := "sk-abc-" + id16 + "-" + secret64
+	parsed, err := Parse(good)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", good, err)
+	}
+	if parsed.Username != "abc" || parsed.ID != id16 || parsed.Raw != good {
+		t.Fatalf("parsed = %+v, want username=abc id=%s", parsed, id16)
+	}
+
+	// Username boundary: the maximum 32-character name parses; 1 and 32 are
+	// both legal.
+	for _, user := range []string{"a", strings.Repeat("a", 32)} {
+		raw := "sk-" + user + "-" + id16 + "-" + secret64
+		p, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", raw, err)
+		}
+		if p.Username != user {
+			t.Fatalf("username = %q, want %q", p.Username, user)
+		}
+	}
+}
+
+// D18: raw key input is bounded to MaxRawKeyBytes; an oversized input is
+// rejected before any segment is parsed.
+func TestParseRejectsOversized(t *testing.T) {
+	// A valid 32-char username plus 16/64 hex = 117 bytes is the maximum.
+	maxKey := "sk-" + strings.Repeat("a", 32) + "-" + strings.Repeat("0", 16) + "-" + strings.Repeat("0", 64)
+	if len(maxKey) != MaxRawKeyBytes {
+		t.Fatalf("max key length = %d, want %d", len(maxKey), MaxRawKeyBytes)
+	}
+	if _, err := Parse(maxKey); err != nil {
+		t.Fatalf("Parse(max): %v", err)
+	}
+	// One byte over the bound is rejected.
+	if _, err := Parse(maxKey + "0"); err == nil {
+		t.Fatal("oversized key accepted")
+	}
 }
 
 func TestLookupAcceptsValidKey(t *testing.T) {
-	key, _, err := Generate()
+	key, _, err := Generate("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +141,7 @@ func TestLookupAcceptsValidKey(t *testing.T) {
 
 func TestLookupUnknownKey(t *testing.T) {
 	s := newTestStore(t, mustKey(t))
-	if _, err := s.Lookup("mtk_9X9X9X_secretnotstored000000000"); err != ErrUnknownKey {
+	if _, err := s.Lookup("sk-test-" + strings.Repeat("b", 16) + "-" + strings.Repeat("b", 64)); err != ErrUnknownKey {
 		t.Fatalf("err = %v, want ErrUnknownKey", err)
 	}
 	// Malformed input must also read as unknown, not a format complaint.
@@ -98,9 +151,10 @@ func TestLookupUnknownKey(t *testing.T) {
 }
 
 func TestLookupDisabledAndExpired(t *testing.T) {
-	key := "mtk_A1B2C3D4_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	id := strings.Repeat("a", 16)
+	key := "sk-test-" + id + "-" + strings.Repeat("a", 64)
 	s := newTestStore(t, key)
-	rec := s.byID["A1B2C3D4"]
+	rec := s.byID[id]
 
 	if _, err := s.Lookup(key); err != nil {
 		t.Fatalf("valid lookup: %v", err)
@@ -134,7 +188,7 @@ func TestUsersFileRoundTrip(t *testing.T) {
 
 	var createdKey, createdID string
 	err := Update(usersPath, func(uf *UsersFile) error {
-		key, id, err := Generate()
+		key, id, err := Generate("codex")
 		if err != nil {
 			return err
 		}
@@ -188,7 +242,7 @@ func TestUpdatePreservesModeAndOwnership(t *testing.T) {
 		t.Helper()
 		if err := Update(usersPath, func(uf *UsersFile) error {
 			if addKey {
-				key, id, err := Generate()
+				key, id, err := Generate("extra")
 				if err != nil {
 					return err
 				}
@@ -255,8 +309,8 @@ func TestUpdateRejectsDuplicateIDs(t *testing.T) {
 	}
 	err := Update(usersPath, func(uf *UsersFile) error {
 		uf.Keys = append(uf.Keys,
-			Key{ID: "AAAAAA1A", Name: "a", SecretHash: hash("mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx"), Models: []string{"*"}},
-			Key{ID: "AAAAAA1A", Name: "b", SecretHash: hash("mtk_AAAAAA1A_yyyyyyyyyyyyyyyyyyyyyyyyyy"), Models: []string{"*"}},
+			Key{ID: "0000000000000000", Name: "a", SecretHash: hash("sk-a-0000000000000000-000000000000000000000000000000000000000000000000000000"), Models: []string{"*"}},
+			Key{ID: "0000000000000000", Name: "b", SecretHash: hash("sk-b-0000000000000000-000000000000000000000000000000000000000000000000000000"), Models: []string{"*"}},
 		)
 		return nil
 	})
@@ -287,7 +341,7 @@ func TestLoadUsersRejectsWorldReadable(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "users.yaml")
-	rawKey, id, err := Generate()
+	rawKey, id, err := Generate("t")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,11 +417,11 @@ func TestLoadUsersRejectsAnchorsAndMergeKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "users.yaml")
 	pepper := []byte("pepper-pepper-xx")
-	raw1, id1, err := Generate()
+	raw1, id1, err := Generate("a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw2, id2, err := Generate()
+	raw2, id2, err := Generate("b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +442,7 @@ func TestLoadUsersRejectsAnchorsAndMergeKeys(t *testing.T) {
 
 func mustKey(t *testing.T) string {
 	t.Helper()
-	k, _, err := Generate()
+	k, _, err := Generate("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,8 +454,8 @@ func mustKey(t *testing.T) string {
 func TestValidateUsersRejectsNegativeLimits(t *testing.T) {
 	t.Parallel()
 	base := Key{
-		ID: "AAAAAA1A", Name: "a",
-		SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")),
+		ID: "0000000000000000", Name: "a",
+		SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "sk-a-0000000000000000-000000000000000000000000000000000000000000000000000000")),
 		Enabled:    true, Models: []string{"*"},
 	}
 	cases := []KeyLimits{
@@ -432,8 +486,8 @@ func TestValidateUsersRejectsNegativeLimits(t *testing.T) {
 // boundary.
 func TestValidateUsersRejectsMalformedKeys(t *testing.T) {
 	t.Parallel()
-	goodHash := FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx"))
-	base := Key{ID: "AAAAAA1A", Name: "a", SecretHash: goodHash, Enabled: true, Models: []string{"*"}}
+	goodHash := FormatHashValue(Hash([]byte("pepper-pepper-xx"), "sk-a-0000000000000000-000000000000000000000000000000000000000000000000000000"))
+	base := Key{ID: "0000000000000000", Name: "a", SecretHash: goodHash, Enabled: true, Models: []string{"*"}}
 
 	cases := []struct {
 		name   string
@@ -520,22 +574,27 @@ func TestValidateUsersRejectsMalformedKeys(t *testing.T) {
 // by default.
 func TestNewStoreAppliesDefaultConcurrency(t *testing.T) {
 	t.Parallel()
+	pepper := []byte("pepper-pepper-xx")
+	idA := strings.Repeat("0", 16)
+	idB := strings.Repeat("1", 16)
+	rawA := "sk-a-" + idA + "-" + strings.Repeat("0", 64)
+	rawB := "sk-b-" + idB + "-" + strings.Repeat("0", 64)
 	uf := &UsersFile{Version: 1, Keys: []Key{
-		{ID: "AAAAAA1A", Name: "a", SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")), Enabled: true, Models: []string{"*"}},
-		{ID: "BBBBBB2B", Name: "b", SecretHash: FormatHashValue(Hash([]byte("pepper-pepper-xx"), "mtk_BBBBBB2B_yyyyyyyyyyyyyyyyyyyyyyyyyy")), Enabled: true, Models: []string{"*"}, Limits: KeyLimits{ConcurrentRequests: 2}},
+		{ID: idA, Name: "a", SecretHash: FormatHashValue(Hash(pepper, rawA)), Enabled: true, Models: []string{"*"}},
+		{ID: idB, Name: "b", SecretHash: FormatHashValue(Hash(pepper, rawB)), Enabled: true, Models: []string{"*"}, Limits: KeyLimits{ConcurrentRequests: 2}},
 	}}
-	store, err := NewStore(uf, []byte("pepper-pepper-xx"))
+	store, err := NewStore(uf, pepper)
 	if err != nil {
 		t.Fatal(err)
 	}
-	k1, err := store.Lookup("mtk_AAAAAA1A_xxxxxxxxxxxxxxxxxxxxxxxx")
+	k1, err := store.Lookup(rawA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if k1.Limits.ConcurrentRequests != DefaultConcurrentRequests {
 		t.Fatalf("no-limits key concurrency = %d, want default %d", k1.Limits.ConcurrentRequests, DefaultConcurrentRequests)
 	}
-	k2, err := store.Lookup("mtk_BBBBBB2B_yyyyyyyyyyyyyyyyyyyyyyyyyy")
+	k2, err := store.Lookup(rawB)
 	if err != nil {
 		t.Fatal(err)
 	}

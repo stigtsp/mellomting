@@ -368,8 +368,8 @@ func (s *Server) allowFor(path string) string {
 
 // authorize extracts and validates the API key (PLAN §25):
 //
-//	Authorization: Bearer mtk_...   (primary)
-//	X-Api-Key: mtk_...              (compatibility)
+//	Authorization: Bearer sk-...   (primary)
+//	X-Api-Key: sk-...              (compatibility)
 //
 // Credentials in query parameters are never read.
 func (s *Server) authorize(r *http.Request) (*auth.Key, error) {

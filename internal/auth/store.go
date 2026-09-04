@@ -133,7 +133,7 @@ func validateUsers(uf *UsersFile) error {
 	seen := make(map[string]bool, len(uf.Keys))
 	for i := range uf.Keys {
 		k := &uf.Keys[i]
-		if k.ID == "" || !isKeyID(k.ID) {
+		if !isLowerHex(k.ID, 16) {
 			return fmt.Errorf("key %d: invalid id", i)
 		}
 		if seen[k.ID] {
@@ -142,6 +142,11 @@ func validateUsers(uf *UsersFile) error {
 		seen[k.ID] = true
 		if k.Name == "" {
 			return fmt.Errorf("key %s: name is required", k.ID)
+		}
+		// D18: the name is the key's username segment; a hand-edited users
+		// file with a name outside the grammar fails closed.
+		if !usernamePattern.MatchString(k.Name) {
+			return fmt.Errorf("key %s: name is not a valid username", k.ID)
 		}
 		if _, err := ParseHashValue(k.SecretHash); err != nil {
 			return fmt.Errorf("key %s: %v", k.ID, err)
@@ -266,6 +271,10 @@ func (s *Store) Lookup(rawKey string) (*Key, error) {
 
 	got := Hash(s.pepper, parsed.Raw)
 	if !known || subtle.ConstantTimeCompare(got, stored) != 1 {
+		return nil, ErrUnknownKey
+	}
+	// D18: a matching hash must also carry the stored key's username.
+	if subtle.ConstantTimeCompare([]byte(parsed.Username), []byte(rec.Name)) != 1 {
 		return nil, ErrUnknownKey
 	}
 	if !rec.Enabled {

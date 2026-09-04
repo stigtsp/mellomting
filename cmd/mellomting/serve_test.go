@@ -179,7 +179,7 @@ func serveFixture(t *testing.T, landlockMode string) (bin, cfgPath, sock string,
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestServeSandboxRequiredFails(t *testing.T) {
 	if err := os.WriteFile(pepperPath, []byte("sandbox-test-pepper-16b+"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	k, id, err := auth.Generate()
+	k, id, err := auth.Generate("s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestServeStaticTLS(t *testing.T) {
 	if err := os.WriteFile(pepperPath, []byte("e2e-tls-pepper-long-enough"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1241,7 +1241,7 @@ func TestServeSIGHUPReload(t *testing.T) {
 	}
 	newKey := func(name string) (raw, id string) {
 		t.Helper()
-		k, id, err := auth.Generate()
+		k, id, err := auth.Generate(name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1399,7 +1399,7 @@ func TestServeSecondSignalForcesShutdown(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1586,7 +1586,7 @@ func TestDrainingDoesNotUnlinkReplacementSocket(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1787,7 +1787,7 @@ func TestServeTCPUsesNoUnlink(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2019,7 +2019,7 @@ func TestServeSandboxRequiredApplies(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("sandbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2156,7 +2156,7 @@ func TestServeAccountingDisabledStillEnforcesQuota(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2274,7 +2274,7 @@ func TestServeAccountingOffQuotaSettingsRequireQuota(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2380,7 +2380,7 @@ func TestServeBackendNetworkAnyWarns(t *testing.T) {
 	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	key, id, err := auth.Generate()
+	key, id, err := auth.Generate("e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
