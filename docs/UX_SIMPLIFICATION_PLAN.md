@@ -1261,7 +1261,7 @@ uncommitted implementation changes or a failing required check.
 | C1 | safe sole-model key inference | complete |
 | C2 | strict username-bearing API-key format | complete |
 | C3 | script-safe one-time key output | complete |
-| D1 | conventional install command | pending |
+| D1 | conventional install command | complete |
 | D2 | concise output across remaining commands | pending |
 | E1 | final design, schema, and scaffold docs | pending |
 | E2 | full local and Linux validation | pending |
