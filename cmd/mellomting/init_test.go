@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
@@ -347,7 +350,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("valid preflight succeeds without files", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--config", cfg})
@@ -366,7 +369,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("dry-run parses without files", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--config", cfg, "--dry-run"})
@@ -385,7 +388,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("unsupported required fails without files", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--config", cfg})
@@ -407,7 +410,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("explicit best-effort unsupported succeeds without files", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--config", cfg, "--landlock", "best-effort"})
@@ -501,7 +504,7 @@ func TestRenderInitArtifacts(t *testing.T) {
 
 	t.Run("loopback config fixture", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -571,7 +574,7 @@ version: 1
 
 	t.Run("multiple replicas use default strategy", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"a=http://127.0.0.1:8000", "b=http://127.0.0.1:8001"})
 		if err != nil {
@@ -596,7 +599,7 @@ version: 1
 
 	t.Run("wildcard listener enables plaintext", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, "0.0.0.0:8080", "required", false, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -617,7 +620,7 @@ version: 1
 
 	t.Run("unix listener uses default socket mode", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		sock := filepath.Join(dir, "mellomting.sock")
 		args, err := parseInitArguments(cfgPath, sock, "required", false, false, []string{"http://127.0.0.1:8000"})
@@ -642,7 +645,7 @@ version: 1
 
 	t.Run("mixed servers derive allowed-cidrs", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"a=http://192.168.1.20:8000", "b=http://127.0.0.1:8001"})
 		if err != nil {
@@ -664,7 +667,7 @@ version: 1
 
 	t.Run("selected landlock mode is rendered", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "best-effort", true, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -685,7 +688,7 @@ version: 1
 
 	t.Run("empty discovery fails", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -705,7 +708,7 @@ version: 1
 		}
 		t.Cleanup(func() { initPepperRand = old })
 
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -724,7 +727,7 @@ version: 1
 		initPepperRand = func(int) ([]byte, error) { return make([]byte, 15), nil }
 		t.Cleanup(func() { initPepperRand = old })
 
-		dir := t.TempDir()
+		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
 		args, err := parseInitArguments(cfgPath, defaultInitListen, "required", false, false, []string{"http://127.0.0.1:8000"})
 		if err != nil {
@@ -758,5 +761,618 @@ func TestAuthInitByteParsers(t *testing.T) {
 		if err := auth.ValidatePepper(make([]byte, 16)); err != nil {
 			t.Fatalf("err = %v", err)
 		}
+	})
+}
+
+type scriptedCommitOps struct {
+	inner           commitOps
+	fail            map[string]error
+	failOnce        map[string]bool
+	after           map[string]func()
+	calls           []string
+	fstatParentFunc func(int) (commitFileIdentity, error)
+}
+
+func (s *scriptedCommitOps) failFor(keys ...string) error {
+	for _, k := range keys {
+		if err, ok := s.fail[k]; ok {
+			return err
+		}
+		if s.failOnce[k] {
+			s.failOnce[k] = false
+			return fmt.Errorf("injected %s", k)
+		}
+	}
+	return nil
+}
+
+func (s *scriptedCommitOps) run(keys []string, fn func() error) error {
+	s.calls = append(s.calls, keys...)
+	if err := s.failFor(keys...); err != nil {
+		return err
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if hook := s.after[k]; hook != nil {
+			hook()
+		}
+	}
+	return nil
+}
+
+func (s *scriptedCommitOps) openParent(path string) (int, commitFileIdentity, error) {
+	var (
+		fd int
+		id commitFileIdentity
+	)
+	err := s.run([]string{"openParent"}, func() error {
+		var e error
+		fd, id, e = s.inner.openParent(path)
+		return e
+	})
+	return fd, id, err
+}
+
+func (s *scriptedCommitOps) fstatParent(fd int) (commitFileIdentity, error) {
+	var id commitFileIdentity
+	err := s.run([]string{"fstatParent"}, func() error {
+		var e error
+		if s.fstatParentFunc != nil {
+			id, e = s.fstatParentFunc(fd)
+		} else {
+			id, e = s.inner.fstatParent(fd)
+		}
+		return e
+	})
+	return id, err
+}
+
+func (s *scriptedCommitOps) lstatInDir(fd int, name string) (commitFileIdentity, error) {
+	var id commitFileIdentity
+	err := s.run([]string{"lstatInDir", "lstatInDir:" + name}, func() error {
+		var e error
+		id, e = s.inner.lstatInDir(fd, name)
+		return e
+	})
+	return id, err
+}
+
+func (s *scriptedCommitOps) createInDir(fd int, name string, mode uint32) (int, commitFileIdentity, error) {
+	var (
+		fileFD int
+		id     commitFileIdentity
+	)
+	err := s.run([]string{"createInDir", "createInDir:" + name}, func() error {
+		var e error
+		fileFD, id, e = s.inner.createInDir(fd, name, mode)
+		return e
+	})
+	return fileFD, id, err
+}
+
+func (s *scriptedCommitOps) writeAll(fd int, name string, data []byte) error {
+	return s.run([]string{"writeAll", "writeAll:" + name}, func() error {
+		return s.inner.writeAll(fd, name, data)
+	})
+}
+
+func (s *scriptedCommitOps) fsyncFile(fd int, name string) error {
+	return s.run([]string{"fsyncFile", "fsyncFile:" + name}, func() error {
+		return s.inner.fsyncFile(fd, name)
+	})
+}
+
+func (s *scriptedCommitOps) fstatFile(fd int, name string) (commitFileIdentity, error) {
+	var id commitFileIdentity
+	err := s.run([]string{"fstatFile", "fstatFile:" + name}, func() error {
+		var e error
+		id, e = s.inner.fstatFile(fd, name)
+		return e
+	})
+	return id, err
+}
+
+func (s *scriptedCommitOps) closeFile(fd int, name string) error {
+	return s.run([]string{"closeFile", "closeFile:" + name}, func() error {
+		return s.inner.closeFile(fd, name)
+	})
+}
+
+func (s *scriptedCommitOps) linkInDir(fd int, oldname, newname string) error {
+	return s.run([]string{"linkInDir", "linkInDir:" + newname}, func() error {
+		return s.inner.linkInDir(fd, oldname, newname)
+	})
+}
+
+func (s *scriptedCommitOps) unlinkInDir(fd int, name string) error {
+	return s.run([]string{"unlinkInDir", "unlinkInDir:" + name}, func() error {
+		return s.inner.unlinkInDir(fd, name)
+	})
+}
+
+func (s *scriptedCommitOps) fsyncDir(fd int) error {
+	return s.run([]string{"fsyncDir"}, func() error {
+		return s.inner.fsyncDir(fd)
+	})
+}
+
+func commitTestArgs(t *testing.T, dir string, servers ...string) initArguments {
+	t.Helper()
+	args, err := parseInitArguments(filepath.Join(dir, "config.yaml"), defaultInitListen, "required", false, false, servers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return args
+}
+
+func commitTestArtifacts(t *testing.T, args initArguments, models map[string][]string) initArtifacts {
+	t.Helper()
+	pepper := make([]byte, 64)
+	for i := range pepper {
+		pepper[i] = byte(i + 1)
+	}
+	withInitPepper(t, pepper)
+	arts, err := renderInitArtifacts(args, discovery.Result{Models: models})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return arts
+}
+
+func newCommitDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "dest")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func requireDirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("directory %s not empty: %v", dir, names)
+	}
+}
+
+func TestCommitInitArtifacts(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("init commit is Linux-only")
+	}
+	models := map[string][]string{"m": {"local"}}
+	oneServer := []string{"http://127.0.0.1:8000"}
+
+	t.Run("success and exact modes", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		if err := commitInitArtifacts(args, arts, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{args.ConfigPath, args.UsersPath, args.PepperPath} {
+			st, err := os.Stat(p)
+			if err != nil {
+				t.Fatalf("stat %s: %v", p, err)
+			}
+			if st.Mode()&0o777 != 0o600 {
+				t.Fatalf("%s mode = %o", p, st.Mode()&0o777)
+			}
+		}
+		if b, _ := os.ReadFile(args.ConfigPath); !reflect.DeepEqual(b, arts.Config) {
+			t.Fatalf("config bytes = %q", b)
+		}
+		if b, _ := os.ReadFile(args.UsersPath); !reflect.DeepEqual(b, arts.Users) {
+			t.Fatalf("users bytes = %q", b)
+		}
+		if b, _ := os.ReadFile(args.PepperPath); !reflect.DeepEqual(b, arts.Pepper) {
+			t.Fatalf("pepper bytes = %q", b)
+		}
+		entries, _ := os.ReadDir(dir)
+		if len(entries) != 3 {
+			t.Fatalf("entries = %v", entries)
+		}
+	})
+
+	t.Run("parent mode and ownership", func(t *testing.T) {
+		for _, mode := range []os.FileMode{0o720, 0o775} {
+			dir := newCommitDir(t)
+			if err := os.Chmod(dir, mode); err != nil {
+				t.Fatal(err)
+			}
+			args := commitTestArgs(t, dir, oneServer...)
+			arts := commitTestArtifacts(t, args, models)
+			err := commitInitArtifacts(args, arts, false, nil)
+			if err == nil || !strings.Contains(err.Error(), "group- or world-writable") {
+				t.Fatalf("mode %o: err = %v", mode, err)
+			}
+		}
+
+		if os.Geteuid() == 0 {
+			dir := newCommitDir(t)
+			if err := os.Chown(dir, 12345, 12345); err != nil {
+				t.Fatal(err)
+			}
+			args := commitTestArgs(t, dir, oneServer...)
+			arts := commitTestArtifacts(t, args, models)
+			err := commitInitArtifacts(args, arts, false, nil)
+			if err == nil || !strings.Contains(err.Error(), "owned by the effective user") {
+				t.Fatalf("err = %v", err)
+			}
+		}
+	})
+
+	t.Run("opened-parent identity revalidation", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		prod := defaultCommitOps()
+		ops := &scriptedCommitOps{
+			inner: prod,
+			fstatParentFunc: func(fd int) (commitFileIdentity, error) {
+				id, err := prod.fstatParent(fd)
+				if err != nil {
+					return commitFileIdentity{}, err
+				}
+				id.Ino++
+				return id, nil
+			},
+		}
+		err := commitInitArtifacts(args, arts, false, ops)
+		if err == nil || !strings.Contains(err.Error(), "changed after it was opened") {
+			t.Fatalf("err = %v", err)
+		}
+		requireDirEmpty(t, dir)
+	})
+
+	t.Run("existing destinations are refused", func(t *testing.T) {
+		cases := []struct {
+			name string
+			kind string
+		}{
+			{"regular file", "file"},
+			{"symlink", "symlink"},
+			{"directory", "dir"},
+			{"FIFO", "fifo"},
+		}
+		for _, tc := range cases {
+			tc := tc
+			t.Run(tc.kind, func(t *testing.T) {
+				dir := newCommitDir(t)
+				target := filepath.Join(dir, "target")
+				if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
+					p := filepath.Join(dir, name)
+					switch tc.kind {
+					case "file":
+						if err := os.WriteFile(p, []byte("existing"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					case "symlink":
+						if err := os.Symlink(target, p); err != nil {
+							t.Fatal(err)
+						}
+					case "dir":
+						if err := os.Mkdir(p, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					case "fifo":
+						if err := unix.Mknod(p, unix.S_IFIFO|0600, 0); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				args := commitTestArgs(t, dir, oneServer...)
+				arts := commitTestArtifacts(t, args, models)
+				err := commitInitArtifacts(args, arts, false, nil)
+				if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+					t.Fatalf("err = %v", err)
+				}
+				for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
+					if !strings.Contains(err.Error(), filepath.Join(dir, name)) {
+						t.Fatalf("err %q missing %q", err, filepath.Join(dir, name))
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("failure injection leaves no files", func(t *testing.T) {
+		keys := []string{
+			"createInDir",
+			"writeAll",
+			"fsyncFile",
+			"fstatFile",
+			"closeFile",
+			"linkInDir",
+			"unlinkInDir",
+			"fsyncDir",
+		}
+		for _, key := range keys {
+			key := key
+			t.Run(key, func(t *testing.T) {
+				dir := newCommitDir(t)
+				args := commitTestArgs(t, dir, oneServer...)
+				arts := commitTestArtifacts(t, args, models)
+				ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{key: true}}
+				err := commitInitArtifacts(args, arts, false, ops)
+				if err == nil || !strings.Contains(err.Error(), "injected "+key) {
+					t.Fatalf("err = %v", err)
+				}
+				requireDirEmpty(t, dir)
+			})
+		}
+	})
+
+	t.Run("auth sync boundary failures", func(t *testing.T) {
+		t.Run("before directory sync", func(t *testing.T) {
+			dir := newCommitDir(t)
+			args := commitTestArgs(t, dir, oneServer...)
+			arts := commitTestArtifacts(t, args, models)
+			ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{"unlinkInDir": true}}
+			err := commitInitArtifacts(args, arts, false, ops)
+			if err == nil || !strings.Contains(err.Error(), "injected unlinkInDir") {
+				t.Fatalf("err = %v", err)
+			}
+			requireDirEmpty(t, dir)
+		})
+
+		t.Run("after directory sync", func(t *testing.T) {
+			dir := newCommitDir(t)
+			args := commitTestArgs(t, dir, oneServer...)
+			arts := commitTestArtifacts(t, args, models)
+			ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{"linkInDir:config.yaml": true}}
+			err := commitInitArtifacts(args, arts, false, ops)
+			if err == nil || !strings.Contains(err.Error(), "injected linkInDir:config.yaml") {
+				t.Fatalf("err = %v", err)
+			}
+			requireDirEmpty(t, dir)
+		})
+	})
+
+	t.Run("destination race is not replaced", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		cfg := filepath.Join(dir, "config.yaml")
+		ops := &scriptedCommitOps{
+			inner: defaultCommitOps(),
+			after: map[string]func(){
+				"fsyncDir": func() {
+					if _, err := os.Lstat(cfg); os.IsNotExist(err) {
+						_ = os.WriteFile(cfg, []byte("attacker"), 0o600)
+					}
+				},
+			},
+		}
+		err := commitInitArtifacts(args, arts, false, ops)
+		if err == nil || !strings.Contains(err.Error(), "appeared before publication") {
+			t.Fatalf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(cfg); string(b) != "attacker" {
+			t.Fatalf("config = %q", b)
+		}
+		if _, err := os.Lstat(args.UsersPath); !os.IsNotExist(err) {
+			t.Fatalf("users should be rolled back: %v", err)
+		}
+		if _, err := os.Lstat(args.PepperPath); !os.IsNotExist(err) {
+			t.Fatalf("pepper should be rolled back: %v", err)
+		}
+	})
+
+	t.Run("temporary source replacement is detected", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		temp := fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid())
+		tempPath := filepath.Join(dir, temp)
+		replacement := filepath.Join(t.TempDir(), "replacement")
+		if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hooked := false
+		ops := &scriptedCommitOps{
+			inner: defaultCommitOps(),
+			after: map[string]func(){
+				"closeFile:" + temp: func() {
+					hooked = true
+					_ = os.Remove(tempPath)
+					_ = os.Link(replacement, tempPath)
+				},
+			},
+		}
+		err := commitInitArtifacts(args, arts, false, ops)
+		if err == nil || !strings.Contains(err.Error(), "changed after it was created") {
+			t.Fatalf("err = %v hooked=%v calls=%v", err, hooked, ops.calls)
+		}
+		if !hooked {
+			t.Fatalf("hook did not run")
+		}
+		if b, _ := os.ReadFile(tempPath); string(b) != "replacement" {
+			t.Fatalf("temp = %q, want replacement preserved", b)
+		}
+		for _, name := range []string{"auth.pepper", "users.yaml", "config.yaml"} {
+			if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				t.Fatalf("%s should be absent: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("parent rename race stays in the opened directory", func(t *testing.T) {
+		dir := newCommitDir(t)
+		renamed := dir + "-renamed"
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		ops := &scriptedCommitOps{
+			inner: defaultCommitOps(),
+			after: map[string]func(){
+				"openParent": func() {
+					_ = os.Rename(dir, renamed)
+				},
+			},
+		}
+		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
+			if _, err := os.Stat(filepath.Join(renamed, name)); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("original directory should be renamed")
+		}
+	})
+
+	t.Run("ancestor symlink race stays in the opened directory", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		other := filepath.Join(base, "other")
+		realChild := filepath.Join(real, "child")
+		otherChild := filepath.Join(other, "child")
+		for _, d := range []string{real, other, realChild, otherChild} {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		link := filepath.Join(base, "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		args, err := parseInitArguments(filepath.Join(link, "child", "config.yaml"), defaultInitListen, "required", false, false, oneServer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		arts := commitTestArtifacts(t, args, models)
+		ops := &scriptedCommitOps{
+			inner: defaultCommitOps(),
+			after: map[string]func(){
+				"openParent": func() {
+					_ = os.Remove(link)
+					_ = os.Symlink(other, link)
+				},
+			},
+		}
+		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
+			if _, err := os.Stat(filepath.Join(realChild, name)); err != nil {
+				t.Fatalf("real %s: %v", name, err)
+			}
+			if _, err := os.Lstat(filepath.Join(otherChild, name)); !os.IsNotExist(err) {
+				t.Fatalf("other %s should be absent: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("rollback removes only matching created inodes", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		pepper := filepath.Join(dir, "auth.pepper")
+		pepperTemp := fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid())
+		ops := &scriptedCommitOps{
+			inner:    defaultCommitOps(),
+			failOnce: map[string]bool{"unlinkInDir:" + pepperTemp: true},
+			after: map[string]func(){
+				"linkInDir:auth.pepper": func() {
+					_ = os.Remove(pepper)
+					_ = os.WriteFile(pepper, []byte("replacement"), 0o600)
+				},
+			},
+		}
+		err := commitInitArtifacts(args, arts, false, ops)
+		if err == nil || !strings.Contains(err.Error(), "injected unlinkInDir:") {
+			t.Fatalf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(pepper); string(b) != "replacement" {
+			t.Fatalf("pepper = %q, want replacement preserved", b)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "users.yaml")); !os.IsNotExist(err) {
+			t.Fatalf("users should be absent")
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(err) {
+			t.Fatalf("config should be absent")
+		}
+	})
+
+	t.Run("config is published last", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		ops := &scriptedCommitOps{inner: defaultCommitOps()}
+		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+			t.Fatal(err)
+		}
+		idx := make(map[string]int)
+		for i, c := range ops.calls {
+			if _, ok := idx[c]; !ok {
+				idx[c] = i
+			}
+		}
+		for _, pair := range [][2]string{
+			{"linkInDir:auth.pepper", "linkInDir:users.yaml"},
+			{"linkInDir:users.yaml", "fsyncDir"},
+			{"fsyncDir", "linkInDir:config.yaml"},
+		} {
+			if idx[pair[0]] > idx[pair[1]] {
+				t.Fatalf("call order %v: %d > %d calls=%v", pair, idx[pair[0]], idx[pair[1]], ops.calls)
+			}
+		}
+		configLink := idx["linkInDir:config.yaml"]
+		configUnlink := -1
+		finalFsync := -1
+		for i := configLink + 1; i < len(ops.calls); i++ {
+			c := ops.calls[i]
+			if strings.HasPrefix(c, "unlinkInDir:.mellomting-init-") && configUnlink == -1 {
+				configUnlink = i
+			}
+			if c == "fsyncDir" {
+				finalFsync = i
+			}
+		}
+		if configUnlink == -1 || finalFsync == -1 || configUnlink > finalFsync {
+			t.Fatalf("calls = %v", ops.calls)
+		}
+	})
+
+	t.Run("crash residue diagnostic", func(t *testing.T) {
+		dir := newCommitDir(t)
+		for _, name := range []string{"users.yaml", "auth.pepper"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("residue"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		err := commitInitArtifacts(args, arts, false, nil)
+		if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+			t.Fatalf("err = %v", err)
+		}
+		if !strings.Contains(err.Error(), filepath.Join(dir, "users.yaml")) || !strings.Contains(err.Error(), filepath.Join(dir, "auth.pepper")) {
+			t.Fatalf("err = %q", err)
+		}
+	})
+
+	t.Run("dry-run writes nothing", func(t *testing.T) {
+		dir := newCommitDir(t)
+		args := commitTestArgs(t, dir, oneServer...)
+		arts := commitTestArtifacts(t, args, models)
+		if err := commitInitArtifacts(args, arts, true, nil); err != nil {
+			t.Fatal(err)
+		}
+		requireDirEmpty(t, dir)
 	})
 }

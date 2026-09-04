@@ -468,3 +468,206 @@ func renderInitConfig(args initArguments, discovered discovery.Result, policy co
 	}
 	return out, nil
 }
+
+// commitFileIdentity is the platform-independent identity of one filesystem
+// object. It is used to revalidate opened parents and to roll back only the
+// inodes this invocation created.
+type commitFileIdentity struct {
+	Dev  uint64
+	Ino  uint64
+	Mode uint64
+	Uid  uint64
+}
+
+// commitOps is the filesystem seam for the D4 init transaction. The
+// production implementation is Linux-specific and directory-FD-relative.
+type commitOps interface {
+	openParent(path string) (fd int, id commitFileIdentity, err error)
+	fstatParent(fd int) (commitFileIdentity, error)
+	lstatInDir(fd int, name string) (commitFileIdentity, error)
+	createInDir(fd int, name string, mode uint32) (fileFD int, id commitFileIdentity, err error)
+	writeAll(fd int, name string, data []byte) error
+	fsyncFile(fd int, name string) error
+	fstatFile(fd int, name string) (commitFileIdentity, error)
+	closeFile(fd int, name string) error
+	linkInDir(fd int, oldname, newname string) error
+	unlinkInDir(fd int, name string) error
+	fsyncDir(fd int) error
+}
+
+type commitFile struct {
+	temp      string
+	final     string
+	path      string
+	data      []byte
+	fd        int
+	id        commitFileIdentity
+	published bool
+}
+
+// commitInitArtifacts publishes rendered init artifacts with create-only,
+// directory-FD-relative semantics (D4/D5). It never overwrites an existing
+// final path and never follows a final-component symlink. When dryRun is
+// true it performs no filesystem mutation.
+func commitInitArtifacts(args initArguments, artifacts initArtifacts, dryRun bool, ops commitOps) error {
+	if dryRun {
+		return nil
+	}
+	if ops == nil {
+		ops = defaultCommitOps()
+	}
+	if filepath.Dir(args.ConfigPath) != filepath.Dir(args.UsersPath) || filepath.Dir(args.ConfigPath) != filepath.Dir(args.PepperPath) {
+		return fmt.Errorf("config, users, and pepper must share one parent directory")
+	}
+	dir := filepath.Dir(args.ConfigPath)
+
+	dirFD, dirID, err := ops.openParent(dir)
+	if err != nil {
+		return fmt.Errorf("open destination directory: %w", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = ops.closeFile(dirFD, dir)
+		}
+	}()
+
+	if uint64(os.Geteuid()) != dirID.Uid {
+		return fmt.Errorf("destination directory %s must be owned by the effective user", dir)
+	}
+	if dirID.Mode&0o022 != 0 {
+		return fmt.Errorf("destination directory %s must not be group- or world-writable", dir)
+	}
+	if id, err := ops.fstatParent(dirFD); err != nil {
+		return fmt.Errorf("revalidate destination directory: %w", err)
+	} else if id.Dev != dirID.Dev || id.Ino != dirID.Ino {
+		return fmt.Errorf("destination directory %s changed after it was opened", dir)
+	}
+
+	files := []commitFile{
+		{
+			temp:  fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid()),
+			final: filepath.Base(args.PepperPath),
+			path:  args.PepperPath,
+			data:  artifacts.Pepper,
+		},
+		{
+			temp:  fmt.Sprintf(".mellomting-init-%d-users.tmp", os.Getpid()),
+			final: filepath.Base(args.UsersPath),
+			path:  args.UsersPath,
+			data:  artifacts.Users,
+		},
+		{
+			temp:  fmt.Sprintf(".mellomting-init-%d-config.tmp", os.Getpid()),
+			final: filepath.Base(args.ConfigPath),
+			path:  args.ConfigPath,
+			data:  artifacts.Config,
+		},
+	}
+
+	var existing []string
+	for _, f := range files {
+		if _, err := ops.lstatInDir(dirFD, f.final); err == nil {
+			existing = append(existing, f.path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat destination %s: %w", f.path, err)
+		}
+	}
+	if len(existing) > 0 {
+		return fmt.Errorf("refusing to overwrite existing %s; inspect and remove them manually", strings.Join(existing, ", "))
+	}
+
+	for i := range files {
+		fd, id, err := ops.createInDir(dirFD, files[i].temp, 0o600)
+		if err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("create temporary %s: %w", files[i].temp, err)
+		}
+		files[i].fd = fd
+		files[i].id = id
+	}
+
+	for i := range files {
+		if err := ops.writeAll(files[i].fd, files[i].temp, files[i].data); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("write %s: %w", files[i].temp, err)
+		}
+		if err := ops.fsyncFile(files[i].fd, files[i].temp); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("fsync %s: %w", files[i].temp, err)
+		}
+		if id, err := ops.fstatFile(files[i].fd, files[i].temp); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("revalidate %s: %w", files[i].temp, err)
+		} else if id.Dev != files[i].id.Dev || id.Ino != files[i].id.Ino {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("%s changed after it was created", files[i].temp)
+		}
+		if err := ops.closeFile(files[i].fd, files[i].temp); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("close %s: %w", files[i].temp, err)
+		}
+		files[i].fd = -1
+	}
+
+	// D4 order: publish and unlink the two auth entries, durably sync the
+	// directory, then publish the config destination last.
+	for i := 0; i < 2; i++ {
+		if err := publishCommitFile(ops, dirFD, &files[i]); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return err
+		}
+	}
+	if err := ops.fsyncDir(dirFD); err != nil {
+		rollbackCommitFiles(ops, dirFD, files)
+		return fmt.Errorf("fsync destination directory: %w", err)
+	}
+	if err := publishCommitFile(ops, dirFD, &files[2]); err != nil {
+		rollbackCommitFiles(ops, dirFD, files)
+		return err
+	}
+	if err := ops.fsyncDir(dirFD); err != nil {
+		rollbackCommitFiles(ops, dirFD, files)
+		return fmt.Errorf("fsync destination directory: %w", err)
+	}
+
+	closed = true
+	return nil
+}
+
+func publishCommitFile(ops commitOps, dirFD int, f *commitFile) error {
+	id, err := ops.lstatInDir(dirFD, f.temp)
+	if err != nil {
+		return fmt.Errorf("revalidate %s: %w", f.temp, err)
+	}
+	if id.Dev != f.id.Dev || id.Ino != f.id.Ino {
+		return fmt.Errorf("%s changed after it was created", f.temp)
+	}
+	if err := ops.linkInDir(dirFD, f.temp, f.final); err != nil {
+		return fmt.Errorf("publish %s: %w", f.path, err)
+	}
+	f.published = true
+	if err := ops.unlinkInDir(dirFD, f.temp); err != nil {
+		return fmt.Errorf("unlink %s: %w", f.temp, err)
+	}
+	return nil
+}
+
+func rollbackCommitFiles(ops commitOps, dirFD int, files []commitFile) {
+	for i := len(files) - 1; i >= 0; i-- {
+		if !files[i].published {
+			continue
+		}
+		if id, err := ops.lstatInDir(dirFD, files[i].final); err == nil && id.Dev == files[i].id.Dev && id.Ino == files[i].id.Ino {
+			_ = ops.unlinkInDir(dirFD, files[i].final)
+		}
+	}
+	for i := len(files) - 1; i >= 0; i-- {
+		if files[i].id.Ino == 0 {
+			continue
+		}
+		if id, err := ops.lstatInDir(dirFD, files[i].temp); err == nil && id.Dev == files[i].id.Dev && id.Ino == files[i].id.Ino {
+			_ = ops.unlinkInDir(dirFD, files[i].temp)
+		}
+	}
+}
