@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -234,7 +235,7 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	fs.StringVar(&c.configPath, "config", "", "configuration file path")
 	if sub == "create" {
 		fs.StringVar(&c.name, "name", "", "human-readable key name (required)")
-		fs.StringVar(&c.models, "models", "", "comma-separated model names, or * (required)")
+		fs.StringVar(&c.models, "models", "", "comma-separated model names, or * (optional; inferred when exactly one model is configured)")
 		fs.StringVar(&c.expires, "expires", "", "expiry as RFC3339 (optional)")
 		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "max simultaneous in-flight requests (0: apply default)")
 		fs.Float64Var(&c.requestsPerSecond, "requests-per-second", 0, "request rate limit (0: no rate limit)")
@@ -263,10 +264,6 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	case "create":
 		if c.name == "" {
 			fmt.Fprintln(os.Stderr, "mellomting: key create: --name is required")
-			return nil, 2
-		}
-		if c.models == "" {
-			fmt.Fprintln(os.Stderr, "mellomting: key create: --models is required")
 			return nil, 2
 		}
 		if c.expires != "" {
@@ -339,16 +336,29 @@ func keyCreate(c *keyFlags) int {
 		return 1
 	}
 
-	models := splitModels(c.models)
-	// A model not present in the loaded config is legal (an ACL may
-	// name a model about to be added), but the operator should hear
-	// about it (T-L4).
-	for _, m := range models {
-		if m == "*" {
-			continue
+	var models []string
+	if c.models == "" {
+		// D14: infer the model only when the config has exactly one
+		// public model; otherwise fail and point the operator at
+		// --models. Never infer "*".
+		inferred, err := inferSoleModel(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+			return 2
 		}
-		if _, ok := cfg.Models[m]; !ok {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
+		models = inferred
+	} else {
+		models = splitModels(c.models)
+		// A model not present in the loaded config is legal (an ACL may
+		// name a model about to be added), but the operator should hear
+		// about it (T-L4).
+		for _, m := range models {
+			if m == "*" {
+				continue
+			}
+			if _, ok := cfg.Models[m]; !ok {
+				fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
+			}
 		}
 	}
 	var exp *time.Time
@@ -525,6 +535,35 @@ func splitModels(s string) []string {
 	return out
 }
 
+// inferSoleModel resolves the key's model list when --models is absent
+// (D14): exactly one configured public model is inferred; zero or two or
+// more models fail, listing at most 20 model names plus the omitted count.
+// It never infers "*".
+func inferSoleModel(cfg *config.Config) ([]string, error) {
+	names := make([]string, 0, len(cfg.Models))
+	for name := range cfg.Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	switch len(names) {
+	case 0:
+		return nil, fmt.Errorf("no models are configured; pass --models explicitly")
+	case 1:
+		return names, nil
+	default:
+		const limit = 20
+		shown := names
+		if len(names) > limit {
+			shown = names[:limit]
+		}
+		msg := "multiple models are configured; pass --models explicitly. configured: " + strings.Join(shown, ", ")
+		if len(names) > limit {
+			msg += fmt.Sprintf(" (and %d more; run `mellomting config show-effective` for the complete set)", len(names)-limit)
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+}
+
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: mellomting <command> [flags]
 
@@ -539,10 +578,11 @@ commands:
   key <subcommand>             offline API key management
 
 key subcommands:
-  key create   --name NAME --models M[,M...] [--expires RFC3339]
+  key create   --name NAME [--models M[,M...]] [--expires RFC3339]
                [--concurrent-requests N] [--requests-per-second R] [--burst B]
-               create a key and print it once; without limits flags a
-               conservative per-key concurrency default applies at load
+               create a key and print it once; --models is optional and is
+               inferred when exactly one model is configured (never "*");
+               without limits flags a conservative concurrency default applies
   key list                            list keys (id, name, models, status)
   key enable  --id ID                 re-enable a key
   key disable --id ID                 disable a key

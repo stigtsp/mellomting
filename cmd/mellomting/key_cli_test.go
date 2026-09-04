@@ -1,12 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+
+	"mellomting/internal/config"
 )
 
 var keyRe = regexp.MustCompile(`mtk_[A-Z2-9]{8}_[A-Z2-9]{52}`)
@@ -325,5 +329,126 @@ func TestKeyCreateLimits(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("negative limit %v exit = %d (want 2)", args, code)
 		}
+	}
+}
+
+// D14: inferSoleModel resolves --models when it is absent — exactly one
+// configured model is inferred, zero or two-or-more fail (listing at most 20
+// names plus the omitted count), and "*" is never inferred.
+func TestInferSoleModel(t *testing.T) {
+	t.Run("zero models", func(t *testing.T) {
+		_, err := inferSoleModel(&config.Config{Models: map[string]config.Model{}})
+		if err == nil || !strings.Contains(err.Error(), "no models") {
+			t.Fatalf("err = %v, want no models", err)
+		}
+	})
+
+	t.Run("single model inferred", func(t *testing.T) {
+		got, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"only": {}}})
+		if err != nil || !reflect.DeepEqual(got, []string{"only"}) {
+			t.Fatalf("got %v err %v", got, err)
+		}
+	})
+
+	t.Run("multiple models fail and list sorted names", func(t *testing.T) {
+		_, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"bravo": {}, "alpha": {}}})
+		if err == nil || !strings.Contains(err.Error(), "multiple models") {
+			t.Fatalf("err = %v, want multiple models", err)
+		}
+		if !strings.Contains(err.Error(), "alpha, bravo") {
+			t.Fatalf("err = %q, want sorted names", err)
+		}
+		if strings.Contains(err.Error(), "*") {
+			t.Fatalf("err = %q must not suggest *", err)
+		}
+	})
+
+	t.Run("more than 20 models are truncated", func(t *testing.T) {
+		m := make(map[string]config.Model, 25)
+		for i := 0; i < 25; i++ {
+			m[fmt.Sprintf("m%02d", i)] = config.Model{}
+		}
+		_, err := inferSoleModel(&config.Config{Models: m})
+		if err == nil || !strings.Contains(err.Error(), "and 5 more") {
+			t.Fatalf("err = %v, want omitted count", err)
+		}
+		if !strings.Contains(err.Error(), "config show-effective") {
+			t.Fatalf("err = %q, want show-effective pointer", err)
+		}
+		if strings.Contains(err.Error(), "m24") {
+			t.Fatalf("err = %q must omit the 25th model", err)
+		}
+	})
+}
+
+// D14: key create with no --models infers the single configured model.
+func TestKeyCreateInfersSoleModel(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, out, _ := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-name", "inferred")
+	if code != 0 {
+		t.Fatalf("create (no --models) exit = %d", code)
+	}
+	if keyRe.FindString(out) == "" {
+		t.Fatalf("no raw key printed: %q", out)
+	}
+
+	// The inferred key must be scoped to the sole configured model.
+	code, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
+	if code != 0 || !strings.Contains(out, "qwen-coder") {
+		t.Fatalf("list exit=%d out=%q, want qwen-coder", code, out)
+	}
+}
+
+// D14: with two or more configured models, key create without --models fails
+// (usage error) and lists the model names; it writes no key.
+func TestKeyCreateRefusesToInferMultiple(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	cfg := `version: 1
+
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+
+auth:
+  users_file: ` + dir + `/users.yaml
+  pepper_file: ` + dir + `/auth.pepper
+
+servers:
+  qwen-a:
+    url: http://127.0.0.1:8001
+
+models:
+  alpha-model:
+    type: generation
+    servers:
+      - qwen-a
+  bravo-model:
+    type: generation
+    servers:
+      - qwen-a
+`
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "auth.pepper"),
+		[]byte("test-pepper-long-enough-16b+"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfgPath, "-name", "multi")
+	if code != 2 {
+		t.Fatalf("create (multiple models, no --models) exit = %d (want 2)", code)
+	}
+	if !strings.Contains(errOut, "alpha-model") || !strings.Contains(errOut, "bravo-model") {
+		t.Fatalf("stderr missing model names: %q", errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "users.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("users.yaml must not be created on inference failure")
 	}
 }

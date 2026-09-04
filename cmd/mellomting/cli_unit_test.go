@@ -308,7 +308,6 @@ func TestKeyParseFlagsErrors(t *testing.T) {
 		args []string
 	}{
 		{"missing name", "create", nil},
-		{"missing models", "create", []string{"-name", "x"}},
 		{"invalid expires", "create", []string{"-name", "x", "-models", "m", "-expires", "not-a-date"}},
 		{"negative concurrent", "create", []string{"-name", "x", "-models", "m", "-concurrent-requests", "-1"}},
 		{"negative rps", "create", []string{"-name", "x", "-models", "m", "-requests-per-second", "-1"}},
@@ -340,5 +339,16 @@ func TestKeyParseFlagsValid(t *testing.T) {
 	}
 	if !c.limitsSet || c.concurrentRequests != 4 || len(splitModels(c.models)) != 2 {
 		t.Fatalf("parsed flags = %+v", c)
+	}
+
+	// D14: --models is optional at the flag level; inference is
+	// config-dependent and happens later, so an absent --models must parse
+	// cleanly.
+	c, code = keyParseFlags("create", []string{"-name", "x"})
+	if code != 0 {
+		t.Fatalf("key create without --models must parse: exit = %d", code)
+	}
+	if c.models != "" {
+		t.Fatalf("models should be empty for inference, got %q", c.models)
 	}
 }
