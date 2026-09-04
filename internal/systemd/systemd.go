@@ -74,7 +74,7 @@ type dirSpec struct {
 	gid  int
 }
 
-// Provision carries the parameters for `mellomting --install --systemd`.
+// Provision carries the parameters for `mellomting install --systemd`.
 // It is fail-closed: any precondition that does not hold aborts before the
 // host is mutated.
 type Provision struct {
@@ -401,10 +401,10 @@ func (p *Provision) preflight(env preflightEnv) error {
 // checkHost validates the host-level preconditions only.
 func (p *Provision) checkHost(env preflightEnv) error {
 	if env.goos != "linux" {
-		return fmt.Errorf("--install --systemd requires a Linux host (got %q)", env.goos)
+		return fmt.Errorf("install --systemd requires a Linux host (got %q)", env.goos)
 	}
 	if env.euid != 0 {
-		return errors.New("--install --systemd must run as root (use sudo)")
+		return errors.New("install --systemd must run as root (use sudo)")
 	}
 	if !env.systemdActive {
 		return errors.New("systemd is not the active init (no /run/systemd/system); refusing to provision")
@@ -453,7 +453,7 @@ func ensureAccount(name string) (*user.User, error) {
 // service account. An existing directory of foreign ownership is adopted
 // rather than refused: the installer runs as root by design and is
 // re-provisioning the same host, so a directory it created (or an operator
-// chown-ed) on an earlier run must not make re-running --install
+// chown-ed) on an earlier run must not make re-running install
 // --systemd fail. It refuses to use an existing path that is not a real
 // directory; a symlink (even one resolving to a directory) is treated as
 // hostile, in line with the project's symlink stance.

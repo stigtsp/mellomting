@@ -1,5 +1,5 @@
 # Mellomting configuration scaffold, written by `mellomting
-# --install --systemd`. It is deliberately incomplete: with no servers
+# install --systemd`. It is deliberately incomplete: with no servers
 # and no models it does not pass validation, so the daemon refuses to
 # start until you fill them in. After each edit run
 #

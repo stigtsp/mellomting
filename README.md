@@ -49,8 +49,8 @@ Optionally install it system-wide — the binary copies itself atomically
 (mode 0755; symlink destinations are refused):
 
 ```sh
-sudo bin/mellomting --install              # → /usr/local/bin/mellomting
-bin/mellomting --install --prefix ~/.local # user-local prefix
+sudo bin/mellomting install              # → /usr/local/bin/mellomting
+bin/mellomting install --prefix ~/.local # user-local prefix
 ```
 
 Generate a config by pointing `init` at your inference server(s). `init`
@@ -254,7 +254,7 @@ are in `docs/COMPATIBILITY.md`.
 - **Usage** — with `accounting.enabled: true`, run `mellomting usage report` for
   per-key token totals. Rotate the JSONL with `deploy/mellomting.logrotate`
   (`copytruncate`, not rename).
-- **Installation** — `mellomting --install` copies the running binary to
+- **Installation** — `mellomting install` copies the running binary to
   `/usr/local/bin/mellomting` atomically (temp file + rename, mode 0755);
   `--prefix DIR` targets another prefix. Re-running on an already-installed
   path is a no-op. The command installs the **binary only** — it creates no
@@ -268,7 +268,7 @@ are in `docs/COMPATIBILITY.md`.
   hosts create them as needed. Mellomting deliberately ships no default
   config or boilerplate secrets — they are operator-authored.
 - **systemd provisioning** — on a Linux root host,
-  `mellomting --install --systemd` provisions the daemon end-to-end in the
+   `mellomting install --systemd` provisions the daemon end-to-end in the
   single binary: it creates the unprivileged `mellomting` service account
   (system user, `nologin` shell), the config/log/state/run dirs with strict
   owners and modes (`/etc/mellomting` root:mellomting 0750; the rest

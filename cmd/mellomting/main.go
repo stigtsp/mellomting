@@ -16,34 +16,43 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
+	os.Exit(commandDispatch(os.Args))
+}
+
+// commandDispatch dispatches the top-level command and returns the process
+// exit code. It is factored out of main so the dispatch is testable without
+// os.Exit.
+func commandDispatch(argv []string) int {
+	if len(argv) < 2 {
 		usage(os.Stderr)
-		os.Exit(2)
+		return 2
 	}
 
-	switch os.Args[1] {
+	switch argv[1] {
 	case "version", "-v", "--version":
 		fmt.Fprintln(os.Stdout, version.String())
+		return 0
 	case "help", "-h", "--help":
 		usage(os.Stdout)
-	case "--install", "-install":
-		os.Exit(installCmd(os.Args[2:]))
+		return 0
+	case "install":
+		return installCmd(argv[2:])
 	case "init":
-		os.Exit(initCmd(os.Args[2:]))
+		return initCmd(argv[2:])
 	case "config":
-		os.Exit(configCmd(os.Args[2:]))
+		return configCmd(argv[2:])
 	case "sandbox":
-		os.Exit(sandboxCmd(os.Args[2:]))
+		return sandboxCmd(argv[2:])
 	case "key":
-		os.Exit(keyCmd(os.Args[2:]))
+		return keyCmd(argv[2:])
 	case "usage":
-		os.Exit(usageCmd(os.Args[2:]))
+		return usageCmd(argv[2:])
 	case "serve":
-		os.Exit(serveCmd(os.Args[2:]))
+		return serveCmd(argv[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "mellomting: %s\n", describeUnknownCommand(os.Args[1]))
+		fmt.Fprintf(os.Stderr, "mellomting: %s\n", describeUnknownCommand(argv[1]))
 		usage(os.Stderr)
-		os.Exit(2)
+		return 2
 	}
 }
 
@@ -623,10 +632,10 @@ key subcommands:
 
   serve -config PATH           run the proxy daemon (default: config path)
   usage report                 report per-key token/request usage
-  --install [--prefix DIR]     copy this binary to DIR/bin (default DIR:
+  install [--prefix DIR]       copy this binary to DIR/bin (default DIR:
                                 /usr/local): atomic replace, mode 0755,
                                 symlink destinations refused
-  --install --systemd          also provision as a systemd service (Linux
+  install --systemd            also provision as a systemd service (Linux
                                 root): service user, config/log/state/run
                                 dirs, scaffold config.yaml, generated
                                 pepper, and empty users.yaml (each if

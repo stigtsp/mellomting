@@ -24,7 +24,7 @@ const defaultInstallPrefix = "/usr/local"
 // is a no-op, not an error).
 var errAlreadyInstalled = errors.New("already installed")
 
-// installCmd runs `mellomting --install [--prefix DIR] [--systemd]`: it
+// installCmd runs `mellomting install [--prefix DIR] [--systemd]`: it
 // copies the running binary into <prefix>/bin/ (default prefix:
 // /usr/local), so a built or downloaded binary can be installed without a
 // package manager. With --systemd it additionally provisions the daemon
@@ -34,23 +34,23 @@ var errAlreadyInstalled = errors.New("already installed")
 // Exit codes: 0 ok (including the already-installed no-op), 1 install
 // failure, 2 usage error.
 func installCmd(args []string) int {
-	flags := flag.NewFlagSet("mellomting --install", flag.ContinueOnError)
+	flags := flag.NewFlagSet("mellomting install", flag.ContinueOnError)
 	prefix := flags.String("prefix", defaultInstallPrefix, "destination prefix: the binary is installed at <prefix>/bin/"+version.Name)
 	systemdInstall := flags.Bool("systemd", false, "also provision as a systemd service (Linux root): service user, config/log/state/run dirs, scaffold config.yaml, generated pepper and empty users.yaml (each if absent), unit, logrotate")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintf(os.Stderr, "mellomting: --install: unexpected arguments %q\n", flags.Args())
+		fmt.Fprintf(os.Stderr, "mellomting: install: unexpected arguments %q\n", flags.Args())
 		return 2
 	}
 	if *prefix == "" {
-		fmt.Fprintln(os.Stderr, "mellomting: --install: --prefix must not be empty")
+		fmt.Fprintln(os.Stderr, "mellomting: install: --prefix must not be empty")
 		return 2
 	}
 	src, err := currentExecutable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: --install: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mellomting: install: %v\n", err)
 		return 1
 	}
 
@@ -60,7 +60,7 @@ func installCmd(args []string) int {
 	if *systemdInstall {
 		p := &systemd.Provision{}
 		if err := p.CheckHost(); err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: --install --systemd: %v\n", err)
+			fmt.Fprintf(os.Stderr, "mellomting: install --systemd: %v\n", err)
 			return 1
 		}
 	}
@@ -73,7 +73,7 @@ func installCmd(args []string) int {
 		p := &systemd.Provision{BinaryPath: dest}
 		report, err := p.Run()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: --install --systemd: %v\n", err)
+			fmt.Fprintf(os.Stderr, "mellomting: install --systemd: %v\n", err)
 			return 1
 		}
 		printSystemdNextSteps(dest, report)
@@ -91,7 +91,7 @@ func performInstall(src, prefix string) (dest string, code int) {
 			fmt.Fprintf(os.Stdout, "mellomting: already installed at %s\n", dest)
 			return dest, 0
 		}
-		fmt.Fprintf(os.Stderr, "mellomting: --install: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mellomting: install: %v\n", err)
 		if os.IsPermission(err) {
 			fmt.Fprintln(os.Stderr, "mellomting: the destination is not writable by this user; run with write access (e.g. root) or choose another --prefix")
 		}

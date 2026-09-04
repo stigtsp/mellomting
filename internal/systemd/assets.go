@@ -1,5 +1,5 @@
 // Package systemd provisions the Mellomting daemon as a systemd service
-// (PLAN §64) from `mellomting --install --systemd`.
+// (PLAN §64) from `mellomting install --systemd`.
 //
 // The unit and logrotate assets are embedded into the binary so a
 // single release artifact can install itself end-to-end. The canonical
@@ -44,7 +44,7 @@ func Logrotate() []byte {
 }
 
 // ConfigTemplate returns the scaffold written into the config directory
-// by --install --systemd when no config file exists. It is deliberately
+// by install --systemd when no config file exists. It is deliberately
 // incomplete — no backends and no models — so it does not pass validation
 // and the daemon stays fail-closed until the operator fills those in; the
 // commented stubs document every field. It is byte-identical to

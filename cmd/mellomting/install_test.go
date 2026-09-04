@@ -247,6 +247,47 @@ func TestPerformInstallAlreadyInstalled(t *testing.T) {
 	}
 }
 
+// D15: `install` is the sole installation command. The development-era
+// top-level `--install` / `-install` forms are rejected as unknown commands,
+// and `install` flag/argument errors fail closed before any filesystem write.
+func TestInstallDispatch(t *testing.T) {
+	t.Run("top-level --install is unknown", func(t *testing.T) {
+		code, _, errOut := captureOutput(t, func() int {
+			return commandDispatch([]string{"mellomting", "--install"})
+		})
+		if code != 2 {
+			t.Fatalf("commandDispatch --install exit = %d (want 2)", code)
+		}
+		if !strings.Contains(errOut, `unknown command "--install"`) {
+			t.Fatalf("stderr = %q (want unknown command)", errOut)
+		}
+	})
+	t.Run("top-level -install is unknown", func(t *testing.T) {
+		code, _, errOut := captureOutput(t, func() int {
+			return commandDispatch([]string{"mellomting", "-install"})
+		})
+		if code != 2 || !strings.Contains(errOut, `unknown command "-install"`) {
+			t.Fatalf("-install exit = %d stderr=%q (want 2, unknown command)", code, errOut)
+		}
+	})
+	// Safe-to-run `install` error paths: each fails during flag/argument
+	// handling, before currentExecutable or any write to the destination.
+	for name, args := range map[string][]string{
+		"unknown flag":   {"install", "--bogus"},
+		"empty prefix":   {"install", "--prefix", ""},
+		"unexpected arg": {"install", "extra"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, _, _ := captureOutput(t, func() int {
+				return commandDispatch(append([]string{"mellomting"}, args...))
+			})
+			if code != 2 {
+				t.Fatalf("commandDispatch %v exit = %d (want 2)", args, code)
+			}
+		})
+	}
+}
+
 func TestInstallCmdUsageErrors(t *testing.T) {
 	cases := []struct {
 		name string
