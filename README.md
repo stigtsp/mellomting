@@ -273,10 +273,10 @@ are in `docs/COMPATIBILITY.md`.
   (system user, `nologin` shell), the config/log/state/run dirs with strict
   owners and modes (`/etc/mellomting` root:mellomting 0750; the rest
   mellomting:mellomting 0750), writes a **commented scaffold config** at
-  `/etc/mellomting/config.yaml` (0640 root:mellomting) when no config
-  exists — a byte-identical copy of
-  `deploy/mellomting-config.yaml.example`, deliberately incomplete (no
-  `backends:`/`models:`) so `mellomting config check` shows exactly what is
+   `/etc/mellomting/config.yaml` (0640 root:mellomting) when no config
+   exists — a byte-identical copy of
+   `deploy/mellomting-config.yaml.example`, deliberately incomplete (no
+   `servers:`/`models:`) so `mellomting config check` shows exactly what is
   left and the daemon stays fail-closed until it is filled in; an existing
   `config.yaml` is never touched — installs the hardened unit at
   `/etc/systemd/system/mellomting.service` and the logrotate policy at
