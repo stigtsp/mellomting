@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -348,31 +350,13 @@ func TestInitCmd(t *testing.T) {
 		}
 	})
 
-	t.Run("valid preflight succeeds without files", func(t *testing.T) {
+	t.Run("dry-run succeeds without files", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
+		ts := fakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", validServer, "--config", cfg})
-		})
-		if code != 0 {
-			t.Fatalf("code = %d stderr=%q", code, stderr)
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("entries = %v, want none", entries)
-		}
-	})
-
-	t.Run("dry-run parses without files", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
-		dir := newCommitDir(t)
-		cfg := filepath.Join(dir, "config.yaml")
-		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", validServer, "--config", cfg, "--dry-run"})
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--dry-run"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
@@ -408,12 +392,13 @@ func TestInitCmd(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit best-effort unsupported succeeds without files", func(t *testing.T) {
+	t.Run("explicit best-effort unsupported dry-run succeeds", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
+		ts := fakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", validServer, "--config", cfg, "--landlock", "best-effort"})
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--landlock", "best-effort", "--dry-run"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
@@ -429,8 +414,11 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("duplicate last flag wins", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
+		ts := fakeModelsServer(t, "alpha")
+		dir := newCommitDir(t)
+		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", validServer, "--landlock", "required", "--landlock", "disabled"})
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--landlock", "required", "--landlock", "disabled", "--dry-run"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
@@ -463,21 +451,13 @@ func TestInitCmd(t *testing.T) {
 		}
 	})
 
-	t.Run("maximum server count", func(t *testing.T) {
+	t.Run("over maximum server count is a usage error", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
 		args := []string{}
-		for i := 0; i < discovery.MaxServers; i++ {
+		for i := 0; i <= discovery.MaxServers; i++ {
 			args = append(args, "--server", fmt.Sprintf("s%d=http://127.0.0.1:%d", i, 9000+i))
 		}
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd(args)
-		})
-		if code != 0 {
-			t.Fatalf("max servers: code = %d stderr=%q", code, stderr)
-		}
-
-		args = append(args, "--server", fmt.Sprintf("s%d=http://127.0.0.1:%d", discovery.MaxServers, 9000+discovery.MaxServers))
-		code, _, stderr = captureOutput(t, func() int {
 			return initCmd(args)
 		})
 		if code != 2 {
@@ -1374,5 +1354,147 @@ func TestCommitInitArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		requireDirEmpty(t, dir)
+	})
+}
+
+func fakeModelsServer(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var b strings.Builder
+		b.WriteString(`{"object":"list","data":[`)
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(fmt.Sprintf(`{"id":%q,"object":"model"}`, id))
+		}
+		b.WriteString(`]}`)
+		_, _ = fmt.Fprint(w, b.String())
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestInitEndToEnd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("init commit is Linux-only")
+	}
+
+	t.Run("two overlapping servers", func(t *testing.T) {
+		withInitLandlock(t, supportedLandlockReport())
+		ts1 := fakeModelsServer(t, "alpha", "beta")
+		ts2 := fakeModelsServer(t, "beta", "gamma")
+		dir := newCommitDir(t)
+		cfg := filepath.Join(dir, "config.yaml")
+		code, stdout, stderr := captureOutput(t, func() int {
+			return initCmd([]string{
+				"--server", "a=" + ts1.URL,
+				"--server", "b=" + ts2.URL,
+				"--config", cfg,
+			})
+		})
+		if code != 0 {
+			t.Fatalf("code = %d stderr=%q", code, stderr)
+		}
+		for _, want := range []string{
+			"discovered 3 model(s):",
+			"alpha: a",
+			"beta: a, b",
+			"gamma: b",
+			"initialized " + cfg + " with " + filepath.Join(dir, "users.yaml") + " and " + filepath.Join(dir, "auth.pepper"),
+			"mellomting key create --config " + cfg,
+			"mellomting serve --config " + cfg,
+		} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("stdout missing %q:\n%s", want, stdout)
+			}
+		}
+		// The pepper bytes must never be printed.
+		if pepper, err := os.ReadFile(filepath.Join(dir, "auth.pepper")); err == nil && len(pepper) > 0 {
+			if strings.Contains(stdout, strings.TrimSuffix(string(pepper), "\n")) {
+				t.Fatalf("stdout leaked pepper:\n%s", stdout)
+			}
+		}
+		for _, p := range []string{cfg, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "auth.pepper")} {
+			st, err := os.Stat(p)
+			if err != nil {
+				t.Fatalf("stat %s: %v", p, err)
+			}
+			if st.Mode()&0o777 != 0o600 {
+				t.Fatalf("%s mode = %o", p, st.Mode()&0o777)
+			}
+		}
+	})
+
+	t.Run("dry-run emits config only and no files", func(t *testing.T) {
+		withInitLandlock(t, supportedLandlockReport())
+		ts := fakeModelsServer(t, "alpha")
+		dir := newCommitDir(t)
+		cfg := filepath.Join(dir, "config.yaml")
+		code, stdout, stderr := captureOutput(t, func() int {
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--dry-run"})
+		})
+		if code != 0 {
+			t.Fatalf("code = %d stderr=%q", code, stderr)
+		}
+		if _, err := config.Parse([]byte(stdout)); err != nil {
+			t.Fatalf("stdout is not parseable config: %v\n%s", err, stdout)
+		}
+		if strings.Contains(stdout, "initialized") || strings.Contains(stdout, "next:") || strings.Contains(stdout, "Writing") {
+			t.Fatalf("dry-run stdout leaked completion/write claim:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "server \"local\": 1 model(s)") {
+			t.Fatalf("stderr missing discovery context:\n%s", stderr)
+		}
+		requireDirEmpty(t, dir)
+	})
+
+	t.Run("broken stdout before publication writes nothing", func(t *testing.T) {
+		withInitLandlock(t, supportedLandlockReport())
+		ts := fakeModelsServer(t, "alpha")
+		dir := newCommitDir(t)
+		cfg := filepath.Join(dir, "config.yaml")
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+		oldStdout := os.Stdout
+		os.Stdout = w
+		code := initCmd([]string{"--server", ts.URL, "--config", cfg})
+		os.Stdout = oldStdout
+		_ = r.Close()
+		if code != 1 {
+			t.Fatalf("code = %d, want 1", code)
+		}
+		requireDirEmpty(t, dir)
+	})
+
+	t.Run("summary is bounded to 20 rows", func(t *testing.T) {
+		withInitLandlock(t, supportedLandlockReport())
+		ids := make([]string, 25)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("model-%02d", i)
+		}
+		ts := fakeModelsServer(t, ids...)
+		dir := newCommitDir(t)
+		cfg := filepath.Join(dir, "config.yaml")
+		code, stdout, stderr := captureOutput(t, func() int {
+			return initCmd([]string{"--server", ts.URL, "--config", cfg})
+		})
+		if code != 0 {
+			t.Fatalf("code = %d stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stdout, "(5 more omitted)") {
+			t.Fatalf("stdout missing omitted count:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "model-24: ") {
+			t.Fatalf("stdout exceeded 20 rows:\n%s", stdout)
+		}
 	})
 }

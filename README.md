@@ -53,62 +53,47 @@ sudo bin/mellomting --install              # → /usr/local/bin/mellomting
 bin/mellomting --install --prefix ~/.local # user-local prefix
 ```
 
-Write a config. **This is the whole config** — every other section is optional
-and has a safe default:
-
-```yaml
-# config.yaml
-version: 1
-
-server:
-  listen:
-    network: tcp
-    address: 127.0.0.1:8080
-
-auth:
-  users_file: ./users.yaml
-  pepper_file: ./auth.pepper
-
-backends:
-  local:
-    base_url: http://127.0.0.1:8000
-    upstream_model: qwen3.8-27b
-
-models:
-  qwen3.8-27b:
-    backends:
-      - local
-```
-
-What each part means:
-
-- `server.listen` — where Mellomting accepts requests (`tcp` on a `host:port`,
-  or `unix` on a socket).
-- `auth.users_file` / `auth.pepper_file` — where API keys and the HMAC pepper
-  live. Both are created in the next steps.
-- `backends` — the inference servers Mellomting forwards to. `base_url` is where
-  vLLM (or any OpenAI-compatible server) is listening; `upstream_model` is the
-  name that server knows the model by.
-- `models` — the **public** model names clients may request, and which backends
-  serve each one. Clients only ever see these names.
-
-Check it, then generate a secret pepper (it must never be world-readable) and
-create an API key:
+Generate a config by pointing `init` at your inference server(s). `init`
+discovers each server's `GET /v1/models`, then writes a validated
+`config.yaml` plus a fresh `users.yaml` and a random `auth.pepper` (all mode
+`0600`) into the config's directory. It fails closed before writing if any
+server is unreachable or returns no models:
 
 ```sh
-mellomting config check -config config.yaml
-umask 077 && head -c 64 /dev/urandom | base64 > auth.pepper
-mellomting key create -config config.yaml --name "my-first-key" --models qwen3.8-27b
+# local, single server (default listener 127.0.0.1:8080)
+mellomting init --server http://127.0.0.1:8000 --config ./config.yaml
+
+# multiple servers, named, on a chosen listener
+mellomting init \
+  --server a=http://127.0.0.1:8000 \
+  --server b=http://127.0.0.1:8001 \
+  --listen 127.0.0.1:8080 \
+  --config ./config.yaml
+```
+
+Use `--dry-run` to validate everything and print the exact config YAML to
+stdout without writing any file. On hosts without a recent enough Landlock
+kernel, add `--landlock best-effort` (or `disabled`) to proceed without the
+sandbox.
+
+The generated config is server-oriented — `servers:` lists the inference
+endpoints and `models:` maps each public model to the servers that serve it.
+Every other section is optional and has a safe default; embedding models are
+selected by editing the generated config (`type: embedding`).
+
+Create an API key:
+
+```sh
+mellomting key create --config ./config.yaml --name "my-first-key" --models <model>
 ```
 
 `key create` prints the raw key **exactly once** — save it, it cannot be
-retrieved later. The key looks like `mtk_XXXXXXXX_...`. It writes `users.yaml`
-for you.
+retrieved later. It writes `users.yaml` for you.
 
 Run it:
 
 ```sh
-mellomting serve -config config.yaml
+mellomting serve --config ./config.yaml
 ```
 
 And use it — Mellomting is a drop-in OpenAI-compatible endpoint:
@@ -132,8 +117,9 @@ Point any OpenAI-compatible client (OpenCode, OpenAI SDKs, cURL, …) at
 
 ### Troubleshooting the Quick Start
 
-- `mellomting serve` refuses to start — run `mellomting config check -config
-  config.yaml` and read the error; the validator explains every problem.
+- `mellomting serve` refuses to start — run `mellomting config check
+  --config ./config.yaml` and read the error; the validator explains every
+  problem.
 - **Landlock** — `serve` enforces Landlock with `security.landlock.mode:
   required` by default. Run `mellomting sandbox check` to see if your kernel
   supports it. On a system without Landlock (e.g. macOS, or older Linux
@@ -151,28 +137,32 @@ Everything else has a finite, conservative default. To see the complete
 effective config with all defaults applied:
 
 ```sh
-mellomting config show-effective -config config.yaml
+mellomting config show-effective --config ./config.yaml
 ```
 
 The most useful additions, shown minimally:
 
 ```yaml
-# Route one public model across several backends (default strategy: least-inflight)
+# servers: the inference endpoints (named). models: the public names,
+# each mapped to the servers that serve it (default strategy: least-inflight
+# when a model lists more than one server).
+servers:
+  local-a:
+    url: http://127.0.0.1:8000
+  local-b:
+    url: http://127.0.0.1:8001
 models:
   qwen3.8-27b:
-    backends:
-      - local-a
-      - local-b
+    servers: [local-a, local-b]
 
 # Token accounting to JSONL (enables `mellomting usage report`)
 accounting:
   enabled: true
   path: ./usage.jsonl
 
-# TLS on the ingress listener
+# TLS on the ingress listener (both files required together)
 server:
   tls:
-    mode: files
     cert_file: ./cert.pem
     key_file: ./key.pem
 ```

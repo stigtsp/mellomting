@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -105,7 +107,119 @@ func initCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 1
 	}
+	return runInit(parsed)
+}
+
+// runInit performs discovery, aggregation, rendering, and commit (B9). It is
+// non-interactive: a --dry-run writes the exact config YAML to stdout and
+// bounded discovery context to stderr and touches no files; otherwise it
+// prints a bounded routing summary, writes the artifacts, and prints one
+// completion line plus two next commands.
+func runInit(args initArguments) int {
+	policy, err := discovery.DerivePolicy(args.Servers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+	results, err := discoverInitServers(context.Background(), args.Servers, policy)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+	aggregate, err := discovery.Aggregate(args.Servers, results)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+	artifacts, err := renderInitArtifacts(args, aggregate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+
+	if args.DryRun {
+		if _, err := os.Stdout.Write(artifacts.Config); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
+			return 1
+		}
+		for name, ids := range results {
+			if _, err := fmt.Fprintf(os.Stderr, "mellomting: init: server %q: %d model(s)\n", name, len(ids)); err != nil {
+				fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
+				return 1
+			}
+		}
+		return 0
+	}
+
+	// The pre-publication summary must be writable before any filesystem
+	// mutation (D10).
+	if err := printInitSummary(os.Stdout, aggregate); err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
+		return 1
+	}
+	if err := commitInitArtifacts(args, artifacts, false, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+	if err := printInitCompletion(os.Stdout, args); err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
+		return 1
+	}
 	return 0
+}
+
+func discoverInitServers(ctx context.Context, servers []discovery.Server, policy config.BackendNetwork) (map[string][]string, error) {
+	opts := discovery.Options{Network: policy}
+	results := make(map[string][]string, len(servers))
+	for _, s := range servers {
+		ids, err := discovery.Fetch(ctx, s, opts)
+		if err != nil {
+			return nil, fmt.Errorf("server %s: %w", s.Name, err)
+		}
+		results[s.Name] = ids
+	}
+	return results, nil
+}
+
+// printInitSummary renders the bounded discovered-routing table (D10/B9):
+// at most 20 model rows plus an omitted count. It never prints pepper or
+// credential contents.
+func printInitSummary(w io.Writer, aggregate discovery.Result) error {
+	models := aggregate.SortedModels()
+	const limit = 20
+	if _, err := fmt.Fprintf(w, "discovered %d model(s):\n", len(models)); err != nil {
+		return err
+	}
+	for i, name := range models {
+		if i >= limit {
+			if _, err := fmt.Fprintf(w, "  (%d more omitted)\n", len(models)-limit); err != nil {
+				return err
+			}
+			break
+		}
+		if _, err := fmt.Fprintf(w, "  %s: %s\n", name, strings.Join(aggregate.Models[name], ", ")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// printInitCompletion prints exactly one completion line and two next
+// commands (B9). It never prints pepper or credential contents.
+func printInitCompletion(w io.Writer, args initArguments) error {
+	if _, err := fmt.Fprintf(w, "initialized %s with %s and %s\n", args.ConfigPath, args.UsersPath, args.PepperPath); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "next:"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  mellomting key create --config %s --name NAME --models MODEL\n", args.ConfigPath); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  mellomting serve --config %s\n", args.ConfigPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func parseInitArguments(configPath, listen, landlockMode string, landlockSet, dryRun bool, rawServers []string) (initArguments, error) {
