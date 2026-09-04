@@ -1263,7 +1263,7 @@ uncommitted implementation changes or a failing required check.
 | C3 | script-safe one-time key output | complete |
 | D1 | conventional install command | complete |
 | D2 | concise output across remaining commands | complete |
-| E1 | final design, schema, and scaffold docs | pending |
+| E1 | final design, schema, and scaffold docs | complete |
 | E2 | full local and Linux validation | pending |
 
 For each task:
