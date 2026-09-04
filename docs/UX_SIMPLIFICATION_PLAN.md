@@ -1256,7 +1256,7 @@ uncommitted implementation changes or a failing required check.
 | B5 | deterministic multi-server aggregation | complete |
 | B6 | init flags, listener parsing, and preflight | complete |
 | B7 | in-memory config/auth rendering and validation | complete |
-| B8 | create-only init filesystem commit | pending |
+| B8 | create-only init filesystem commit | complete |
 | B9 | end-to-end init command and documentation | pending |
 | C1 | safe sole-model key inference | pending |
 | C2 | strict username-bearing API-key format | pending |
