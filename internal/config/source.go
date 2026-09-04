@@ -207,7 +207,7 @@ type effectiveDoc struct {
 func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 	servers := make(map[string]effectiveServer, len(doc.Servers))
 	for name, s := range doc.Servers {
-		servers[name] = effectiveServer{URL: s.URL, APIKeyFile: s.APIKeyFile}
+		servers[name] = effectiveServer(s)
 	}
 
 	models := make(map[string]effectiveModel, len(doc.Models))

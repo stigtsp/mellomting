@@ -437,10 +437,10 @@ func initPreflightLandlock(mode string, explicit bool, check func() landlock.Rep
 	report := check()
 	if mode == landlock.ModeRequired {
 		if !report.Supported {
-			return fmt.Errorf("Landlock required but unavailable: %s; rerun with --landlock best-effort to continue without the sandbox", report.Reason)
+			return fmt.Errorf("landlock required but unavailable: %s; rerun with --landlock best-effort to continue without the sandbox", report.Reason)
 		}
 		if report.KernelABI < landlock.DefaultMinimumABI {
-			return fmt.Errorf("Landlock kernel ABI %d below required minimum %d; rerun with --landlock best-effort to continue without the sandbox", report.KernelABI, landlock.DefaultMinimumABI)
+			return fmt.Errorf("landlock kernel ABI %d below required minimum %d; rerun with --landlock best-effort to continue without the sandbox", report.KernelABI, landlock.DefaultMinimumABI)
 		}
 	}
 	if mode == landlock.ModeBestEffort || mode == landlock.ModeDisabled {
