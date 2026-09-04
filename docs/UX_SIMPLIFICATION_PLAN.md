@@ -1259,7 +1259,7 @@ uncommitted implementation changes or a failing required check.
 | B8 | create-only init filesystem commit | complete |
 | B9 | end-to-end init command and documentation | complete |
 | C1 | safe sole-model key inference | complete |
-| C2 | strict username-bearing API-key format | pending |
+| C2 | strict username-bearing API-key format | complete |
 | C3 | script-safe one-time key output | pending |
 | D1 | conventional install command | pending |
 | D2 | concise output across remaining commands | pending |
