@@ -405,22 +405,13 @@ func keyCreate(c *keyFlags) int {
 		return 1
 	}
 
-	// The raw secret is printed exactly once (PLAN §29).
-	fmt.Fprintf(os.Stdout, "created key:          %s\n", key)
-	fmt.Printf("  id:                %s\n", id)
-	fmt.Printf("  name:              %s\n", c.name)
-	fmt.Printf("  models:            %s\n", strings.Join(models, ", "))
-	if exp != nil {
-		fmt.Printf("  expires:           %s\n", exp.Format(time.RFC3339))
-	}
-	if c.limitsSet {
-		fmt.Printf("  concurrent_requests: %d\n", c.concurrentRequests)
-		fmt.Printf("  requests_per_second: %v\n", c.requestsPerSecond)
-		fmt.Printf("  burst:               %d\n", c.burst)
-	}
-	fmt.Printf("  users file:        %s\n", usersPath)
-	fmt.Fprintln(os.Stdout, "Store the secret now; it is not retrievable later.")
-	warnLandlockReloadRequired(cfg, "key create")
+	// D14/D18: stdout carries the raw key and a trailing newline only, so a
+	// script can capture it directly (KEY=$(mellomting key create ...)). All
+	// human context goes to stderr: one ACL-confirmation line plus one apply
+	// instruction (PLAN §10, D16). The key is shown exactly once.
+	fmt.Fprintln(os.Stdout, key)
+	fmt.Fprintf(os.Stderr, "Created API key %q for %s.\n", c.name, strings.Join(models, ", "))
+	fmt.Fprintln(os.Stderr, "Restart Mellomting to apply it.")
 	return 0
 }
 

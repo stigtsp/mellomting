@@ -87,8 +87,11 @@ Create an API key:
 mellomting key create --config ./config.yaml --name "my-first-key" --models <model>
 ```
 
-`key create` prints the raw key **exactly once** — save it, it cannot be
-retrieved later. It writes `users.yaml` for you.
+`key create` prints the raw key to **stdout and a trailing newline only**
+(script-safe: `KEY=$(mellomting key create ...)`), so it is captured exactly
+once and never mixed with other text. A short confirmation and the apply
+instruction go to stderr. The raw key cannot be retrieved later — save it.
+It writes `users.yaml` for you.
 
 Run it:
 

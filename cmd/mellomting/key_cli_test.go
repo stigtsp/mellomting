@@ -87,7 +87,7 @@ func TestKeyLifecycle(t *testing.T) {
 	cfg := filepath.Join(dir, "config.yaml")
 
 	// Create a key.
-	code, out, _ := runCLI(t, bin, dir,
+	code, out, errOut := runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "tester", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
@@ -97,9 +97,13 @@ func TestKeyLifecycle(t *testing.T) {
 		t.Fatalf("no raw key printed: %q", out)
 	}
 	key := m
-	// The raw key must be printed exactly once.
-	if n := strings.Count(out, key); n != 1 {
-		t.Fatalf("key printed %d times", n)
+	// D14: stdout is the raw key and a trailing newline only (script-safe),
+	// so it appears exactly once and nowhere else, including stderr.
+	if out != key+"\n" {
+		t.Fatalf("stdout must be the raw key and newline only: %q", out)
+	}
+	if strings.Contains(errOut, key) {
+		t.Fatalf("raw key leaked to stderr: %q", errOut)
 	}
 	id := strings.Split(key, "-")[2]
 
@@ -233,18 +237,22 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
-	// Default fixture config: landlock.mode defaults to required, so the
-	// reload warning must appear on a successful create.
+	// D14: create is script-safe — stdout is the raw key and a trailing
+	// newline only; the apply instruction goes to stderr and must never
+	// recommend a SIGHUP reload (denied by the sandbox under mode=required).
 	code, out, errOut := runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
 	}
-	if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "restart") {
-		t.Fatalf("no reload warning on create for landlock.mode=required: stderr=%q", errOut)
+	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
+		t.Fatalf("stdout must be the raw key and newline only: %q", out)
+	}
+	if !strings.Contains(errOut, "Restart Mellomting to apply it.") {
+		t.Fatalf("no apply instruction on create: stderr=%q", errOut)
 	}
 	if strings.Contains(errOut, "SIGHUP") {
-		t.Fatalf("create warning must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
+		t.Fatalf("create output must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
 	}
 	id := keyRe.FindString(out)
 	if id == "" {
@@ -304,8 +312,10 @@ func TestKeyCreateLimits(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create with limits exit = %d", code)
 	}
-	if !strings.Contains(out, "concurrent_requests: 2") || !strings.Contains(out, "requests_per_second: 5") {
-		t.Fatalf("limits not echoed in output: %q", out)
+	// D14: limits are not echoed on stdout (already supplied by the
+	// operator); stdout stays script-safe — the raw key and newline only.
+	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
+		t.Fatalf("stdout must be the raw key and newline only: %q", out)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "users.yaml"))
