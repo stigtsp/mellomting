@@ -248,7 +248,7 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
 		t.Fatalf("stdout must be the raw key and newline only: %q", out)
 	}
-	if !strings.Contains(errOut, "Restart Mellomting to apply it.") {
+	if !strings.Contains(errOut, "Restart Mellomting to apply it") {
 		t.Fatalf("no apply instruction on create: stderr=%q", errOut)
 	}
 	if strings.Contains(errOut, "SIGHUP") {
@@ -267,6 +267,14 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 		t.Fatalf("no reload warning for landlock.mode=required: stderr=%q", errOut)
 	} else if strings.Contains(errOut, "SIGHUP") {
 		t.Fatalf("revoke warning must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
+	} else {
+		// D16: the apply instruction stays concise — no design rationale or
+		// mechanism inventory (pinned inodes, atomic rename, …).
+		for _, banned := range []string{"inode", "pinned", "atomic", "rename", "MPTCP"} {
+			if strings.Contains(errOut, banned) {
+				t.Fatalf("revoke output contains banned detail %q: stderr=%q", banned, errOut)
+			}
+		}
 	}
 
 	// Control: best-effort mode must stay silent. Write a second config

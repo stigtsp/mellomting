@@ -96,7 +96,7 @@ func configCmd(args []string) int {
 			fmt.Fprintf(os.Stderr, "mellomting: config %s failed: %v\n", sub, err)
 			return 1
 		}
-		fmt.Fprintf(os.Stdout, "mellomting: configuration at %s is valid\n", resolved)
+		fmt.Fprintf(os.Stdout, "Configuration at %s is valid.\n", resolved)
 		return 0
 	}
 
@@ -420,7 +420,7 @@ func keyCreate(c *keyFlags) int {
 	// instruction (PLAN §10, D16). The key is shown exactly once.
 	fmt.Fprintln(os.Stdout, key)
 	fmt.Fprintf(os.Stderr, "Created API key %q for %s.\n", c.name, strings.Join(models, ", "))
-	fmt.Fprintln(os.Stderr, "Restart Mellomting to apply it.")
+	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
 	return 0
 }
 
@@ -441,7 +441,7 @@ func keySetEnabled(c *keyFlags, enable bool) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "%s key %s\n", verb, c.id)
-	warnLandlockReloadRequired(cfg, "key "+verb)
+	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
 	return 0
 }
 
@@ -475,23 +475,17 @@ func keyList(c *keyFlags) int {
 	return 0
 }
 
-// warnLandlockReloadRequired warns, when the configured Landlock mode is
-// required, that a running server applies users-file changes only after
-// a restart. Under that mode the users file is pinned to its startup
-// inode (PLAN §58) and the offline key commands atomically rename it, so
-// a SIGHUP reload of the change is denied by the sandbox and fails
-// closed (PLAN §30) — the daemon logs the sandbox ERROR naming the
-// restart requirement if one is attempted (FIX-02/N2). A revoked (or
-// disabled) key stays effective on a live server until a restart, so a
-// silent success here would be a false sense of security (FIX-02 eval
-// residual). The warning therefore never recommends SIGHUP.
-func warnLandlockReloadRequired(cfg *config.Config, action string) {
-	if cfg.Security.Landlock.Mode != landlock.ModeRequired {
-		return
+// keyApplyInstruction is the one apply instruction printed after a key
+// mutation (D16: one completion line plus one restart/reload action). Under
+// landlock.mode=required the users file is pinned to its startup inode and
+// a reload of the change is denied by the sandbox (PLAN §30, §58; FIX-02), so
+// a restart is the only way a running server picks up the change — the
+// instruction never recommends a reload. Other modes keep the short form.
+func keyApplyInstruction(cfg *config.Config) string {
+	if cfg.Security.Landlock.Mode == landlock.ModeRequired {
+		return "Restart Mellomting to apply it; running servers do not see the change until a restart (landlock.mode=required)."
 	}
-	fmt.Fprintf(os.Stderr,
-		"mellomting: warning: %s under landlock.mode=required: running servers apply users-file changes only after a restart; the change is not effective on a live server until then\n",
-		action)
+	return "Restart Mellomting to apply it."
 }
 
 func keyRevoke(c *keyFlags) int {
@@ -507,7 +501,7 @@ func keyRevoke(c *keyFlags) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "revoked key %s\n", c.id)
-	warnLandlockReloadRequired(cfg, "key revoke")
+	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
 	return 0
 }
 

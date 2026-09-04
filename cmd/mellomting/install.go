@@ -88,7 +88,7 @@ func performInstall(src, prefix string) (dest string, code int) {
 	dest = filepath.Join(prefix, "bin", version.Name)
 	if err := installBinary(src, dest); err != nil {
 		if errors.Is(err, errAlreadyInstalled) {
-			fmt.Fprintf(os.Stdout, "mellomting: already installed at %s\n", dest)
+			fmt.Fprintf(os.Stdout, "already installed at %s\n", dest)
 			return dest, 0
 		}
 		fmt.Fprintf(os.Stderr, "mellomting: install: %v\n", err)
@@ -97,7 +97,7 @@ func performInstall(src, prefix string) (dest string, code int) {
 		}
 		return dest, 1
 	}
-	fmt.Fprintf(os.Stdout, "mellomting: installed %s at %s\n", version.Version, dest)
+	fmt.Fprintf(os.Stdout, "installed %s at %s\n", version.Version, dest)
 	return dest, 0
 }
 
