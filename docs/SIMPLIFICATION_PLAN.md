@@ -121,7 +121,7 @@ uncommitted changes or a failing check.
 | D4 | immutable `operation`; stop logging the response ID | low | complete |
 | D5 | table-driven client errors | low | complete |
 | D6 | extract the startup consistency checks from `buildDaemon` | low-med | complete |
-| E1 | decode and encode the request body once | med | pending |
+| E1 | decode and encode the request body once | med | complete |
 | E2 | parse each SSE event once | low | pending |
 | E3 | reuse the SSE parser buffers | low | pending |
 | E4 | one reader goroutine per stream | med | pending |

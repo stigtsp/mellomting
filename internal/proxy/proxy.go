@@ -813,29 +813,35 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			continue
 		}
 
+		// The event's data payload is extracted once and shared by the
+		// affinity capture and the usage capture below; it used to be
+		// parsed out twice per event on Responses streams.
+		data, hasData := dataField(ev)
+
 		// Capture response IDs for affinity (PLAN §21.2). A backend
 		// may return an unbounded or malformed id; only a bounded,
 		// safe ID can ever be retrieved/cancelled by a client, so
 		// anything else is skipped rather than stored whole (T-L5).
-		if o.capture && !captured {
-			if data, ok := dataField(ev); ok {
-				if id := responseIDFromData(data); isValidResponseID(id) {
-					p.affinity.Put(q.Key.ID, id, backendName, publicModel)
-					captured = true
-				}
+		if o.capture && !captured && hasData {
+			if id := responseIDFromData(data); isValidResponseID(id) {
+				p.affinity.Put(q.Key.ID, id, backendName, publicModel)
+				captured = true
 			}
 		}
 
 		// Capture token usage (PLAN §37-38) and swallow the synthetic
 		// final usage-only chunk when it was injected on the client's
 		// behalf (PLAN §38) so the client sees no semantic change.
-		if data, ok := dataField(ev); ok {
+		if hasData {
+			// A chunk carrying no usage can never be the usage-only
+			// chunk, so the second parse is gated on the first's result
+			// rather than run for every delta event.
 			if u := accounting.ParseStreamChunk(data); u.Present {
 				*usage = u
-			}
-			if injectedUsage && isUsageOnlyChunk(data) {
-				// Record the usage above; do not relay the chunk.
-				continue
+				if injectedUsage && isUsageOnlyChunk(data) {
+					// Record the usage above; do not relay the chunk.
+					continue
+				}
 			}
 		}
 
