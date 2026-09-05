@@ -825,3 +825,54 @@ func assertFieldAtOrBelow(t *testing.T, body map[string]json.RawMessage, name st
 		t.Fatalf("%s = %d exceeds cap %d", name, v, cap)
 	}
 }
+
+// The retry counter must reach both the request log and the usage record
+// on failure paths, not just on success. A single backend that always
+// answers 503 is retried in place (503 is retryable and no sibling
+// replica is eligible), so the terminal upstream-status path must report
+// retry_count 1 rather than 0.
+func TestFailedRequestRecordsRetryCount(t *testing.T) {
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"error":"overloaded"}`))
+	})
+	cfg := testConfig(f.server.URL)
+	cfg.Accounting.Enabled = true
+	cfg.Retry = config.Retry{
+		MaxAttempts:    2,
+		InitialBackoff: config.Duration(time.Millisecond),
+		MaxBackoff:     config.Duration(2 * time.Millisecond),
+		Jitter:         new(false),
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, path := tmpWriter(t)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
+		discardLogger(), accounting.NewQuota(), writer, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, testKey())
+	if w.Code != 502 {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	_ = writer.Close()
+	recs := readRecords(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
+	if recs[0].Retries != 1 {
+		t.Fatalf("record retries = %d, want 1 (the in-place retry was not counted)", recs[0].Retries)
+	}
+}

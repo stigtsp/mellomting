@@ -184,7 +184,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// in usage.jsonl (PLAN §41). ChargedTokens stays 0 — rejects
 		// never touch quota.
 		if !out.accounted {
-			p.account(q, o, out.model, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, 0, 0)
+			p.account(q, o, out.model, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, out.retries, 0)
 		}
 	}()
 
@@ -431,7 +431,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 
 	tried := make([]string, 0, maxAttempts)
-	retried := 0
+
 	var lastErr error
 	var lastFailed string
 	var lastRetryAfter string // upstream Retry-After on the final result (T-Q12)
@@ -487,7 +487,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// jitter (PLAN §23). Fallback to a different backend waits on
 		// nothing.
 		if attempt > 0 && backendName == lastFailed {
-			retried++
+			out.retries++
 			if !p.sleepBackoff(q.R.Context(), attempt) {
 				markClientCanceled()
 				return
@@ -549,12 +549,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			var usage accounting.Usage
 			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, publicModel, &usage, injectedUsage)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
-			out.retries = retried
+
 			usageStatus := accounting.UsageUnknown
 			if usage.Present {
 				usageStatus = accounting.UsageExact
 			}
-			p.account(q, o, publicModel, start, status, backendName, usage, usageStatus, retried, reservation)
+			p.account(q, o, publicModel, start, status, backendName, usage, usageStatus, out.retries, reservation)
 			out.accounted = true
 			return
 		}
@@ -562,13 +562,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.status = res.Status
 		out.class = "ok"
 		out.bytesOut = len(res.BodyBytes)
-		out.retries = retried
+
 		usageStatus := accounting.UsageUnknown
 		usage := accounting.ParseUsage(res.BodyBytes, o.endpoint)
 		if usage.Present {
 			usageStatus = accounting.UsageExact
 		}
-		p.account(q, o, publicModel, start, res.Status, backendName, usage, usageStatus, retried, reservation)
+		p.account(q, o, publicModel, start, res.Status, backendName, usage, usageStatus, out.retries, reservation)
 		out.accounted = true
 		ct := "application/json"
 		if v := res.Header.Get("Content-Type"); v != "" {
@@ -671,7 +671,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 	}
 	// Record the failed request (PLAN §41): no usage was produced.
-	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, retried, 0)
+	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, out.retries, 0)
 	out.accounted = true
 }
 
