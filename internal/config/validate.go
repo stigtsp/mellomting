@@ -43,10 +43,6 @@ const (
 	// the listener (T-L15, PLAN §9.1).
 	defaultMaxConnections = 1024
 
-	defaultQualifierTimeout     = 3 * time.Second
-	defaultQualifierConcurrency = 2
-	defaultQualifierQueueSize   = 4
-
 	defaultGlobalRPS    = 100.0
 	defaultGlobalBurst  = 200
 	defaultPreauthRPS   = 100.0
@@ -147,13 +143,6 @@ func applyDefaults(c *Config) {
 		c.Backends[name] = b
 	}
 
-	for name, q := range c.Qualifiers {
-		q.Timeout = cmp.Or(q.Timeout, Duration(defaultQualifierTimeout))
-		q.MaxConcurrency = cmp.Or(q.MaxConcurrency, defaultQualifierConcurrency)
-		q.QueueSize = cmp.Or(q.QueueSize, defaultQualifierQueueSize)
-		c.Qualifiers[name] = q
-	}
-
 	for name, m := range c.Models {
 		m.Type = cmp.Or(m.Type, "generation")
 		// Strategy is inferred from the replica count rather than being a
@@ -188,8 +177,7 @@ func validate(c *Config) error {
 	errs = append(errs, validateResponses(&c.Responses)...)
 	errs = append(errs, validateRetry(&c.Retry)...)
 	errs = append(errs, validateBackends(c.Backends, c.Security.BackendNetwork)...)
-	errs = append(errs, validateQualifiers(c.Qualifiers, c.Backends)...)
-	errs = append(errs, validateModels(c.Models, c.Backends, c.Qualifiers)...)
+	errs = append(errs, validateModels(c.Models, c.Backends)...)
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
@@ -536,64 +524,6 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 	return errs
 }
 
-func validateQualifiers(qualifiers map[string]Qualifier, backends map[string]Backend) []string {
-	var errs []string
-
-	for name, q := range qualifiers {
-		prefix := fmt.Sprintf("qualifiers.%s", name)
-		if q.Backend == "" {
-			errs = append(errs, prefix+".backend: required")
-		} else if _, ok := backends[q.Backend]; !ok {
-			errs = append(errs, fmt.Sprintf("%s.backend: unknown backend %q", prefix, q.Backend))
-		}
-		if q.Model == "" {
-			errs = append(errs, prefix+".model: required")
-		}
-		if q.Timeout.Duration() <= 0 {
-			errs = append(errs, prefix+".timeout: must be > 0")
-		}
-		switch q.FailurePolicy {
-		case "allow", "audit", "block", "": // "" reported below as required
-		default:
-			errs = append(errs, fmt.Sprintf("%s.failure_policy: %q must be allow, audit, or block", prefix, q.FailurePolicy))
-		}
-		if q.FailurePolicy == "" {
-			errs = append(errs, prefix+".failure_policy: required, never implicit")
-		}
-		if err := qualifierMode(q.Input.Mode, prefix+".input.mode"); err != "" {
-			errs = append(errs, err)
-		}
-		if err := qualifierMode(q.Output.Mode, prefix+".output.mode"); err != "" {
-			errs = append(errs, err)
-		}
-		if q.MaxConcurrency < 0 {
-			errs = append(errs, prefix+".max_concurrency: must be >= 0")
-		}
-		if q.QueueSize < 0 {
-			errs = append(errs, prefix+".queue_size: must be >= 0")
-		}
-
-		if b, ok := backends[q.Backend]; ok {
-			if host := urlHost(b.BaseURL); host != "" && isNonLoopbackHost(host) && !q.AllowRemoteContent {
-				errs = append(errs, fmt.Sprintf("%s: backend %q is not loopback; allow_remote_content: true is required", prefix, q.Backend))
-			}
-		}
-	}
-
-	return errs
-}
-
-func qualifierMode(mode, field string) string {
-	switch mode {
-	case "disabled", "audit", "block":
-		return ""
-	case "":
-		return fmt.Sprintf("%s: required, one of disabled, audit, or block", field)
-	default:
-		return fmt.Sprintf("%s: %q must be disabled, audit, or block", field, mode)
-	}
-}
-
 // SupportedStrategies is the canonical routing strategy set (PLAN §19).
 // routing derives its own acceptance set from this list, so the config
 // validator and the router can never drift (FIX-24b; routing imports
@@ -606,7 +536,7 @@ var SupportedStrategies = []string{
 	"weighted-least-inflight",
 }
 
-func validateModels(models map[string]Model, backends map[string]Backend, qualifiers map[string]Qualifier) []string {
+func validateModels(models map[string]Model, backends map[string]Backend) []string {
 	var errs []string
 	if len(models) == 0 {
 		return []string{"models: at least one public model is required"}
@@ -646,12 +576,6 @@ func validateModels(models map[string]Model, backends map[string]Backend, qualif
 			seen[ref.Name] = true
 			if ref.Weight < 0 {
 				errs = append(errs, fmt.Sprintf("%s.backends: %q has a negative weight", prefix, ref.Name))
-			}
-		}
-
-		if m.Qualifier != "" {
-			if _, ok := qualifiers[m.Qualifier]; !ok {
-				errs = append(errs, fmt.Sprintf("%s.qualifier: unknown qualifier %q", prefix, m.Qualifier))
 			}
 		}
 

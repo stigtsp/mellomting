@@ -73,12 +73,6 @@ func serveCmd(args []string) int {
 		return 1
 	}
 
-	if err := rejectShelvedFeatures(cfg); err != nil {
-		log.Error("startup rejected: shelved feature configured", "error_class", "configuration")
-		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
-		return 1
-	}
-
 	d, err := buildDaemon(cfg, log)
 	if err != nil {
 		log.Error("startup failed", "error_class", "startup")
@@ -216,22 +210,6 @@ func serveCmd(args []string) int {
 // newDaemonLogger builds the structured logger per PLAN §43.
 func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 	return logging.New(os.Stdout, cfg.Logging.Level, cfg.Logging.Format)
-}
-
-// rejectShelvedFeatures fails closed on features that are shelved for the
-// first release (PLAN §68, §96). The configuration schema stays
-// forward-compatible, but serve refuses to start with them enabled so a
-// shelved feature is never silently disabled.
-func rejectShelvedFeatures(cfg *config.Config) error {
-	var shelved []string
-	if len(cfg.Qualifiers) > 0 {
-		shelved = append(shelved, "qualifiers")
-	}
-	if len(shelved) > 0 {
-		return fmt.Errorf("%s are shelved for the first release: remove them from the configuration and retry",
-			strings.Join(shelved, " and "))
-	}
-	return nil
 }
 
 // applySandbox builds the post-startup policy from the validated

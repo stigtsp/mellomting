@@ -80,7 +80,7 @@ docs/PLAN.md       design spec (working document)
 ```
 
 Internal packages (create files as phases land, in PLAN §78):
-`accounting`, `auth`, `backend`, `config`, `guard`, `httpapi`, `landlock`,
+`accounting`, `auth`, `backend`, `config`, `httpapi`, `landlock`,
 `limiter`, `logging`, `proxy`, `routing`, `securefile`, `tlsconfig`,
 `version`.
 

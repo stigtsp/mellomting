@@ -37,9 +37,9 @@ func TestParsePlan76SampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse plan §76 sample: %v", err)
 	}
-	if len(cfg.Backends) != 2 || len(cfg.Models) != 1 || len(cfg.Qualifiers) != 0 {
-		t.Fatalf("parsed %d backends, %d models, %d qualifiers; want 2/1/0",
-			len(cfg.Backends), len(cfg.Models), len(cfg.Qualifiers))
+	if len(cfg.Backends) != 2 || len(cfg.Models) != 1 {
+		t.Fatalf("parsed %d backends, %d models; want 2/1",
+			len(cfg.Backends), len(cfg.Models))
 	}
 	if cfg.Server.MaxInflightRequests != 32 {
 		t.Fatalf("explicit limit lost: max_inflight = %d, want 32", cfg.Server.MaxInflightRequests)

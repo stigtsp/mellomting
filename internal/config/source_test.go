@@ -74,9 +74,6 @@ func TestSourceSchemaHappyPath(t *testing.T) {
 			t.Fatalf("backend %s URL = %q", name, b.BaseURL)
 		}
 	}
-	if len(cfg.Qualifiers) != 0 {
-		t.Fatalf("qualifiers = %d, want 0", len(cfg.Qualifiers))
-	}
 }
 
 // TestSourceRejectsLegacyAndShelvedForms pins D11: the development-era

@@ -37,19 +37,18 @@ const (
 // operator's servers; the source form is rejected and no source-only state
 // is retained.
 type Config struct {
-	Version    int                  `yaml:"version"`
-	Server     Server               `yaml:"server"`
-	Auth       Auth                 `yaml:"auth"`
-	Security   Security             `yaml:"security"`
-	Logging    Logging              `yaml:"logging"`
-	Accounting Accounting           `yaml:"accounting"`
-	Limits     Limits               `yaml:"limits"`
-	Shutdown   Shutdown             `yaml:"shutdown"`
-	Responses  Responses            `yaml:"responses"`
-	Retry      Retry                `yaml:"retry"`
-	Backends   map[string]Backend   `yaml:"backends"`
-	Qualifiers map[string]Qualifier `yaml:"qualifiers"`
-	Models     map[string]Model     `yaml:"models"`
+	Version    int                `yaml:"version"`
+	Server     Server             `yaml:"server"`
+	Auth       Auth               `yaml:"auth"`
+	Security   Security           `yaml:"security"`
+	Logging    Logging            `yaml:"logging"`
+	Accounting Accounting         `yaml:"accounting"`
+	Limits     Limits             `yaml:"limits"`
+	Shutdown   Shutdown           `yaml:"shutdown"`
+	Responses  Responses          `yaml:"responses"`
+	Retry      Retry              `yaml:"retry"`
+	Backends   map[string]Backend `yaml:"backends"`
+	Models     map[string]Model   `yaml:"models"`
 }
 
 // Responses bounds the in-memory Responses API affinity table (PLAN §21).
@@ -232,34 +231,12 @@ type Backend struct {
 	QueueTimeout      Duration `yaml:"queue_timeout"`
 }
 
-// Qualifier is an optional classifier backend (PLAN §45-49).
-type Qualifier struct {
-	Backend string   `yaml:"backend"`
-	Model   string   `yaml:"model"`
-	Timeout Duration `yaml:"timeout"`
-	// FailurePolicy is required and never implicit (PLAN §46).
-	FailurePolicy string `yaml:"failure_policy"`
-	// AllowRemoteContent permits prompt material to leave the host when
-	// the referenced backend is not loopback (PLAN §47).
-	AllowRemoteContent bool        `yaml:"allow_remote_content"`
-	Input              QualifierIO `yaml:"input"`
-	Output             QualifierIO `yaml:"output"`
-	MaxConcurrency     int         `yaml:"max_concurrency"`
-	QueueSize          int         `yaml:"queue_size"`
-}
-
-// QualifierIO is one classification direction (PLAN §46).
-type QualifierIO struct {
-	Mode string `yaml:"mode"` // "disabled", "audit", or "block"
-}
-
 // Model is one public model alias (PLAN §13, §19).
 type Model struct {
-	Type      string       `yaml:"type"` // "generation" or "embedding"
-	Strategy  string       `yaml:"strategy"`
-	Policy    ModelPolicy  `yaml:"policy"`
-	Qualifier string       `yaml:"qualifier"`
-	Backends  []BackendRef `yaml:"backends"`
+	Type     string       `yaml:"type"` // "generation" or "embedding"
+	Strategy string       `yaml:"strategy"`
+	Policy   ModelPolicy  `yaml:"policy"`
+	Backends []BackendRef `yaml:"backends"`
 }
 
 // ModelPolicy is per-model request policy.

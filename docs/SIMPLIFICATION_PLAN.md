@@ -98,13 +98,13 @@ uncommitted changes or a failing check.
 
 | Task | Deliverable | Risk | Status |
 |---|---|---|---|
-| A1 | adopt Go 1.27 in `go.mod` | low | pending |
-| A2 | apply `modernize` to non-test code | low | pending |
-| A3 | apply `modernize` to test code | low | pending |
-| A4 | benchmarks use `b.Loop()` | low | pending |
-| A5 | `applyDefaults` via `cmp.Or`; sorted map keys via `maps.Keys` | low | pending |
-| A6 | `new(expr)` for pointer defaults | low | pending |
-| B1 | fix `retry_count` accounting defect, with tests | low | pending |
+| A1 | adopt Go 1.27 in `go.mod` | low | complete |
+| A2 | apply `modernize` to non-test code | low | complete |
+| A3 | apply `modernize` to test code | low | complete |
+| A4 | benchmarks use `b.Loop()` | low | complete |
+| A5 | `applyDefaults` via `cmp.Or`; sorted map keys via `maps.Keys` | low | complete |
+| A6 | `new(expr)` for pointer defaults | low | complete |
+| B1 | fix `retry_count` accounting defect, with tests | low | complete |
 | B2 | delete the unreachable qualifier machinery and `internal/guard` | low | pending |
 | B3 | delete the dead `dryRun` parameter and `daemon.listen` field | low | pending |
 | B4 | reject trailing arguments in `config` and `sandbox` | low-med | pending |

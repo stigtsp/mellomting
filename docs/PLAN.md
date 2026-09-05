@@ -3102,11 +3102,6 @@ internal/
   discovery/
     discovery.go
 
-  guard/
-    guard.go
-    openai.go
-    normalize.go
-
   httpapi/
     server.go
     errors.go
@@ -3626,10 +3621,11 @@ The daemon begins accepting requests only after the effective sandbox is confirm
 
 > **Status: shelved for the first release.** The qualifier framework is
 > deferred beyond v1. The design in §45–52 remains authoritative for a later
-> release, and the v1 configuration schema still validates qualifier
-> definitions (forward-compatible). Serve refuses to start when a qualifier
-> is configured, so qualification is never silently disabled; no request
-> pipeline hook exists in v1.
+> release. The v1 source schema (D11) has no `qualifiers` key, so a qualifier
+> configuration is refused by the strict decoder as an unknown field. That
+> rejection is the whole control: there is no qualifier type in the runtime
+> configuration, no separate startup check, and no request pipeline hook in
+> v1. A later release re-adds the schema and the runtime together.
 
 Implement:
 

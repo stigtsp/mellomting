@@ -32,8 +32,8 @@ type sourceModel struct {
 }
 
 // sourceDoc is the operator-facing source configuration (D11): the sole
-// accepted source form. The development-era backends: form and the shelved
-// qualifiers: form are rejected as unknown fields by the strict decoder
+// accepted source form. The development-era backends: form and the
+// shelved qualifiers: form are rejected as unknown fields by the strict decoder
 // (PLAN §28, §88). The normalized runtime Config (D12) is produced from a
 // separate unexported type, so no source-only state leaks into the public
 // Config value.
@@ -86,7 +86,6 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 		Responses:  doc.Responses,
 		Retry:      doc.Retry,
 		Backends:   make(map[string]Backend, len(doc.Servers)),
-		Qualifiers: map[string]Qualifier{},
 		Models:     make(map[string]Model, len(doc.Models)),
 	}
 
