@@ -223,3 +223,12 @@ func hourKey(t time.Time) int64 {
 func dayKey(t time.Time) int64 {
 	return t.UTC().Unix() - t.UTC().Unix()%86400
 }
+
+// StatusOf classifies captured usage. Usage that a backend never
+// reported must never be presented as exact (PLAN §38).
+func StatusOf(u Usage) UsageStatus {
+	if u.Present {
+		return UsageExact
+	}
+	return UsageUnknown
+}

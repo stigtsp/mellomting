@@ -146,19 +146,26 @@ func (p *Proxy) ResponsesCancel(q *Req, id string) { q.ResponseID = id; p.dispat
 
 // result is the structured outcome logged per request (PLAN §43).
 type result struct {
-	status    int
-	class     string // sanitized error class; "ok" on success
-	model     string
-	backend   string
-	bytesIn   int
-	bytesOut  int
-	retries   int
-	accounted bool // an accounting record was already emitted
+	status   int
+	class    string // sanitized error class; "ok" on success
+	model    string
+	backend  string
+	bytesIn  int
+	bytesOut int
+	retries  int
+
+	// Accounting inputs. Carrying them here rather than in loop locals
+	// is what lets the deferred call be the only accounting call site,
+	// so every one of dispatch's exit paths settles exactly once by
+	// construction instead of by remembering to.
+	usage       accounting.Usage
+	usageStatus accounting.UsageStatus
+	reservation int64
 }
 
 // dispatch runs the full pipeline for one allow-listed operation.
 func (p *Proxy) dispatch(q *Req, o operation) {
-	out := result{status: 500, class: "internal_error", bytesIn: -1}
+	out := result{status: 500, class: "internal_error", bytesIn: -1, usageStatus: accounting.UsageUnknown}
 	start := time.Now()
 	defer func() {
 		if out.status == 0 {
@@ -179,15 +186,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"retry_count", out.retries,
 			"error_class", out.class,
 		)
-		// Observability (FIX-26): a request that never reached the
-		// success/terminal accounting below (draining 503, 415/400/404
-		// validation, 429 quota, the upstream-error return) still emits a
-		// minimal zero-usage record so rejection patterns are queryable
-		// in usage.jsonl (PLAN §41). ChargedTokens stays 0 — rejects
-		// never touch quota.
-		if !out.accounted {
-			p.account(q, o, out.model, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, out.retries, 0)
-		}
+		// Every request is accounted exactly once, here (PLAN §41).
+		// Rejections (draining 503, 415/400/404 validation, 429 quota,
+		// the upstream-error return) produce a zero-usage record so
+		// rejection patterns stay queryable in usage.jsonl (FIX-26);
+		// their non-2xx status means account settles nothing, so a
+		// reject never touches quota.
+		p.account(q, o, start, out)
 	}()
 
 	fail := func(e apiError) {
@@ -530,12 +535,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, publicModel, &usage, injectedUsage)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
 
-			usageStatus := accounting.UsageUnknown
-			if usage.Present {
-				usageStatus = accounting.UsageExact
-			}
-			p.account(q, o, publicModel, start, status, backendName, usage, usageStatus, out.retries, reservation)
-			out.accounted = true
+			out.usage, out.usageStatus = usage, accounting.StatusOf(usage)
+			out.reservation = reservation
 			return
 		}
 		res.Close()
@@ -543,13 +544,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.class = "ok"
 		out.bytesOut = len(res.BodyBytes)
 
-		usageStatus := accounting.UsageUnknown
 		usage := accounting.ParseUsage(res.BodyBytes, o.endpoint)
-		if usage.Present {
-			usageStatus = accounting.UsageExact
-		}
-		p.account(q, o, publicModel, start, res.Status, backendName, usage, usageStatus, out.retries, reservation)
-		out.accounted = true
+		out.usage, out.usageStatus = usage, accounting.StatusOf(usage)
+		out.reservation = reservation
 		ct := "application/json"
 		if v := res.Header.Get("Content-Type"); v != "" {
 			ct = v
@@ -608,9 +605,6 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		fail(f.resp)
 	}
-	// Record the failed request (PLAN §41): no usage was produced.
-	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, out.retries, 0)
-	out.accounted = true
 }
 
 // sleepBackoff sleeps the retry backoff for attempt n (1-based retries)
@@ -1161,14 +1155,14 @@ func windowLimits(l auth.KeyLimits) accounting.WindowLimit {
 // successful request conservatively charges the configured reservation;
 // the charged amount is recorded in charged_tokens so replay restores it
 // (PLAN §40). Errors settle nothing.
-func (p *Proxy) account(q *Req, o operation, model string, start time.Time, status int, backendName string, usage accounting.Usage, usageStatus accounting.UsageStatus, retries int, reservation int64) {
+func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 	if p.quota == nil && p.acc == nil {
 		return
 	}
-	total := usage.Total
-	if usageStatus == accounting.UsageUnknown {
-		if status >= 200 && status < 300 {
-			total = reservation // conservative charge (PLAN §39)
+	total := out.usage.Total
+	if out.usageStatus == accounting.UsageUnknown {
+		if out.status >= 200 && out.status < 300 {
+			total = out.reservation // conservative charge (PLAN §39)
 		} else {
 			total = 0
 		}
@@ -1181,18 +1175,18 @@ func (p *Proxy) account(q *Req, o operation, model string, start time.Time, stat
 			Time:            time.Now().UTC(),
 			RequestID:       q.RequestID,
 			KeyID:           q.Key.ID,
-			Model:           logModel(model),
-			Backend:         backendName,
+			Model:           logModel(out.model),
+			Backend:         out.backend,
 			Endpoint:        o.endpoint,
-			Status:          status,
+			Status:          out.status,
 			DurationMS:      time.Since(start).Milliseconds(),
-			InputTokens:     usage.Input,
-			OutputTokens:    usage.Output,
-			TotalTokens:     usage.Total,
-			CachedTokens:    usage.Cached,
-			ReasoningTokens: usage.Reasoning,
-			UsageStatus:     usageStatus,
-			Retries:         retries,
+			InputTokens:     out.usage.Input,
+			OutputTokens:    out.usage.Output,
+			TotalTokens:     out.usage.Total,
+			CachedTokens:    out.usage.Cached,
+			ReasoningTokens: out.usage.Reasoning,
+			UsageStatus:     out.usageStatus,
+			Retries:         out.retries,
 			ChargedTokens:   total,
 		})
 	}

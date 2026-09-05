@@ -115,11 +115,11 @@ uncommitted changes or a failing check.
 | C5 | one `ensureFile` in `internal/systemd` | low | complete |
 | C6 | one pepper generator | low | complete |
 | C7 | shared `internal/testsupport` | low-med | pending |
-| D1 | one backend-error classification | low | pending |
+| D1 | one backend-error classification | low | complete |
 | D2 | one request outcome, settled once | med | pending |
 | D3 | split `dispatch` into named phases | med | pending |
 | D4 | immutable `operation`; stop logging the response ID | low | pending |
-| D5 | table-driven client errors | low | pending |
+| D5 | table-driven client errors | low | complete |
 | D6 | extract the startup consistency checks from `buildDaemon` | low-med | pending |
 | E1 | decode and encode the request body once | med | pending |
 | E2 | parse each SSE event once | low | pending |

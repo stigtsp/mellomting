@@ -876,3 +876,46 @@ func TestFailedRequestRecordsRetryCount(t *testing.T) {
 		t.Fatalf("record retries = %d, want 1 (the in-place retry was not counted)", recs[0].Retries)
 	}
 }
+
+// Constraint: exactly one accounting record, and at most one quota
+// settle, per request — on every exit path. The outcome now lives in one
+// value accounted once in dispatch's defer, so this holds by
+// construction rather than by each of the exit paths remembering to set
+// a flag.
+func TestExactlyOneRecordPerRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		handler    http.HandlerFunc
+		body       string
+		wantStatus int
+	}{
+		{"success", usageJSON, `{"model":"gen-1","messages":[]}`, 200},
+		{"validation reject", usageJSON, `{"messages":[]}`, 400},
+		{"model not allowed", usageJSON, `{"model":"nope","messages":[]}`, 404},
+		{"upstream failure", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(500)
+		}, `{"model":"gen-1","messages":[]}`, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeVLLM(t, tc.handler)
+			quota := accounting.NewQuota()
+			writer, path := tmpWriter(t)
+			p := newAccountingProxy(t, f, quota, writer)
+
+			w := run(t, p, http.MethodPost, "/v1/chat/completions", tc.body, testKey())
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			_ = writer.Close()
+			recs := readRecords(t, path)
+			if len(recs) != 1 {
+				t.Fatalf("records = %d, want exactly 1", len(recs))
+			}
+			// Only a 2xx may charge the quota; every rejection settles
+			// nothing.
+			if tc.wantStatus/100 != 2 && recs[0].ChargedTokens != 0 {
+				t.Fatalf("rejection charged %d tokens, want 0", recs[0].ChargedTokens)
+			}
+		})
+	}
+}
