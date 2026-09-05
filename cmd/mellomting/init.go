@@ -158,7 +158,7 @@ func runInit(args initArguments) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
 		return 1
 	}
-	if err := commitInitArtifacts(args, artifacts, false, nil); err != nil {
+	if err := commitInitArtifacts(args, artifacts, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 1
 	}
@@ -622,12 +622,9 @@ type commitFile struct {
 
 // commitInitArtifacts publishes rendered init artifacts with create-only,
 // directory-FD-relative semantics (D4/D5). It never overwrites an existing
-// final path and never follows a final-component symlink. When dryRun is
-// true it performs no filesystem mutation.
-func commitInitArtifacts(args initArguments, artifacts initArtifacts, dryRun bool, ops commitOps) error {
-	if dryRun {
-		return nil
-	}
+// final path and never follows a final-component symlink. A --dry-run
+// invocation returns from runInit before reaching this function.
+func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commitOps) error {
 	if ops == nil {
 		ops = defaultCommitOps()
 	}

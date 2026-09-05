@@ -933,7 +933,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 		dir := newCommitDir(t)
 		args := commitTestArgs(t, dir, oneServer...)
 		arts := commitTestArtifacts(t, args, models)
-		if err := commitInitArtifacts(args, arts, false, nil); err != nil {
+		if err := commitInitArtifacts(args, arts, nil); err != nil {
 			t.Fatal(err)
 		}
 		for _, p := range []string{args.ConfigPath, args.UsersPath, args.PepperPath} {
@@ -968,7 +968,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 			}
 			args := commitTestArgs(t, dir, oneServer...)
 			arts := commitTestArtifacts(t, args, models)
-			err := commitInitArtifacts(args, arts, false, nil)
+			err := commitInitArtifacts(args, arts, nil)
 			if err == nil || !strings.Contains(err.Error(), "group- or world-writable") {
 				t.Fatalf("mode %o: err = %v", mode, err)
 			}
@@ -981,7 +981,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 			}
 			args := commitTestArgs(t, dir, oneServer...)
 			arts := commitTestArtifacts(t, args, models)
-			err := commitInitArtifacts(args, arts, false, nil)
+			err := commitInitArtifacts(args, arts, nil)
 			if err == nil || !strings.Contains(err.Error(), "owned by the effective user") {
 				t.Fatalf("err = %v", err)
 			}
@@ -1004,7 +1004,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				return id, nil
 			},
 		}
-		err := commitInitArtifacts(args, arts, false, ops)
+		err := commitInitArtifacts(args, arts, ops)
 		if err == nil || !strings.Contains(err.Error(), "changed after it was opened") {
 			t.Fatalf("err = %v", err)
 		}
@@ -1051,7 +1051,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				}
 				args := commitTestArgs(t, dir, oneServer...)
 				arts := commitTestArtifacts(t, args, models)
-				err := commitInitArtifacts(args, arts, false, nil)
+				err := commitInitArtifacts(args, arts, nil)
 				if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 					t.Fatalf("err = %v", err)
 				}
@@ -1081,7 +1081,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				args := commitTestArgs(t, dir, oneServer...)
 				arts := commitTestArtifacts(t, args, models)
 				ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{key: true}}
-				err := commitInitArtifacts(args, arts, false, ops)
+				err := commitInitArtifacts(args, arts, ops)
 				if err == nil || !strings.Contains(err.Error(), "injected "+key) {
 					t.Fatalf("err = %v", err)
 				}
@@ -1096,7 +1096,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 			args := commitTestArgs(t, dir, oneServer...)
 			arts := commitTestArtifacts(t, args, models)
 			ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{"unlinkInDir": true}}
-			err := commitInitArtifacts(args, arts, false, ops)
+			err := commitInitArtifacts(args, arts, ops)
 			if err == nil || !strings.Contains(err.Error(), "injected unlinkInDir") {
 				t.Fatalf("err = %v", err)
 			}
@@ -1108,7 +1108,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 			args := commitTestArgs(t, dir, oneServer...)
 			arts := commitTestArtifacts(t, args, models)
 			ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{"linkInDir:config.yaml": true}}
-			err := commitInitArtifacts(args, arts, false, ops)
+			err := commitInitArtifacts(args, arts, ops)
 			if err == nil || !strings.Contains(err.Error(), "injected linkInDir:config.yaml") {
 				t.Fatalf("err = %v", err)
 			}
@@ -1131,7 +1131,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				},
 			},
 		}
-		err := commitInitArtifacts(args, arts, false, ops)
+		err := commitInitArtifacts(args, arts, ops)
 		if err == nil || !strings.Contains(err.Error(), "appeared before publication") {
 			t.Fatalf("err = %v", err)
 		}
@@ -1167,7 +1167,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				},
 			},
 		}
-		err := commitInitArtifacts(args, arts, false, ops)
+		err := commitInitArtifacts(args, arts, ops)
 		if err == nil || !strings.Contains(err.Error(), "changed after it was created") {
 			t.Fatalf("err = %v hooked=%v calls=%v", err, hooked, ops.calls)
 		}
@@ -1197,7 +1197,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				},
 			},
 		}
-		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+		if err := commitInitArtifacts(args, arts, ops); err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
@@ -1239,7 +1239,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				},
 			},
 		}
-		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+		if err := commitInitArtifacts(args, arts, ops); err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"config.yaml", "users.yaml", "auth.pepper"} {
@@ -1268,7 +1268,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 				},
 			},
 		}
-		err := commitInitArtifacts(args, arts, false, ops)
+		err := commitInitArtifacts(args, arts, ops)
 		if err == nil || !strings.Contains(err.Error(), "injected unlinkInDir:") {
 			t.Fatalf("err = %v", err)
 		}
@@ -1288,7 +1288,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 		args := commitTestArgs(t, dir, oneServer...)
 		arts := commitTestArtifacts(t, args, models)
 		ops := &scriptedCommitOps{inner: defaultCommitOps()}
-		if err := commitInitArtifacts(args, arts, false, ops); err != nil {
+		if err := commitInitArtifacts(args, arts, ops); err != nil {
 			t.Fatal(err)
 		}
 		idx := make(map[string]int)
@@ -1332,7 +1332,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 		}
 		args := commitTestArgs(t, dir, oneServer...)
 		arts := commitTestArtifacts(t, args, models)
-		err := commitInitArtifacts(args, arts, false, nil)
+		err := commitInitArtifacts(args, arts, nil)
 		if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 			t.Fatalf("err = %v", err)
 		}
@@ -1341,15 +1341,6 @@ func TestCommitInitArtifacts(t *testing.T) {
 		}
 	})
 
-	t.Run("dry-run writes nothing", func(t *testing.T) {
-		dir := newCommitDir(t)
-		args := commitTestArgs(t, dir, oneServer...)
-		arts := commitTestArtifacts(t, args, models)
-		if err := commitInitArtifacts(args, arts, true, nil); err != nil {
-			t.Fatal(err)
-		}
-		requireDirEmpty(t, dir)
-	})
 }
 
 func fakeModelsServer(t *testing.T, ids ...string) *httptest.Server {

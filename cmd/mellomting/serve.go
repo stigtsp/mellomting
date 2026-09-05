@@ -46,7 +46,6 @@ type daemon struct {
 	acc       *accounting.Writer // usage JSONL writer; nil when disabled
 	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
 	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
-	listen    net.Listener
 }
 
 // serveCmd runs the proxy daemon.
@@ -92,7 +91,6 @@ func serveCmd(args []string) int {
 	if d.tlsConfig != nil {
 		ln = tls.NewListener(ln, d.tlsConfig)
 	}
-	d.listen = ln
 	// FIX-05/M19: there is deliberately NO deferred os.Remove of the Unix
 	// socket path here. Go's net.UnixListener already unlinks the socket
 	// when the listener is closed, and Shutdown/Close close it at the
