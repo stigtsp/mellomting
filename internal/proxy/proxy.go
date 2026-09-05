@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"mellomting/internal/accounting"
+	"mellomting/internal/apierr"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -190,7 +191,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 	fail := func(status int, typ, code, msg, class string) {
 		out.status, out.class = status, class
-		writeError(q.W, status, typ, code, msg)
+		apierr.Write(q.W, status, typ, code, msg)
 	}
 
 	// 1. Draining admission (PLAN §74.2).
@@ -406,7 +407,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			if !ok {
 				// Every proxy 429 carries Retry-After (T-Q12). No window
 				// reset is computed here, so use a conservative default.
-				q.W.Header().Set("Retry-After", defaultRetryAfter)
+				q.W.Header().Set("Retry-After", apierr.DefaultRetryAfter)
 				fail(429, "rate_limit_error", "token_quota_exceeded",
 					"token quota exceeded for this window", "token_quota")
 				return
@@ -625,7 +626,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				// else a conservative default (T-Q12).
 				ra := lastRetryAfter
 				if ra == "" {
-					ra = defaultRetryAfter
+					ra = apierr.DefaultRetryAfter
 				}
 				q.W.Header().Set("Retry-After", ra)
 				fail(429, "rate_limit_error", "upstream_rate_limited",
@@ -1298,28 +1299,4 @@ func (p *Proxy) account(q *Req, o operation, model string, start time.Time, stat
 			ChargedTokens:   total,
 		})
 	}
-}
-
-// defaultRetryAfter is the Retry-After value used when a proxy 429 has
-// no computable or upstream-provided delay (T-Q12, PLAN §8.2).
-const defaultRetryAfter = "1"
-
-// writeError emits a sanitized OpenAI-shaped error (PLAN §72).
-func writeError(w http.ResponseWriter, status int, typ, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	payload := map[string]any{
-		"error": map[string]any{
-			"message": msg,
-			"type":    typ,
-			"param":   nil,
-			"code":    code,
-		},
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		_, _ = w.Write([]byte(`{"error":{"message":"internal error"}}`))
-		return
-	}
-	_, _ = w.Write(data)
 }

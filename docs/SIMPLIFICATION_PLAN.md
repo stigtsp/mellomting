@@ -108,7 +108,7 @@ uncommitted changes or a failing check.
 | B2 | delete the unreachable qualifier machinery and `internal/guard` | low | complete |
 | B3 | delete the dead `dryRun` parameter and `daemon.listen` field | low | complete |
 | B4 | reject trailing arguments in `config` and `sandbox` | low-med | complete |
-| C1 | one `redactURL` | low | pending |
+| C1 | one `redactURL` | low | complete |
 | C2 | one client-error envelope | low | pending |
 | C3 | one atomic file replace | med | pending |
 | C4 | one egress-policy builder and one set of listener predicates | low | pending |
