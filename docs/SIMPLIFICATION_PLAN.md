@@ -1,6 +1,13 @@
 # Mellomting Simplification Plan
 
-Status: **draft for review**. Nothing in this document has been applied.
+Status: **executed**. All 27 tasks are complete; see the ledger in §5. The
+whole tree builds, vets, formats clean, and passes `go test ./...`,
+`go test -race ./...`, and the tagged integration suite.
+
+Decisions from §8 were resolved as recommended: `encoding/json/v2` was not
+adopted, `redactURL` moved to a new `internal/redact` leaf standardised on
+`<redacted>`, and Phase E was taken to completion including E4. §8 decision 3
+(the README's "byte-for-byte" claim) is the one item left open.
 
 ## 1. Objective
 
@@ -114,7 +121,7 @@ uncommitted changes or a failing check.
 | C4 | one egress-policy builder and one set of listener predicates | low | complete |
 | C5 | one `ensureFile` in `internal/systemd` | low | complete |
 | C6 | one pepper generator | low | complete |
-| C7 | shared `internal/testsupport` | low-med | pending |
+| C7 | shared `internal/testsupport` | low-med | complete |
 | D1 | one backend-error classification | low | complete |
 | D2 | one request outcome, settled once | med | complete |
 | D3 | split `dispatch` into named phases | med | complete |
