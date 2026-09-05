@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -291,8 +291,8 @@ func dummyHashInput(s *Store) string {
 }
 
 // Update mutates the users file under an exclusive lock with an atomic
-// replacement (PLAN §29.1): lock, parse/validate, temp file in the same
-// directory, mode 0600, write, fsync file, rename, fsync directory.
+// replacement (PLAN §29.1): lock, parse, validate, then replace through
+// securefile, which owns the temp-file, fsync, and rename mechanics.
 func Update(path string, fn func(*UsersFile) error) error {
 	lockPath := path + ".lock"
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -325,57 +325,12 @@ func Update(path string, fn func(*UsersFile) error) error {
 		return err
 	}
 
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".mellomting-users-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if tmpName != "" {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
 	// PLAN §29.1: preserve the existing file's ownership and its mode
 	// clamped to 0640 (never widened), so a privileged `key create`
 	// cannot leave a 0600 root:root file the daemon can no longer read.
 	// A fresh file defaults to 0600.
-	mode := os.FileMode(0o600)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm() & 0o640
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			if cerr := os.Chown(tmpName, int(st.Uid), int(st.Gid)); cerr != nil {
-				// Best-effort: an unprivileged caller cannot chown a
-				// file to a group it is not in; the atomic rename below
-				// proceeds regardless and the mode clamp still applies.
-				_ = cerr
-			}
-		}
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+	return securefile.ReplacePreservingOwner(path, 0o600, 0o640, func(w io.Writer) error {
+		_, err := w.Write(out)
 		return err
-	}
-	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	tmpName = ""
-
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
+	})
 }

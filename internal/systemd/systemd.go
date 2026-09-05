@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mellomting/internal/securefile"
 	"os"
 	"os/exec"
 	"os/user"
@@ -485,52 +486,14 @@ func ensureDir(path string, mode os.FileMode, uid, gid int) error {
 // mode. It refuses to replace an existing symlink or non-regular file,
 // and never leaves a partial destination on failure.
 func writeFileAtomic(content, path string, mode os.FileMode) error {
-	if st, err := os.Lstat(path); err == nil {
-		if st.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to replace %q: it is a symlink", path)
-		}
-		if !st.Mode().IsRegular() {
-			return fmt.Errorf("refusing to replace %q: it is not a regular file", path)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat %q: %w", path, err)
-	}
-
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create %q: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, ".mellomting-"+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temporary file in %q: %w", dir, err)
-	}
-	tmpName := tmp.Name()
-	abort := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}
-	if _, err := tmp.WriteString(content); err != nil {
-		abort()
-		return fmt.Errorf("write %q: %w", tmpName, err)
-	}
-	// Fsync the data before the rename: rename(2) orders the directory
-	// entry, not the file's blocks, so an unsynced write can leave a
-	// truncated file at the destination after a crash.
-	if err := tmp.Sync(); err != nil {
-		abort()
-		return fmt.Errorf("sync %q: %w", tmpName, err)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		abort()
-		return fmt.Errorf("chmod %q: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close %q: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("replace %q: %w", path, err)
-	}
-	return nil
+	return securefile.Replace(path, mode, func(w io.Writer) error {
+		if _, err := io.WriteString(w, content); err != nil {
+			return fmt.Errorf("write %q: %w", path, err)
+		}
+		return nil
+	})
 }

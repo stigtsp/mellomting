@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"mellomting/internal/securefile"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,15 +135,8 @@ func installBinary(src, dest string) error {
 	if sameResolvedPath(src, dest) {
 		return errAlreadyInstalled
 	}
-	if st, err := os.Lstat(dest); err == nil {
-		if st.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to replace %q: it is a symlink", dest)
-		}
-		if st.IsDir() {
-			return fmt.Errorf("refusing to replace %q: it is a directory", dest)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat %q: %w", dest, err)
+	if st, err := os.Lstat(dest); err == nil && st.IsDir() {
+		return fmt.Errorf("refusing to replace %q: it is a directory", dest)
 	}
 	destDir := filepath.Dir(dest)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -157,48 +151,19 @@ func installBinary(src, dest string) error {
 	if err != nil {
 		return fmt.Errorf("stat %q: %w", src, err)
 	}
-	tmp, err := os.CreateTemp(destDir, ".mellomting-install-")
-	if err != nil {
-		return fmt.Errorf("create temporary file in %q: %w", destDir, err)
-	}
-	tmpName := tmp.Name()
-	discard := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}
-	if _, err := io.Copy(tmp, in); err != nil {
-		discard()
-		return fmt.Errorf("copy %q to %q: %w", src, destDir, err)
-	}
-	st, err := tmp.Stat()
-	if err != nil {
-		discard()
-		return fmt.Errorf("verify %q: %w", tmpName, err)
-	}
-	if st.Size() != srcInfo.Size() {
-		discard()
-		return fmt.Errorf("verify %q: copied %d bytes, source is %d", tmpName, st.Size(), srcInfo.Size())
-	}
-	// Fsync the data before the rename: rename(2) orders the directory
-	// entry, not the file's blocks, so an unsynced copy can leave a
-	// truncated binary at the destination after a crash.
-	if err := tmp.Sync(); err != nil {
-		discard()
-		return fmt.Errorf("sync %q: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close %q: %w", tmpName, err)
-	}
-	if err := os.Chmod(tmpName, 0o755); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("chmod %q: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, dest); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("replace %q: %w", dest, err)
-	}
-	return nil
+	// securefile.Replace refuses a symlink or non-regular destination,
+	// fsyncs the copy and the parent directory, and sets the mode through
+	// the descriptor rather than by path.
+	return securefile.Replace(dest, 0o755, func(w io.Writer) error {
+		n, err := io.Copy(w, in)
+		if err != nil {
+			return fmt.Errorf("copy %q to %q: %w", src, destDir, err)
+		}
+		if n != srcInfo.Size() {
+			return fmt.Errorf("verify %q: copied %d bytes, source is %d", dest, n, srcInfo.Size())
+		}
+		return nil
+	})
 }
 
 // sameResolvedPath reports whether a and b address the same file after
