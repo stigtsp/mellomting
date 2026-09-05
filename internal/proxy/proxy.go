@@ -252,7 +252,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		fail(*targetErr)
 		return
 	}
-	body, publicModel, stream = t.body, t.model, t.stream
+	publicModel, stream = t.model, t.stream
 	fixedBackend, outPath := t.backend, t.path
 	out.model = publicModel
 

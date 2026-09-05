@@ -620,18 +620,6 @@ func IsNonLoopbackListenAddress(addr string) bool {
 	return IsNonLoopbackHost(host)
 }
 
-func urlHost(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		return u.Hostname()
-	}
-	return host
-}
-
 func inAnyPrefix(addr netip.Addr, prefixes []netip.Prefix) bool {
 	for _, p := range prefixes {
 		if p.Contains(addr) {
