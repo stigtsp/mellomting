@@ -17,11 +17,11 @@ var benchChatBody = []byte(`{"model":"qwen-coder","messages":[{"role":"user","co
 func BenchmarkShallowParseAndRewrite(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		body, _, _, err := shallowParse(benchChatBody)
+		fields, _, _, err := shallowParse(benchChatBody)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if _, err := rewriteModel(body, "Up/qwen-coder"); err != nil {
+		if _, err := encodeOutbound(fields, "Up/qwen-coder"); err != nil {
 			b.Fatal(err)
 		}
 	}

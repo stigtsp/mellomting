@@ -261,7 +261,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		fail(*prepErr)
 		return
 	}
-	prepared, reservation, injectedUsage := ob.body, ob.reservation, ob.injectedUsage
+	reservation, injectedUsage := ob.reservation, ob.injectedUsage
 
 	// 4. Forward under the bounded pre-stream retry/fallback budget
 	// (PLAN §22, §23, §93). The request may make at most retry.max_attempts
@@ -275,7 +275,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	defer ucancel()
 
 	headers := passthroughHeaders(q.R)
-	if len(prepared) > 0 {
+	if ob.fields != nil || len(ob.body) > 0 {
 		headers["Content-Type"] = []string{"application/json"}
 	}
 
@@ -318,15 +318,17 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				backendName = t.Backend
 			}
 		}
-		var bd []byte = prepared
-		if o.route == routeByModel {
+		// The single encode of the outbound body, once per attempt: the
+		// upstream model differs across replicas, so it cannot be hoisted
+		// out of the loop. A response-ID route has no decoded body and is
+		// relayed byte-for-byte.
+		bd := ob.body
+		if ob.fields != nil {
 			up, _ := p.router.UpstreamFor(backendName)
-			if up != "" {
-				var rerr error
-				if bd, rerr = rewriteModel(prepared, up); rerr != nil {
-					fail(errNotNormal)
-					return
-				}
+			var rerr error
+			if bd, rerr = encodeOutbound(ob.fields, up); rerr != nil {
+				fail(errNotNormal)
+				return
 			}
 		}
 
@@ -481,7 +483,11 @@ type target struct {
 	stream  bool
 	backend string // pinned backend; empty lets the router choose
 	path    string // backend path for this request
-	body    []byte // body as re-encoded by the shallow parse
+	// fields is the body decoded once, shared by every later stage and
+	// re-encoded exactly once per attempt. It is nil for response-ID
+	// routes, whose body is relayed byte-for-byte.
+	fields map[string]json.RawMessage
+	body   []byte // raw body, relayed when fields is nil
 }
 
 // resolveTarget performs the shallow parse, the ACL and model-type
@@ -494,8 +500,8 @@ func (p *Proxy) resolveTarget(q *Req, o operation, body []byte) (target, *apiErr
 	t := target{body: body, path: o.path}
 
 	if o.route == routeByModel {
-		parsed, publicModel, stream, err := shallowParse(body)
-		t.body, t.model, t.stream = parsed, publicModel, stream
+		fields, publicModel, stream, err := shallowParse(body)
+		t.fields, t.model, t.stream = fields, publicModel, stream
 		switch {
 		case errors.Is(err, errJSON):
 			return t, &errBadJSON
@@ -531,7 +537,7 @@ func (p *Proxy) resolveTarget(q *Req, o operation, body []byte) (target, *apiErr
 			}
 		}
 		if o.capture {
-			if prev, ok := stringField(t.body, "previous_response_id"); ok {
+			if prev, ok := stringField(t.fields, "previous_response_id"); ok {
 				b, m, ok := p.affinity.Get(q.Key.ID, prev)
 				// The owning backend is authoritative (PLAN §21.3) and
 				// pinning it skips routing, so the continuation must
@@ -576,7 +582,8 @@ func (p *Proxy) resolveTarget(q *Req, o operation, body []byte) (target, *apiErr
 // outbound is the body as it will be sent, plus what accounting needs to
 // know about it.
 type outbound struct {
-	body          []byte
+	fields        map[string]json.RawMessage // nil for response-ID routes
+	body          []byte                     // raw body, relayed when fields is nil
 	reservation   int64
 	injectedUsage bool
 }
@@ -596,19 +603,17 @@ func (p *Proxy) prepare(q *Req, o operation, t target) (outbound, *apiError) {
 	if m, ok := p.cfg.Models[t.model]; ok {
 		cap = m.Policy.MaxOutputTokens
 	}
-	prepared, reservation, injected, err := prepareOutbound(
-		t.body, o, cap, t.stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
+	reservation, injected, err := prepareOutbound(
+		t.fields, o, cap, t.stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
 	switch {
 	case errors.Is(err, errCapExceeded):
 		return ob, &errOutputCapExceeded
 	case errors.Is(err, errCapInvalid):
 		return ob, &errOutputLimitInvalid
-	case errors.Is(err, errNotJSONObject):
-		return ob, &errBadJSON
 	case err != nil:
 		return ob, &errNotNormal
 	}
-	ob = outbound{body: prepared, reservation: reservation, injectedUsage: injected}
+	ob = outbound{fields: t.fields, reservation: reservation, injectedUsage: injected}
 
 	if p.quota != nil {
 		if ok, _ := p.quota.Admit(q.Key.ID, windowLimits(q.Key.Limits), reservation, time.Now()); !ok {
@@ -863,12 +868,16 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 // shallowParse inspects the routing/policy fields of a JSON body and
 // returns a normalized body with unknown fields preserved verbatim
 // (PLAN §12).
-func shallowParse(body []byte) (newBody []byte, model string, stream bool, err error) {
+func shallowParse(body []byte) (fields map[string]json.RawMessage, model string, stream bool, err error) {
 	if len(body) == 0 {
 		return nil, "", false, errMissingModel
 	}
-	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, "", false, errJSON
+	}
+	// A JSON `null` unmarshals into a nil map without error; every later
+	// stage writes to this map, and writing to a nil map panics (T-L6).
+	if fields == nil {
 		return nil, "", false, errJSON
 	}
 	rawModel, ok := fields["model"]
@@ -884,27 +893,24 @@ func shallowParse(body []byte) (newBody []byte, model string, stream bool, err e
 			stream = b
 		}
 	}
-	return body, model, stream, nil
+	return fields, model, stream, nil
 }
 
 // rewriteModel sets the outbound model field and re-serializes, keeping
 // every other field byte-identical via json.RawMessage (PLAN §12, §13).
-func rewriteModel(body []byte, upstream string) ([]byte, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, err
+// encodeOutbound sets the upstream model on the decoded body and
+// re-encodes it. This is the single canonicalizing marshal of the
+// request: a duplicate "model" key decodes last-wins and re-encodes to
+// one key, so a backend can never resolve a second one the ACL never
+// saw. Forwarding the client's bytes verbatim would reopen that.
+func encodeOutbound(fields map[string]json.RawMessage, upstream string) ([]byte, error) {
+	if upstream != "" {
+		enc, err := json.Marshal(upstream)
+		if err != nil {
+			return nil, err
+		}
+		fields["model"] = enc
 	}
-	// A JSON `null` unmarshals into a nil map without error; writing
-	// to it would panic. Guard so the nil-map path cannot crash the
-	// process even if the shallow-parse guard upstream changes (T-L6).
-	if fields == nil {
-		return nil, errNotJSONObject
-	}
-	enc, err := json.Marshal(upstream)
-	if err != nil {
-		return nil, err
-	}
-	fields["model"] = enc
 	return json.Marshal(fields)
 }
 
@@ -931,11 +937,7 @@ func isValidResponseID(id string) bool {
 }
 
 // stringField extracts a top-level string field.
-func stringField(body []byte, field string) (string, bool) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return "", false
-	}
+func stringField(fields map[string]json.RawMessage, field string) (string, bool) {
 	raw, ok := fields[field]
 	if !ok {
 		return "", false
@@ -966,7 +968,11 @@ func logModel(m string) string {
 
 // topLevelID extracts the "id" field of a non-stream Responses body.
 func topLevelID(body []byte) string {
-	id, _ := stringField(body, "id")
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return ""
+	}
+	id, _ := stringField(fields, "id")
 	return id
 }
 
@@ -1056,27 +1062,13 @@ var (
 //
 // The model field is left untouched here; rewriteModel still overrides it
 // per-attempt because the upstream model can differ across backends.
-func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool, configuredReservation int64) (out []byte, reservation int64, injectedUsage bool, err error) {
+func prepareOutbound(fields map[string]json.RawMessage, o operation, cap int, stream, ensureUsage bool, configuredReservation int64) (reservation int64, injectedUsage bool, err error) {
 	if o.capField == "" && !(stream && ensureUsage) {
 		// Neither the output cap nor stream-usage injection applies
 		// (e.g. embeddings, or usage injection disabled). The
 		// unknown-usage reservation still does: returning 0 here would
 		// let such a request settle nothing against the quota.
-		return body, configuredReservation, false, nil
-	}
-	if len(body) == 0 {
-		return body, configuredReservation, false, nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, 0, false, errNotJSONObject
-	}
-	// A JSON `null` unmarshals into a nil map without error; writing
-	// to it would panic. Guard it so the nil-map path can never crash
-	// the process even if the shallow-parse guard upstream changes
-	// (T-L6).
-	if fields == nil {
-		return nil, 0, false, errNotJSONObject
+		return configuredReservation, false, nil
 	}
 
 	// Output cap (PLAN §36): never silently raise a client limit; reject
@@ -1090,7 +1082,7 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 	if o.capField != "" && cap > 0 {
 		present, _, terr := tokenLimit(fields, o.capField, cap)
 		if terr != nil {
-			return nil, 0, false, terr
+			return 0, false, terr
 		}
 		if present {
 			limitSet = true
@@ -1098,7 +1090,7 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 		if o.altCapField != "" {
 			present, _, terr := tokenLimit(fields, o.altCapField, cap)
 			if terr != nil {
-				return nil, 0, false, terr
+				return 0, false, terr
 			}
 			if present {
 				limitSet = true
@@ -1127,11 +1119,7 @@ func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool
 		}
 	}
 
-	bd, err := json.Marshal(fields)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	return bd, reservation, injectedUsage, nil
+	return reservation, injectedUsage, nil
 }
 
 // tokenLimit reads and validates one generative output-limit field

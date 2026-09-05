@@ -1049,13 +1049,11 @@ func TestNullBodyNoNilMapPanic(t *testing.T) {
 		t.Fatalf("null body: status = %d (want 400)", rec.Code)
 	}
 
-	// Unit-level: the normalize helpers must fail closed on `null`
-	// rather than write to a nil map (T-L6).
-	if _, _, _, err := prepareOutbound([]byte("null"), opChat, 0, false, false, 0); !errors.Is(err, errNotJSONObject) {
-		t.Fatalf("prepareOutbound(null): err = %v (want errNotJSONObject)", err)
-	}
-	if _, err := rewriteModel([]byte("null"), "Up/Model"); err == nil {
-		t.Fatalf("rewriteModel(null) returned a nil error")
+	// Unit-level: the body is decoded once, so the nil-map guard lives
+	// in shallowParse — every later stage writes to that map, and
+	// writing to a nil map panics (T-L6).
+	if _, _, _, err := shallowParse([]byte("null")); !errors.Is(err, errJSON) {
+		t.Fatalf("shallowParse(null): err = %v (want errJSON)", err)
 	}
 }
 
@@ -1833,5 +1831,28 @@ func TestLogEndpointExcludesResponseID(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"endpoint":"GET /v1/responses"`) {
 		t.Fatalf("endpoint is not the route template:\n%s", buf.String())
+	}
+}
+
+// Constraint: exactly one canonicalizing encode of the request body must
+// survive the single-decode refactor. A duplicate "model" key decodes
+// last-wins, and the re-encode must collapse it to one key — forwarding
+// the client's bytes verbatim would let a backend resolve a second model
+// the ACL never checked.
+func TestDuplicateModelKeyCollapsed(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	p := newProxy(t, f)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":false,"model":"gen-1","messages":[]}`, testKey())
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := bytes.Count(f.lastBody, []byte(`"model"`)); n != 1 {
+		t.Fatalf("backend body carries %d model keys, want exactly 1: %s", n, f.lastBody)
+	}
+	if f.lastModel != "Upstream/Model" {
+		t.Fatalf("upstream model = %q, want the rewritten one", f.lastModel)
 	}
 }

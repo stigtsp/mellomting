@@ -120,7 +120,7 @@ uncommitted changes or a failing check.
 | D3 | split `dispatch` into named phases | med | complete |
 | D4 | immutable `operation`; stop logging the response ID | low | complete |
 | D5 | table-driven client errors | low | complete |
-| D6 | extract the startup consistency checks from `buildDaemon` | low-med | pending |
+| D6 | extract the startup consistency checks from `buildDaemon` | low-med | complete |
 | E1 | decode and encode the request body once | med | pending |
 | E2 | parse each SSE event once | low | pending |
 | E3 | reuse the SSE parser buffers | low | pending |

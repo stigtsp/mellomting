@@ -42,7 +42,11 @@ func FuzzStringField(f *testing.F) {
 	f.Add([]byte(`{"a":1.5e300}`), "a")
 	f.Add([]byte(`{"a":"`+strings.Repeat("x", 4096)+`"}`), "a")
 	f.Fuzz(func(t *testing.T, body []byte, field string) {
-		stringField(body, field)
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			return
+		}
+		stringField(fields, field)
 	})
 }
 
@@ -81,9 +85,9 @@ func FuzzRewriteModel(f *testing.F) {
 		if perr != nil {
 			return
 		}
-		out, err := rewriteModel(orig, "upstream-X")
+		out, err := encodeOutbound(orig, "upstream-X")
 		if err != nil {
-			t.Fatalf("rewriteModel failed on shallow-parsed body: %v", err)
+			t.Fatalf("encodeOutbound failed on shallow-parsed body: %v", err)
 		}
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(out, &fields); err != nil {

@@ -397,9 +397,17 @@ func TestUsageNullFrameReEmitted(t *testing.T) {
 func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
 	prep := func(body string) (string, bool) {
 		o := operation{endpoint: "chat.completions", capField: "max_completion_tokens"}
-		out, _, inj, err := prepareOutbound([]byte(body), o, 100000, true, true, 0)
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &fields); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		_, inj, err := prepareOutbound(fields, o, 100000, true, true, 0)
 		if err != nil {
 			t.Fatalf("prepareOutbound: %v", err)
+		}
+		out, err := encodeOutbound(fields, "")
+		if err != nil {
+			t.Fatalf("encode: %v", err)
 		}
 		return string(out), inj
 	}
