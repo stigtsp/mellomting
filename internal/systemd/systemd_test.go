@@ -200,8 +200,8 @@ func TestEnsurePepper(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pepper line is not base64: %v", err)
 		}
-		if len(raw) != pepperBytes {
-			t.Fatalf("decoded pepper is %d bytes, want %d", len(raw), pepperBytes)
+		if len(raw) != auth.PepperBytes {
+			t.Fatalf("decoded pepper is %d bytes, want %d", len(raw), auth.PepperBytes)
 		}
 		if len(line) < 16 {
 			t.Fatalf("pepper line is %d bytes, below the 16-byte minimum load would reject", len(line))

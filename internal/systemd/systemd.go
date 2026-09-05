@@ -2,13 +2,10 @@ package systemd
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"mellomting/internal/securefile"
 	"os"
 	"os/exec"
 	"os/user"
@@ -20,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"mellomting/internal/auth"
+	"mellomting/internal/securefile"
 )
 
 // Host paths the daemon and its provisioning use (PLAN §26-27, §64, §76).
@@ -44,13 +42,6 @@ const (
 // the two happen to share the string "mellomting" today but must not be
 // conflated.
 const UnitName = "mellomting"
-
-// pepperBytes is the HMAC pepper length the installer generates: 64
-// crypto-random bytes, base64-encoded on one line (the in-process
-// equivalent of the `base64(head -c 64 /dev/urandom)` format). Any pepper
-// of at least 16 bytes loads (auth.LoadPepper); a pre-existing file of any
-// format is left in place and loads unchanged.
-const pepperBytes = 64
 
 // configMaxBytes bounds the size of an existing config read by the D15
 // auth-path source parse (referencedAuthPaths). It mirrors the config
@@ -188,79 +179,56 @@ func (p *Provision) Run() (r Report, err error) {
 // rewritten; a non-regular file at the path (a symlink among them) is
 // refused, in line with the project's symlink stance. It reports whether
 // it created the file.
+// ensureFile creates path only when it does not already exist, with the
+// create-only contract the installer relies on: an existing regular file
+// is left untouched, and anything that is not a regular file — a symlink
+// above all — is refused rather than written through. content is called
+// only when the file will actually be created, so ensurePepper does not
+// draw entropy for a file that already exists.
+func ensureFile(path string, mode os.FileMode, uid, gid int, content func() (string, error)) (bool, error) {
+	st, err := os.Lstat(path)
+	if err == nil {
+		if !st.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %q: %w", path, err)
+	}
+	data, err := content()
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(data, path, mode); err != nil {
+		return false, err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return false, fmt.Errorf("chown %q: %w", path, err)
+	}
+	return true, nil
+}
+
 func ensureConfig(path string, mode os.FileMode, uid, gid int) (bool, error) {
-	st, err := os.Lstat(path)
-	if err == nil {
-		if !st.Mode().IsRegular() {
-			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
-		}
-		return false, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("stat %q: %w", path, err)
-	}
-	if err := writeFileAtomic(string(ConfigTemplate()), path, mode); err != nil {
-		return false, err
-	}
-	if err := os.Chown(path, uid, gid); err != nil {
-		return false, fmt.Errorf("chown %q: %w", path, err)
-	}
-	return true, nil
+	return ensureFile(path, mode, uid, gid, func() (string, error) {
+		return string(ConfigTemplate()), nil
+	})
 }
 
-// ensurePepper generates the HMAC pepper (PLAN §27) when no file is at
-// path: pepperBytes crypto-random bytes, standard base64, one line. A
-// pre-existing file is the operator's secret and is never rewritten (it
-// loads in whatever format it already has); a non-regular file (a symlink
-// among them) is refused, in line with the project's symlink stance. It
-// reports whether it created the file.
 func ensurePepper(path string, uid, gid int) (bool, error) {
-	st, err := os.Lstat(path)
-	if err == nil {
-		if !st.Mode().IsRegular() {
-			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+	return ensureFile(path, 0o640, uid, gid, func() (string, error) {
+		b, err := auth.GeneratePepper(nil)
+		if err != nil {
+			return "", fmt.Errorf("generate pepper for %q: %w", path, err)
 		}
-		return false, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("stat %q: %w", path, err)
-	}
-	b := make([]byte, pepperBytes)
-	if _, err := rand.Read(b); err != nil {
-		return false, fmt.Errorf("generate pepper for %q: %w", path, err)
-	}
-	// One base64 line + newline: LoadPepper trims the trailing newline.
-	if err := writeFileAtomic(base64.StdEncoding.EncodeToString(b)+"\n", path, 0o640); err != nil {
-		return false, err
-	}
-	if err := os.Chown(path, uid, gid); err != nil {
-		return false, fmt.Errorf("chown %q: %w", path, err)
-	}
-	return true, nil
+		return auth.EncodePepper(b), nil
+	})
 }
 
-// ensureUsers writes the empty key-store stub (usersStub) when no users
-// file is at path, with the same create-only-if-absent and symlink-refusal
-// shape as ensurePepper. A pre-existing users file holds the operator's
-// keys and is never rewritten. It reports whether it created the file.
 func ensureUsers(path string, uid, gid int) (bool, error) {
-	st, err := os.Lstat(path)
-	if err == nil {
-		if !st.Mode().IsRegular() {
-			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
-		}
-		return false, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("stat %q: %w", path, err)
-	}
-	if err := writeFileAtomic(usersStub, path, 0o640); err != nil {
-		return false, err
-	}
-	if err := os.Chown(path, uid, gid); err != nil {
-		return false, fmt.Errorf("chown %q: %w", path, err)
-	}
-	return true, nil
+	return ensureFile(path, 0o640, uid, gid, func() (string, error) {
+		return usersStub, nil
+	})
 }
 
 // ensureAuthArtifacts applies the D15 auth-artifact contract. A freshly

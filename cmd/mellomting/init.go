@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -452,9 +451,6 @@ func initPreflightLandlock(mode string, explicit bool, check func() landlock.Rep
 	return nil
 }
 
-// initPepperBytes is the D4 pepper entropy: 64 random bytes before base64.
-const initPepperBytes = 64
-
 // initPepperRand is the pepper entropy source. Tests replace it with a
 // deterministic source while the production path remains crypto/rand.
 var initPepperRand = func(n int) ([]byte, error) {
@@ -487,14 +483,14 @@ func renderInitArtifacts(args initArguments, discovered discovery.Result) (initA
 		return initArtifacts{}, err
 	}
 
-	pepper, err := initPepperRand(initPepperBytes)
+	pepper, err := initPepperRand(auth.PepperBytes)
 	if err != nil {
 		return initArtifacts{}, err
 	}
 	if err := auth.ValidatePepper(pepper); err != nil {
 		return initArtifacts{}, err
 	}
-	pepperBytes := []byte(base64.StdEncoding.EncodeToString(pepper) + "\n")
+	pepperBytes := []byte(auth.EncodePepper(pepper))
 
 	usersBytes := auth.EmptyUsersBytes()
 	if _, err := auth.ParseUsers(usersBytes); err != nil {

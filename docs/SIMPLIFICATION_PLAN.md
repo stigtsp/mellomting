@@ -111,7 +111,7 @@ uncommitted changes or a failing check.
 | C1 | one `redactURL` | low | complete |
 | C2 | one client-error envelope | low | complete |
 | C3 | one atomic file replace | med | complete |
-| C4 | one egress-policy builder and one set of listener predicates | low | pending |
+| C4 | one egress-policy builder and one set of listener predicates | low | complete |
 | C5 | one `ensureFile` in `internal/systemd` | low | pending |
 | C6 | one pepper generator | low | pending |
 | C7 | shared `internal/testsupport` | low-med | pending |

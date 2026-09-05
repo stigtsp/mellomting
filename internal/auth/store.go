@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -197,6 +198,35 @@ func LoadPepper(path string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(pepper), nil
+}
+
+// PepperBytes is the HMAC pepper entropy before base64 encoding
+// (PLAN §27). It is defined once: an installer and an init that disagree
+// about it would leave one deployment weaker than the other with nothing
+// failing.
+const PepperBytes = 64
+
+// GeneratePepper returns PepperBytes of entropy from r, already
+// validated. Pass nil for crypto/rand; tests pass a deterministic
+// source.
+func GeneratePepper(r io.Reader) ([]byte, error) {
+	if r == nil {
+		r = rand.Reader
+	}
+	b := make([]byte, PepperBytes)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, fmt.Errorf("generate pepper: %w", err)
+	}
+	if err := ValidatePepper(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// EncodePepper renders pepper bytes as the on-disk file content: one
+// base64 line plus a newline, which LoadPepper trims.
+func EncodePepper(pepper []byte) string {
+	return base64.StdEncoding.EncodeToString(pepper) + "\n"
 }
 
 // ValidatePepper checks pepper bytes without writing them to disk.

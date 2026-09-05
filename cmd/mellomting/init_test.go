@@ -694,8 +694,8 @@ version: 1
 		if _, err := renderInitArtifacts(args, discovery.Result{Models: map[string][]string{"m": {"local"}}}); err != nil {
 			t.Fatal(err)
 		}
-		if got != initPepperBytes {
-			t.Fatalf("pepper length = %d, want %d", got, initPepperBytes)
+		if got != auth.PepperBytes {
+			t.Fatalf("pepper length = %d, want %d", got, auth.PepperBytes)
 		}
 	})
 
