@@ -12,6 +12,7 @@ package proxy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -189,14 +190,14 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 	}()
 
-	fail := func(status int, typ, code, msg, class string) {
-		out.status, out.class = status, class
-		apierr.Write(q.W, status, typ, code, msg)
+	fail := func(e apiError) {
+		out.status, out.class = e.status, e.class
+		apierr.Write(q.W, e.status, e.typ, e.code, e.msg)
 	}
 
 	// 1. Draining admission (PLAN §74.2).
 	if p.Draining() {
-		fail(503, "overload_error", "server_overloaded", "server is shutting down", "overload")
+		fail(errDraining)
 		return
 	}
 
@@ -209,8 +210,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	if o.method == "POST" {
 		enc := q.R.Header.Get("Content-Encoding")
 		if enc != "" && !strings.EqualFold(enc, "identity") {
-			fail(415, "invalid_request_error", "unsupported_media_type",
-				"only identity request encoding is supported", "bad_request")
+			fail(errUnsupported)
 			return
 		}
 		// Reserve the byte budget for the body BEFORE it is read and decoded
@@ -232,15 +232,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		maxBody := int64(p.cfg.Server.MaxBodyBytes)
 		if cl := q.R.ContentLength; cl > 0 && cl <= maxBody {
 			if !p.budget.Acquire(cl) {
-				fail(503, "overload_error", "server_overloaded",
-					"server is overloaded", "overload")
+				fail(errOverloaded)
 				return
 			}
 			reserve = cl
 		} else if cl < 0 {
 			if !p.budget.Acquire(maxBody) {
-				fail(503, "overload_error", "server_overloaded",
-					"server is overloaded", "overload")
+				fail(errOverloaded)
 				return
 			}
 			reserve = maxBody
@@ -248,13 +246,11 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		var rerr error
 		body, rerr = readBodyLimited(q.R, p.cfg.Server.MaxBodyBytes)
 		if errors.Is(rerr, errBodyTooLarge) {
-			fail(413, "invalid_request_error", "body_too_large",
-				"request body exceeds the size limit", "bad_request")
+			fail(errBodyTooBig)
 			return
 		}
 		if rerr != nil {
-			fail(400, "invalid_request_error", "body_unreadable",
-				"request body could not be read", "bad_request")
+			fail(errBodyUnread)
 			return
 		}
 		if n := int64(len(body)); n < reserve {
@@ -274,16 +270,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.model = publicModel
 		switch {
 		case errors.Is(perr, errJSON):
-			fail(400, "invalid_request_error", "invalid_json",
-				"request body is not a valid JSON object", "bad_request")
+			fail(errBadJSON)
 			return
 		case errors.Is(perr, errMissingModel):
-			fail(400, "invalid_request_error", "missing_model",
-				"the model field is required", "bad_request")
+			fail(errNoModel)
 			return
 		case errors.Is(perr, errModelNotString):
-			fail(400, "invalid_request_error", "invalid_model",
-				"the model field must be a string", "bad_request")
+			fail(errModelType)
 			return
 		}
 		// OpenAI never streams non-generative endpoints (FIX-03/N3):
@@ -291,15 +284,13 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// misrouted SSE response charge zero tokens. Fail closed with a
 		// 4xx before any accounting or forwarding happens.
 		if stream && !o.generative {
-			fail(400, "invalid_request_error", "stream_not_supported",
-				"streaming is not supported for this endpoint", "bad_request")
+			fail(errNoStream)
 			return
 		}
 		// Do not reveal whether the model exists (PLAN §31): unknown
 		// and not-allowed read identically.
 		if !q.Key.Allows(publicModel) || !p.router.Has(publicModel) {
-			fail(404, "invalid_request_error", "model_not_found_or_not_allowed",
-				"model not found or not allowed", "authz")
+			fail(errModelDenied)
 			return
 		}
 		// Endpoint/model-type agreement (N12): an embedding model is not
@@ -309,14 +300,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		switch p.router.TypeOf(publicModel) {
 		case "embedding":
 			if o.generative {
-				fail(400, "invalid_request_error", "model_type_mismatch",
-					"the requested model is not a generation model", "bad_request")
+				fail(errNotGenerate)
 				return
 			}
 		case "generation":
 			if o.endpoint == "embeddings" {
-				fail(400, "invalid_request_error", "model_type_mismatch",
-					"the requested model is not an embedding model", "bad_request")
+				fail(errNotEmbed)
 				return
 			}
 		}
@@ -328,8 +317,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				// name the model the ACL and output cap were checked
 				// against. A mismatch reads as a miss (PLAN §31).
 				if !ok || m != publicModel {
-					fail(404, "invalid_request_error", "response_not_found",
-						"previous response not found", "affinity")
+					fail(errPrevNotFound)
 					return
 				}
 				fixedBackend = b
@@ -345,8 +333,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// model the response was created under.
 		b, m, ok := p.affinity.Get(q.Key.ID, q.ResponseID)
 		if !ok || !q.Key.Allows(m) {
-			fail(404, "invalid_request_error", "response_not_found",
-				"response not found", "affinity")
+			fail(errRespNotFound)
 			return
 		}
 		fixedBackend = b
@@ -358,8 +345,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// route layer also validates it) so it can never inject a path
 		// or host into the backend URL.
 		if !isValidResponseID(q.ResponseID) {
-			fail(404, "invalid_request_error", "response_not_found",
-				"response not found", "bad_request")
+			fail(errRespBadID)
 			return
 		}
 		o.path = "/v1/responses/" + q.ResponseID
@@ -386,20 +372,16 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		prepared, reservation, injectedUsage, perr = prepareOutbound(body, o, cap, stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
 		switch {
 		case errors.Is(perr, errCapExceeded):
-			fail(400, "invalid_request_error", "output_limit_exceeded",
-				"requested output tokens exceed the model policy cap", "bad_request")
+			fail(errOutputCapExceeded)
 			return
 		case errors.Is(perr, errCapInvalid):
-			fail(400, "invalid_request_error", "invalid_output_limit",
-				"output limit must be a non-negative integer", "bad_request")
+			fail(errOutputLimitInvalid)
 			return
 		case errors.Is(perr, errNotJSONObject):
-			fail(400, "invalid_request_error", "invalid_json",
-				"request body is not a valid JSON object", "bad_request")
+			fail(errBadJSON)
 			return
 		case perr != nil:
-			fail(400, "invalid_request_error", "invalid_json",
-				"request body could not be normalized", "bad_request")
+			fail(errNotNormal)
 			return
 		}
 		if p.quota != nil {
@@ -408,8 +390,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				// Every proxy 429 carries Retry-After (T-Q12). No window
 				// reset is computed here, so use a conservative default.
 				q.W.Header().Set("Retry-After", apierr.DefaultRetryAfter)
-				fail(429, "rate_limit_error", "token_quota_exceeded",
-					"token quota exceeded for this window", "token_quota")
+				fail(errQuota)
 				return
 			}
 		}
@@ -458,11 +439,10 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		if backendName == "" {
 			t, serr := p.router.Select(publicModel, tried)
 			if serr != nil {
-				if lastErr != nil && retryableBackendError(lastErr) && lastFailed != "" {
+				if lastErr != nil && classifyBackendError(lastErr).retryable && lastFailed != "" {
 					backendName = lastFailed
 				} else if attempt == 0 {
-					fail(503, "overload_error", "server_overloaded",
-						"no backend is available", "no_backend_available")
+					fail(errNoBackend)
 					return
 				} else {
 					break // budget exhausted below
@@ -477,8 +457,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			if up != "" {
 				var rerr error
 				if bd, rerr = rewriteModel(prepared, up); rerr != nil {
-					fail(400, "invalid_request_error", "invalid_json",
-						"request body could not be normalized", "bad_request")
+					fail(errNotNormal)
 					return
 				}
 			}
@@ -497,7 +476,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 		client, ok := p.clients[backendName]
 		if !ok {
-			fail(500, "api_error", "internal", "internal error", "internal_error")
+			fail(errInternal)
 			return
 		}
 		out.backend = backendName
@@ -525,10 +504,10 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 					lastRetryAfter = ra
 				}
 			}
-			if retryableBackendError(err) {
+			if f := classifyBackendError(err); f.retryable {
 				// Connection-level failures poison the passive-health
 				// state for subsequent requests (PLAN §70).
-				if connectionLevelError(err) {
+				if f.poisonsHealth {
 					p.router.RecordFailure(backendName)
 				}
 				tried = append(tried, backendName)
@@ -617,103 +596,21 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 
 	// Budget exhausted or a non-retryable failure: emit the sanitized
-	// class of the last error (PLAN §43, §72).
+	// class of the last error (PLAN §43, §72). Exactly one error object
+	// is emitted per terminal error (X7), which one classification and
+	// one fail now make structural.
 	if lastErr != nil {
-		if up, ok := errors.AsType[*backend.Upstream](lastErr); ok {
-			switch {
-			case up.Status == 429:
-				// Forward the upstream's Retry-After when it sent one,
-				// else a conservative default (T-Q12).
-				ra := lastRetryAfter
-				if ra == "" {
-					ra = apierr.DefaultRetryAfter
-				}
-				q.W.Header().Set("Retry-After", ra)
-				fail(429, "rate_limit_error", "upstream_rate_limited",
-					"upstream is rate limited", "backend_429")
-			case up.Status >= 500:
-				fail(502, "api_error", "upstream_unavailable",
-					"upstream is unavailable", "backend_5xx")
-			default:
-				// A backend 3xx is deliberately terminal here: redirects
-				// are not followed, the status is a client-side error
-				// class, and the response maps to a sanitized
-				// upstream_rejected (backend_4xx). A redirecting backend
-				// is logged as a client error; nothing about its
-				// location leaks to the client.
-				fail(400, "invalid_request_error", "upstream_rejected",
-					"upstream rejected the request", "backend_4xx")
-			}
-			// Exactly one error object is emitted per terminal error.
-			// Without this return the second switch below ran again,
-			// writing a second concatenated JSON object and
-			// overwriting out.status/out.class (X7).
-			return
+		f := classifyBackendError(lastErr)
+		if f.resp == errUpstreamRateLimited {
+			// Forward the upstream's Retry-After when it sent one, else a
+			// conservative default (T-Q12).
+			q.W.Header().Set("Retry-After", cmp.Or(lastRetryAfter, apierr.DefaultRetryAfter))
 		}
-		switch {
-		case errors.Is(lastErr, backend.ErrQueueFull):
-			fail(503, "overload_error", "server_overloaded",
-				"server is overloaded", "queue_full")
-		case errors.Is(lastErr, backend.ErrDialTimeout),
-			errors.Is(lastErr, backend.ErrHeaderTimeout),
-			errors.Is(lastErr, backend.ErrTimeout):
-			fail(504, "api_error", "upstream_timeout", "upstream timed out", "backend_timeout")
-		case errors.Is(lastErr, backend.ErrConnect):
-			fail(502, "api_error", "upstream_unavailable",
-				"upstream is unavailable", "backend_connect")
-		case errors.Is(lastErr, backend.ErrTooLarge):
-			fail(502, "api_error", "upstream_unavailable",
-				"upstream is unavailable", "backend_5xx")
-		case errors.Is(lastErr, backend.ErrPolicy):
-			fail(500, "api_error", "internal", "internal error", "policy")
-		default:
-			fail(502, "api_error", "upstream_unavailable",
-				"upstream is unavailable", "backend_5xx")
-		}
+		fail(f.resp)
 	}
 	// Record the failed request (PLAN §41): no usage was produced.
 	p.account(q, o, publicModel, start, out.status, out.backend, accounting.Usage{}, accounting.UsageUnknown, out.retries, 0)
 	out.accounted = true
-}
-
-// retryableBackendError reports whether a pre-stream failure is on the
-// PLAN §23 retry list: connection failure, connection timeout, queue
-// exhaustion (fallback), or upstream 429/502/503/504. ErrHeaderTimeout
-// is deliberately NOT on that list: it is a latency/capacity signal and
-// retrying re-issues a full generation that cannot succeed within the
-// header bound (X6).
-func retryableBackendError(err error) bool {
-	if up, ok := errors.AsType[*backend.Upstream](err); ok {
-		switch up.Status {
-		case 429, 502, 503, 504:
-			return true
-		}
-		return false
-	}
-	switch {
-	case errors.Is(err, backend.ErrConnect):
-	case errors.Is(err, backend.ErrDialTimeout):
-	case errors.Is(err, backend.ErrQueueFull):
-	default:
-		return false
-	}
-	return true
-}
-
-// connectionLevelError reports whether the failure poisons the passive
-// health state (PLAN §70): the backend refused or dropped the
-// connection. A 5xx response, a queue-full admission, or a header
-// timeout (a latency/capacity signal) does not mean the backend is down
-// — notably a header timeout must not cascade a cooldown across every
-// model/key sharing the backend (X6).
-func connectionLevelError(err error) bool {
-	switch {
-	case errors.Is(err, backend.ErrConnect):
-	case errors.Is(err, backend.ErrDialTimeout):
-	default:
-		return false
-	}
-	return true
 }
 
 // sleepBackoff sleeps the retry backoff for attempt n (1-based retries)

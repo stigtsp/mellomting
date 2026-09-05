@@ -827,19 +827,35 @@ func TestRetryAndHealthClassification(t *testing.T) {
 		err    error
 		retry  bool
 		poison bool
+		status int
+		class  string
 	}{
-		{backend.ErrConnect, true, true},
-		{backend.ErrDialTimeout, true, true},
-		{backend.ErrHeaderTimeout, false, false},
-		{backend.ErrTimeout, false, false},
-		{backend.ErrQueueFull, true, false},
+		{backend.ErrConnect, true, true, 502, "backend_connect"},
+		{backend.ErrDialTimeout, true, true, 504, "backend_timeout"},
+		{backend.ErrHeaderTimeout, false, false, 504, "backend_timeout"},
+		{backend.ErrTimeout, false, false, 504, "backend_timeout"},
+		{backend.ErrQueueFull, true, false, 503, "queue_full"},
+		{backend.ErrTooLarge, false, false, 502, "backend_5xx"},
+		{backend.ErrPolicy, false, false, 500, "policy"},
+		{&backend.Upstream{Status: 429}, true, false, 429, "backend_429"},
+		{&backend.Upstream{Status: 503}, true, false, 502, "backend_5xx"},
+		{&backend.Upstream{Status: 500}, false, false, 502, "backend_5xx"},
+		{&backend.Upstream{Status: 404}, false, false, 400, "backend_4xx"},
+		{&backend.Upstream{Status: 302}, false, false, 400, "backend_4xx"},
 	}
 	for _, tc := range cases {
-		if got := retryableBackendError(tc.err); got != tc.retry {
-			t.Errorf("retryableBackendError(%v) = %v, want %v", tc.err, got, tc.retry)
+		f := classifyBackendError(tc.err)
+		if f.retryable != tc.retry {
+			t.Errorf("classify(%v).retryable = %v, want %v", tc.err, f.retryable, tc.retry)
 		}
-		if got := connectionLevelError(tc.err); got != tc.poison {
-			t.Errorf("connectionLevelError(%v) = %v, want %v", tc.err, got, tc.poison)
+		if f.poisonsHealth != tc.poison {
+			t.Errorf("classify(%v).poisonsHealth = %v, want %v", tc.err, f.poisonsHealth, tc.poison)
+		}
+		if f.resp.status != tc.status {
+			t.Errorf("classify(%v).status = %d, want %d", tc.err, f.resp.status, tc.status)
+		}
+		if f.resp.class != tc.class {
+			t.Errorf("classify(%v).class = %q, want %q", tc.err, f.resp.class, tc.class)
 		}
 	}
 }

@@ -112,8 +112,8 @@ uncommitted changes or a failing check.
 | C2 | one client-error envelope | low | complete |
 | C3 | one atomic file replace | med | complete |
 | C4 | one egress-policy builder and one set of listener predicates | low | complete |
-| C5 | one `ensureFile` in `internal/systemd` | low | pending |
-| C6 | one pepper generator | low | pending |
+| C5 | one `ensureFile` in `internal/systemd` | low | complete |
+| C6 | one pepper generator | low | complete |
 | C7 | shared `internal/testsupport` | low-med | pending |
 | D1 | one backend-error classification | low | pending |
 | D2 | one request outcome, settled once | med | pending |
