@@ -67,7 +67,7 @@ func BenchmarkAffinityPutEmpty(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		a.Put("K", keys[i%len(keys)], "b1")
+		a.Put("K", keys[i%len(keys)], "b1", "gen-1")
 	}
 }
 
@@ -82,11 +82,11 @@ func BenchmarkAffinityPutFull(b *testing.B) {
 		keys[i] = fmt.Sprintf("resp_%d", i)
 	}
 	for i := 0; i < 10000; i++ {
-		a.Put("K", keys[i], "b1")
+		a.Put("K", keys[i], "b1", "gen-1")
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		a.Put("K", keys[i%len(keys)], "b1")
+		a.Put("K", keys[i%len(keys)], "b1", "gen-1")
 	}
 }

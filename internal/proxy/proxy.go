@@ -321,13 +321,16 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		if o.capture {
 			if prev, ok := stringField(body, "previous_response_id"); ok {
-				b, ok := p.affinity.Get(q.Key.ID, prev)
-				if !ok {
+				b, m, ok := p.affinity.Get(q.Key.ID, prev)
+				// The owning backend is authoritative (PLAN §21.3) and
+				// pinning it skips routing, so the continuation must
+				// name the model the ACL and output cap were checked
+				// against. A mismatch reads as a miss (PLAN §31).
+				if !ok || m != publicModel {
 					fail(404, "invalid_request_error", "response_not_found",
 						"previous response not found", "affinity")
 					return
 				}
-				// The owning backend is authoritative (PLAN §21.3).
 				fixedBackend = b
 			}
 		}
@@ -337,13 +340,15 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// key must not be able to retrieve or cancel another key's
 		// response even if it knows the ID, so on an affinity miss we
 		// fail closed rather than forward on backend reachability.
-		if b, ok := p.affinity.Get(q.Key.ID, q.ResponseID); ok {
-			fixedBackend = b
-		} else {
+		// Entries outlive a reload, so the ACL is re-checked against the
+		// model the response was created under.
+		b, m, ok := p.affinity.Get(q.Key.ID, q.ResponseID)
+		if !ok || !q.Key.Allows(m) {
 			fail(404, "invalid_request_error", "response_not_found",
 				"response not found", "affinity")
 			return
 		}
+		fixedBackend = b
 	}
 
 	if o.respID {
@@ -545,7 +550,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// process).
 		if res.Body != nil {
 			var usage accounting.Usage
-			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, &usage, injectedUsage)
+			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, publicModel, &usage, injectedUsage)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
 			out.retries = retried
 			usageStatus := accounting.UsageUnknown
@@ -610,7 +615,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		if o.capture {
 			if id := topLevelID(res.BodyBytes); isValidResponseID(id) {
-				p.affinity.Put(q.Key.ID, id, backendName)
+				p.affinity.Put(q.Key.ID, id, backendName, publicModel)
 			}
 		}
 		return
@@ -756,7 +761,7 @@ func (p *Proxy) sleepBackoff(ctx context.Context, attempt int) bool {
 // stream_idle_timeout, client write-idle is bounded by
 // stream_write_timeout, and any terminal path cancels the upstream
 // context.
-func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName string, usage *accounting.Usage, injectedUsage bool) (int, int, string) {
+func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName, publicModel string, usage *accounting.Usage, injectedUsage bool) (int, int, string) {
 	defer res.Close()
 	defer ucancel() // tear down the upstream on every exit path.
 	flusher, _ := q.W.(http.Flusher)
@@ -855,7 +860,7 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		if o.capture && !captured {
 			if data, ok := dataField(ev); ok {
 				if id := responseIDFromData(data); isValidResponseID(id) {
-					p.affinity.Put(q.Key.ID, id, backendName)
+					p.affinity.Put(q.Key.ID, id, backendName, publicModel)
 					captured = true
 				}
 			}

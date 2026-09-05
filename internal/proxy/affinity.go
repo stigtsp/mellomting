@@ -8,10 +8,12 @@ import (
 // affinity is the bounded in-memory Responses API affinity table
 // (PLAN §21.1, §21.4).
 //
-// It maps (API key ID, public response ID) -> (backend, expiry). Records
-// are bound to the key that created the response: a different key cannot
-// retrieve or cancel it even if it learns the ID (PLAN §21.1). The table
-// is cleared on restart by design (PLAN §21.4).
+// It maps (API key ID, public response ID) -> (backend, public model,
+// expiry). Records are bound to the key that created the response: a
+// different key cannot retrieve or cancel it even if it learns the ID
+// (PLAN §21.1). The table is cleared on restart by design (PLAN §21.4).
+// The public model is stored because a pinned backend bypasses routing;
+// callers re-check it against the request's ACL and policy.
 
 type affKey struct {
 	KeyID  string
@@ -20,6 +22,7 @@ type affKey struct {
 
 type affVal struct {
 	Backend string
+	Model   string
 	Expiry  time.Time
 }
 
@@ -43,20 +46,23 @@ func newAffinity(ttl time.Duration, max int) *affinity {
 	}
 }
 
-// Put records (keyID, respID) -> backend, evicting if the table is full.
-func (a *affinity) Put(keyID, respID, backend string) {
+// Put records (keyID, respID) -> (backend, publicModel), evicting if the
+// table is full.
+func (a *affinity) Put(keyID, respID, backend, publicModel string) {
 	now := a.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.evictLocked(now)
 	a.table[affKey{KeyID: keyID, RespID: respID}] = affVal{
 		Backend: backend,
+		Model:   publicModel,
 		Expiry:  now.Add(a.ttl),
 	}
 }
 
-// Get resolves the owning backend for (keyID, respID).
-func (a *affinity) Get(keyID, respID string) (string, bool) {
+// Get resolves the owning backend and the public model the response was
+// created under, for (keyID, respID).
+func (a *affinity) Get(keyID, respID string) (backend, publicModel string, ok bool) {
 	now := a.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -65,9 +71,9 @@ func (a *affinity) Get(keyID, respID string) (string, bool) {
 		if ok {
 			delete(a.table, affKey{KeyID: keyID, RespID: respID})
 		}
-		return "", false
+		return "", "", false
 	}
-	return v.Backend, true
+	return v.Backend, v.Model, true
 }
 
 // evictProbeBudget bounds the work of one eviction: when the table is at

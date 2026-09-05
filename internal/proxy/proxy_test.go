@@ -894,7 +894,7 @@ func TestResponsesAffinityLifecycle(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("create status = %d", rec.Code)
 	}
-	if b, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
+	if b, _, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
 		t.Fatalf("affinity not recorded: ok=%v b=%q", ok, b)
 	}
 
@@ -953,7 +953,7 @@ func TestResponsesAffinityOversizedIDSkipped(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("create status = %d", rec.Code)
 	}
-	if _, ok := p.affinity.Get(key.ID, bigID); ok {
+	if _, _, ok := p.affinity.Get(key.ID, bigID); ok {
 		t.Fatalf("oversized id was stored in the affinity table")
 	}
 
@@ -963,7 +963,7 @@ func TestResponsesAffinityOversizedIDSkipped(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("second create status = %d", rec.Code)
 	}
-	if b, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
+	if b, _, ok := p.affinity.Get(key.ID, "resp_123"); !ok || b != "b1" {
 		t.Fatalf("legitimate affinity lost after oversized id: ok=%v b=%q", ok, b)
 	}
 }
@@ -979,41 +979,41 @@ func TestAffinityEviction(t *testing.T) {
 	a.now = func() time.Time { return now }
 
 	// A third Put past the bound evicts the oldest (resp_1).
-	a.Put("K1", "resp_1", "b1")
+	a.Put("K1", "resp_1", "b1", "gen-1")
 	now = now.Add(100 * time.Millisecond)
-	a.Put("K1", "resp_2", "b2")
+	a.Put("K1", "resp_2", "b2", "gen-1")
 	now = now.Add(100 * time.Millisecond)
-	a.Put("K1", "resp_3", "b1")
-	if _, ok := a.Get("K1", "resp_1"); ok {
+	a.Put("K1", "resp_3", "b1", "gen-1")
+	if _, _, ok := a.Get("K1", "resp_1"); ok {
 		t.Fatal("resp_1 was not evicted when the table exceeded its bound")
 	}
-	if _, ok := a.Get("K1", "resp_2"); !ok {
+	if _, _, ok := a.Get("K1", "resp_2"); !ok {
 		t.Fatal("resp_2 was wrongly evicted")
 	}
 
 	// TTL expiry on access: after the TTL passes, a record is not found.
 	now = now.Add(2 * time.Second)
-	if _, ok := a.Get("K1", "resp_2"); ok {
+	if _, _, ok := a.Get("K1", "resp_2"); ok {
 		t.Fatal("resp_2 still present after TTL expiry")
 	}
-	if _, ok := a.Get("K1", "resp_3"); ok {
+	if _, _, ok := a.Get("K1", "resp_3"); ok {
 		t.Fatal("resp_3 still present after TTL expiry")
 	}
 
 	// Sweep-on-Put: fill the table again, let both records expire, then
 	// Put — the expired entries are swept before the new record lands.
-	a.Put("K1", "resp_4", "b1")
+	a.Put("K1", "resp_4", "b1", "gen-1")
 	now = now.Add(100 * time.Millisecond)
-	a.Put("K1", "resp_5", "b2")
+	a.Put("K1", "resp_5", "b2", "gen-1")
 	now = now.Add(2 * time.Second)
-	a.Put("K1", "resp_6", "b1")
-	if _, ok := a.Get("K1", "resp_4"); ok {
+	a.Put("K1", "resp_6", "b1", "gen-1")
+	if _, _, ok := a.Get("K1", "resp_4"); ok {
 		t.Fatal("expired resp_4 not swept on Put")
 	}
-	if _, ok := a.Get("K1", "resp_5"); ok {
+	if _, _, ok := a.Get("K1", "resp_5"); ok {
 		t.Fatal("expired resp_5 not swept on Put")
 	}
-	if b, ok := a.Get("K1", "resp_6"); !ok || b != "b1" {
+	if b, _, ok := a.Get("K1", "resp_6"); !ok || b != "b1" {
 		t.Fatalf("fresh Put after sweep: ok=%v b=%q", ok, b)
 	}
 }
@@ -1052,7 +1052,7 @@ func TestResponsesStreamCapture(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if b, ok := p.affinity.Get("K1", "resp_abc"); !ok || b != "b1" {
+	if b, _, ok := p.affinity.Get("K1", "resp_abc"); !ok || b != "b1" {
 		t.Fatalf("stream capture failed: ok=%v b=%q", ok, b)
 	}
 }
@@ -1166,7 +1166,7 @@ func TestPumpPanicContained(t *testing.T) {
 	res := &backend.Result{Status: http.StatusOK, Body: io.NopCloser(panickingReader{})}
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	status, _, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	status, _, cls := p.pump(q, res, opChat, cancel, "b1", "gen-1", &accounting.Usage{}, false)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
@@ -1203,7 +1203,7 @@ func TestStreamCumulativeBound(t *testing.T) {
 	res := &backend.Result{Status: http.StatusOK, Body: pr}
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", "gen-1", &accounting.Usage{}, false)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
@@ -1233,7 +1233,7 @@ func TestStreamCumulativeBound(t *testing.T) {
 	res2 := &backend.Result{Status: http.StatusOK, Body: pr2}
 	_, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
-	status2, _, cls2 := p2.pump(q2, res2, opChat, cancel2, "b1", &accounting.Usage{}, false)
+	status2, _, cls2 := p2.pump(q2, res2, opChat, cancel2, "b1", "gen-1", &accounting.Usage{}, false)
 	if status2 != http.StatusOK || cls2 != "ok" {
 		t.Fatalf("under-cap stream: status=%d class=%q, want 200/ok", status2, cls2)
 	}
@@ -1321,7 +1321,7 @@ func TestPumpClientWriteDeadlineBounded(t *testing.T) {
 	cancel := func() { cancelled = true }
 
 	start := time.Now()
-	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", &accounting.Usage{}, false)
+	status, bytesOut, cls := p.pump(q, res, opChat, cancel, "b1", "gen-1", &accounting.Usage{}, false)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
@@ -1674,6 +1674,102 @@ func TestManyShortKeysBodyRejected(t *testing.T) {
 	}
 	if f.lastPath != "" {
 		t.Fatal("many-short-keys body reached the backend")
+	}
+}
+
+// T-A1: a pinned affinity backend skips routing, so the pin is bound to
+// the public model the response was created under. A continuation must
+// name that model, and a retrieve/cancel must still be allowed it —
+// otherwise a key could run one model on another's ACL and output cap,
+// or keep reaching a model revoked since the entry was made.
+func TestAffinityPinBoundToModel(t *testing.T) {
+	t.Parallel()
+	var n1, n2 atomic.Int64
+	f1 := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		n1.Add(1)
+		responsesJSON(w, r)
+	})
+	f2 := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		n2.Add(1)
+		responsesJSON(w, r)
+	})
+
+	cfg := testConfig(f1.server.URL)
+	b2 := cfg.Backends["b1"]
+	b2.BaseURL = f2.server.URL
+	b2.UpstreamModel = "Upstream/Model2"
+	cfg.Backends["b2"] = b2
+	cfg.Models["gen-2"] = config.Model{
+		Type:     "generation",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b2", Weight: 1}},
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clients := map[string]*backend.Client{}
+	for _, name := range []string{"b1", "b2"} {
+		c, err := backend.New(backend.Options{
+			Name:             name,
+			Cfg:              cfg.Backends[name],
+			Network:          backend.Policy{Mode: "loopback-only"},
+			MaxResponseBytes: cfg.Server.MaxResponseBytes,
+			Log:              discardLogger(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients[name] = c
+	}
+	p, err := New(cfg, router, clients, discardLogger(), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := testKey("gen-1", "gen-2")
+
+	// Create on gen-1 pins resp_123 to b1.
+	if rec := run(t, p, http.MethodPost, "/v1/responses", `{"model":"gen-1","input":"hi"}`, key); rec.Code != 200 {
+		t.Fatalf("create status = %d", rec.Code)
+	}
+	if n1.Load() != 1 {
+		t.Fatalf("create did not reach b1 (n1=%d)", n1.Load())
+	}
+
+	// Continuing under gen-2 must not borrow gen-1's pinned backend,
+	// even though the key is allowed both models.
+	rec := run(t, p, http.MethodPost, "/v1/responses",
+		`{"model":"gen-2","previous_response_id":"resp_123","input":"hi"}`, key)
+	if rec.Code != 404 {
+		t.Fatalf("cross-model continuation: status = %d, want 404", rec.Code)
+	}
+	if n1.Load() != 1 {
+		t.Fatal("cross-model continuation reached gen-1's backend under gen-2's ACL and cap")
+	}
+	if n2.Load() != 0 {
+		t.Fatal("cross-model continuation was forwarded at all")
+	}
+
+	// The same model continues normally.
+	if rec := run(t, p, http.MethodPost, "/v1/responses",
+		`{"model":"gen-1","previous_response_id":"resp_123","input":"hi"}`, key); rec.Code != 200 {
+		t.Fatalf("same-model continuation: status = %d, want 200", rec.Code)
+	}
+	if n1.Load() != 2 {
+		t.Fatalf("same-model continuation did not reach b1 (n1=%d)", n1.Load())
+	}
+
+	// Affinity entries outlive a reload: once gen-1 is revoked from the
+	// key, its responses are no longer retrievable or cancellable.
+	revoked := &auth.Key{ID: "K1", Name: "t", Enabled: true, Models: []string{"gen-2"}}
+	if rec := run(t, p, http.MethodGet, "/v1/responses/resp_123", "", revoked); rec.Code != 404 {
+		t.Fatalf("retrieve after revocation: status = %d, want 404", rec.Code)
+	}
+	if rec := run(t, p, http.MethodPost, "/v1/responses/resp_123/cancel", "", revoked); rec.Code != 404 {
+		t.Fatalf("cancel after revocation: status = %d, want 404", rec.Code)
+	}
+	if n1.Load() != 2 {
+		t.Fatal("a revoked model was reached through a stale affinity record")
 	}
 }
 

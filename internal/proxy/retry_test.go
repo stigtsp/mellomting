@@ -398,7 +398,7 @@ func TestResponsesStayOnOwningBackend(t *testing.T) {
 	if rec.Code != 200 || e.f2n.Load() != 0 {
 		t.Fatalf("create: status=%d b=%d (must land on b1)", rec.Code, e.f2n.Load())
 	}
-	if b, ok := e.p.affinity.Get("K1", "resp_123"); !ok || b != "b1" {
+	if b, _, ok := e.p.affinity.Get("K1", "resp_123"); !ok || b != "b1" {
 		t.Fatalf("affinity = %q ok=%v, want b1", b, ok)
 	}
 
