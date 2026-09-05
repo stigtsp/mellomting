@@ -58,6 +58,15 @@ func satAdd(a, b int64) int64 {
 // optionally reserving extra output capacity. It returns false plus a
 // machine-readable reason ("tokens_per_hour" or "tokens_per_day") when
 // the key is clearly over quota (PLAN §39). A limit of 0 means unlimited.
+//
+// The reservation is a lookahead, not a hold: nothing is recorded until
+// Settle, so N requests admitted concurrently all measure the same
+// settled total and can collectively settle up to N x reservation past
+// the limit before the next admission sees it. The per-key
+// concurrent_requests limit is what bounds N. This is why the contract
+// is "clearly over quota" rather than a precise gate — holding
+// reservations would need a release on every request exit path, which is
+// the failure mode the single deferred settle exists to avoid.
 // The reservation comparison is written to avoid overflow: settled +
 // reservation > limit is checked as reservation > limit || settled >
 // limit - reservation.
