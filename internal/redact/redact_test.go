@@ -22,7 +22,21 @@ func TestURL(t *testing.T) {
 		{"http://127.0.0.1:8001", "http://127.0.0.1:8001"},
 		{"", ""},
 		{"not-a-url", "not-a-url"},
-		{"user:pass@host", "user:pass@host"},
+		// A userinfo holding '/', '?' or '#' puts the first authority
+		// separator inside the credentials, so the split above lands in
+		// the middle of them. Returning the value verbatim here handed
+		// the password to whoever reads the operator error, which is the
+		// one thing this helper exists to prevent.
+		{"https://svc:aB3/xY9@10.0.0.5:8001/v1", "https://<redacted>@10.0.0.5:8001/v1"},
+		{"https://svc:p/w@10.0.0.5:8001", "https://<redacted>@10.0.0.5:8001"},
+		{"https://user:pass?tok@host", "https://<redacted>@host"},
+		{"https://user:pass#tok@host", "https://<redacted>@host"},
+		// A password containing '@' must not survive in the tail: the
+		// last '@' of the authority delimits the userinfo, not the first.
+		{"http://user:p@ss@host/v1", "http://<redacted>@host/v1"},
+		// Without a scheme separator there is no authority to isolate,
+		// so anything before an '@' is treated as credentials.
+		{"user:pass@host", "<redacted>@host"},
 	} {
 		if got := URL(tc.in); got != tc.want {
 			t.Errorf("URL(%q) = %q, want %q", tc.in, got, tc.want)

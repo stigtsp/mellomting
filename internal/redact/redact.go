@@ -16,20 +16,38 @@ const Marker = "<redacted>"
 // message with inlined credentials. net/url's URL.Redacted is not a
 // substitute — it requires a successful parse and masks only the
 // password.
+//
+// Ambiguity is resolved towards redacting: a helper that only ever runs
+// on a value suspected of carrying credentials must not answer "no
+// credentials here" by returning the value verbatim.
 func URL(raw string) string {
-	scheme, rest, ok := strings.Cut(raw, "://")
-	if !ok {
-		return raw
+	prefix, rest := "", raw
+	if scheme, after, ok := strings.Cut(raw, "://"); ok {
+		prefix, rest = scheme+"://", after
 	}
-	at := strings.Index(rest, "@")
+	// The authority ends at the first path, query, or fragment
+	// separator — assuming the userinfo holds none of them.
+	authority := rest
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		authority = rest[:end]
+	}
+	// Userinfo inside the authority. The LAST '@' delimits it, so a
+	// password containing '@' does not survive in the tail.
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		return prefix + Marker + "@" + rest[at+1:]
+	}
+	at := strings.LastIndex(rest, "@")
 	if at < 0 {
 		return raw
 	}
-	// Redact only when the '@' is part of the authority, before any
-	// path, query, or fragment separator — not an email-like string
-	// inside a path.
-	if slash := strings.IndexAny(rest, "/?#"); slash >= 0 && at > slash {
-		return raw
+	// No '@' in the authority but one after it: either the '@' really
+	// is in the path, or the userinfo itself held a '/', '?' or '#' and
+	// the split above cut through the credentials. A ':' in the
+	// authority is the tell — "user:pa/ss@host" splits to "user:pa" —
+	// and guessing wrong here emits the credential, so it guesses
+	// closed.
+	if strings.Contains(authority, ":") {
+		return prefix + Marker + "@" + rest[at+1:]
 	}
-	return scheme + "://" + Marker + "@" + rest[at+1:]
+	return raw
 }
