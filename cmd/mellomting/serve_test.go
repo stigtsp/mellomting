@@ -2650,3 +2650,97 @@ func TestServeMaxHeaderBytesRejected(t *testing.T) {
 		t.Fatalf("oversized header: status = %d (want 431)", resp.StatusCode)
 	}
 }
+
+// A SIGHUP reload must run the admission gates startup runs. serve
+// refuses to start with a token quota the configuration cannot charge
+// (T-A2), because such a quota looks applied and enforces nothing — but
+// the reload swapped the store without that check, so exactly the key
+// set startup would have refused could be installed into a running
+// daemon by hand-editing the users file and reloading.
+func TestReloadUsersRejectsUnenforceableQuota(t *testing.T) {
+	dir := shortTempDir(t)
+	be := fakeChatBackend(t)
+	usersPath := filepath.Join(dir, "users.yaml")
+	pepperPath := filepath.Join(dir, "auth.pepper")
+
+	pepper := []byte("pepper-requires-16-bytes!!")
+	if err := os.WriteFile(pepperPath, pepper, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, id, err := auth.Generate("e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No quota at start, so the daemon builds: this is the deployment
+	// the gate never saw a reason to complain about.
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys = append(uf.Keys, auth.Key{
+			ID: id, Name: "e2e",
+			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
+			Enabled:    true, Models: []string{"qwen-coder"},
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Parse(fmt.Appendf(nil, `version: 1
+
+server:
+  listen:
+    network: unix
+    address: %s
+    mode: "0660"
+
+auth:
+  users_file: %s
+  pepper_file: %s
+
+security:
+  landlock:
+    mode: disabled
+
+servers:
+  local-a:
+    url: %s
+
+models:
+  qwen-coder:
+    type: generation
+    strategy: single
+    upstream_model: Qwen/Qwen3-Coder
+    servers:
+      - local-a
+`, filepath.Join(dir, "mellomting.sock"), usersPath, pepperPath, be.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf bytes.Buffer
+	d, err := buildDaemon(cfg, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator adds a token budget by hand — the CLI has no flag for
+	// it — and applies it with `systemctl reload` instead of a restart.
+	// The model has no output cap and no unknown_usage_reservation is
+	// set, so nothing can charge a request whose usage goes unreported.
+	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys[0].Limits.TokensPerDay = 100000
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.reloadUsers()
+
+	out := logBuf.String()
+	if strings.Contains(out, "users reloaded") {
+		t.Fatalf("the reload installed a quota that can never be enforced: %s", out)
+	}
+	if !strings.Contains(out, "would count zero tokens against it") {
+		t.Fatalf("reload rejection message missing: %q", out)
+	}
+}

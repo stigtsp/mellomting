@@ -94,6 +94,7 @@ type Proxy struct {
 	budget      *budget
 	quota       *accounting.Quota  // token windows (PLAN §39); nil = disabled
 	acc         *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
+	usageOptIn  bool               // operator has not disabled stream_options.include_usage (§38)
 	ensureUsage bool               // inject stream_options.include_usage (§38)
 	draining    atomic.Bool
 }
@@ -112,6 +113,7 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 	if total <= 0 {
 		total = 1 << 20
 	}
+	usageOptIn := cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage
 	return &Proxy{
 		router:   router,
 		clients:  clients,
@@ -129,9 +131,19 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 		// a quota is in effect, so a quota-only deployment does not have
 		// to set it explicitly; the serve-time fail-closed check still
 		// keys off the explicit (non-nil) value.
-		ensureUsage: (cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage) &&
+		usageOptIn: usageOptIn,
+		ensureUsage: usageOptIn &&
 			(cfg.Accounting.Enabled || quotaConfigured),
 	}, nil
+}
+
+// keyQuotaConfigured reports whether this key carries a token budget.
+// The startup snapshot of "some key has a quota" cannot answer this: a
+// SIGHUP reload can introduce a budget on a key hours later, and a
+// stream admitted without stream_options.include_usage settles nothing
+// against it (PLAN §38, §39).
+func keyQuotaConfigured(k *auth.Key) bool {
+	return k != nil && (k.Limits.TokensPerHour > 0 || k.Limits.TokensPerDay > 0)
 }
 
 // BeginDraining makes the proxy reject new inferences during graceful
@@ -611,8 +623,12 @@ func (p *Proxy) prepare(q *Req, o operation, t target) (outbound, *apiError) {
 	if m, ok := p.cfg.Models[t.model]; ok {
 		cap = m.Policy.MaxOutputTokens
 	}
+	// The startup snapshot is a floor, not the whole answer: a key whose
+	// token budget arrived with a SIGHUP reload needs injection too, or
+	// its streams settle nothing and the budget never advances.
+	ensureUsage := p.ensureUsage || (p.usageOptIn && keyQuotaConfigured(q.Key))
 	reservation, injected, err := prepareOutbound(
-		t.fields, o, cap, t.stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
+		t.fields, o, cap, t.stream, ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
 	switch {
 	case errors.Is(err, errCapExceeded):
 		return ob, &errOutputCapExceeded

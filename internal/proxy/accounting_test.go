@@ -965,3 +965,68 @@ func TestUsageOnlyChunkSwallowedRegardlessOfParsedTokens(t *testing.T) {
 		})
 	}
 }
+
+// A token budget can arrive on a key long after startup, through a
+// SIGHUP users-file reload. The proxy sampled "some key has a quota"
+// once at construction and froze stream-usage injection there, so a
+// budget added later was never charged for streaming requests: the
+// backend was not asked for usage, the settle fell back to a zero
+// reservation, and the window never advanced — an unlimited key that
+// the operator believed was capped.
+func TestQuotaAddedAfterStartupSettlesStreamUsage(t *testing.T) {
+	f := newFakeVLLM(t, usageOnlyJSON)
+	quota := accounting.NewQuota()
+	cfg := testConfig(f.server.URL)
+	cfg.Accounting.Enabled = false
+	cfg.Models["gen-1"] = config.Model{
+		Type: "generation", Strategy: "single",
+		Policy:   config.ModelPolicy{MaxOutputTokens: 100000},
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// quotaConfigured=false: no key carried a budget when the process
+	// started.
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The reloaded key record carries one.
+	key := testKey()
+	key.Limits.TokensPerDay = 100000
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, key)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(f.lastBody, &body); err != nil {
+		t.Fatalf("backend body: %v", err)
+	}
+	if !body.StreamOptions.IncludeUsage {
+		t.Fatalf("include_usage not injected for a key whose quota arrived after startup: %s", f.lastBody)
+	}
+	// The 15 captured tokens must have been settled against the window.
+	now := time.Now()
+	if ok, _ := quota.Admit("K1", accounting.WindowLimit{TokensPerHour: 15, TokensPerDay: 100}, 0, now); !ok {
+		t.Fatal("expected admit: exactly 15 tokens settled")
+	}
+	if ok, _ := quota.Admit("K1", accounting.WindowLimit{TokensPerHour: 14, TokensPerDay: 100}, 0, now); ok {
+		t.Fatal("expected reject: the stream settled nothing against the quota")
+	}
+}

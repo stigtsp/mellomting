@@ -609,9 +609,18 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 // beyond the users file — the only secret read the Landlock policy grants
 // after startup (PLAN §30, §58). In-flight requests are unaffected; they
 // keep serving against the store they looked up (PLAN §74).
+//
+// The reload runs the same admission gates startup runs. A key set that
+// startup would have refused to serve must not slip in through a SIGHUP:
+// a token quota the configuration cannot charge is silently unlimited,
+// which is the opposite of what the operator who just wrote it expects.
 func (d *daemon) reloadUsers() {
 	users, err := auth.LoadUsers(d.cfg.Auth.UsersFile)
 	if err != nil {
+		d.logReloadFailed(err)
+		return
+	}
+	if err := checkQuotaEnforceable(d.cfg, users); err != nil {
 		d.logReloadFailed(err)
 		return
 	}
