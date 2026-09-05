@@ -294,6 +294,47 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
+// checkQuotaEnforceable fails closed when the configuration would leave a
+// per-key token quota unenforceable (PLAN §39). It is a pure function of
+// the configuration and the key store, so it runs before any client,
+// writer, or listener is built — both because a configuration error
+// should be reported before resources are opened, and because it is then
+// testable without them.
+func checkQuotaEnforceable(cfg *config.Config, users *auth.UsersFile) error {
+	hasQuota := quotaKeysConfigured(users.Keys)
+
+	// FIX-04/N10: ensure_stream_usage and unknown_usage_reservation are
+	// only meaningful when a per-key token quota is in effect. With
+	// accounting disabled and no quota anywhere, accepting them would be
+	// a silent no-op.
+	if !cfg.Accounting.Enabled && !hasQuota &&
+		(cfg.Accounting.EnsureStreamUsage != nil || cfg.Accounting.UnknownUsageReservation != 0) {
+		return fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require a per-key token quota (tokens_per_hour or tokens_per_day) when accounting is disabled; no key in %s carries one", cfg.Auth.UsersFile)
+	}
+
+	// A quota is only enforceable if a request whose usage the backend
+	// never reports still counts against it. The fallback amount is
+	// unknown_usage_reservation, or the model's output cap on a
+	// generation model; with both zero such a request counts zero, the
+	// quota never advances, and the limit is silently unlimited. An
+	// embedding model has no output cap to fall back to, so only the
+	// reservation can account for it.
+	if !hasQuota || cfg.Accounting.UnknownUsageReservation != 0 {
+		return nil
+	}
+	var uncounted []string
+	for name, m := range cfg.Models {
+		if m.Type == "embedding" || m.Policy.MaxOutputTokens == 0 {
+			uncounted = append(uncounted, name)
+		}
+	}
+	if len(uncounted) == 0 {
+		return nil
+	}
+	slices.Sort(uncounted)
+	return fmt.Errorf("a per-key token quota is configured in %s, but a request to model(s) %s whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, strings.Join(uncounted, ", "))
+}
+
 // quotaKeysConfigured reports whether any key carries a token budget, so
 // the daemon can warn when accounting is disabled but quotas would
 // otherwise apply (T-M5).
@@ -504,6 +545,11 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// whether usage records are written and replayed at startup. Startup
 	// is fail-closed: an unusable accounting file is a startup error
 	// rather than a silent reset.
+	if err := checkQuotaEnforceable(cfg, users); err != nil {
+		return nil, err
+	}
+	hasTokenQuota := quotaKeysConfigured(users.Keys)
+
 	quota := accounting.NewQuota()
 	var writer *accounting.Writer
 	if cfg.Accounting.Enabled {
@@ -530,41 +576,11 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			"fsync", cfg.Accounting.FSync,
 			"queue_size", cfg.Accounting.QueueSize,
 		)
-	} else if quotaKeysConfigured(users.Keys) {
+	} else if hasTokenQuota {
 		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
 	}
 
-	// FIX-04/N10: ensure_stream_usage and unknown_usage_reservation are
-	// only meaningful when a per-key token quota is in effect. With
-	// accounting disabled and no quota anywhere, accepting them would be
-	// a silent no-op; fail closed at startup.
-	if !cfg.Accounting.Enabled &&
-		(cfg.Accounting.EnsureStreamUsage != nil || cfg.Accounting.UnknownUsageReservation != 0) &&
-		!quotaKeysConfigured(users.Keys) {
-		return nil, fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require a per-key token quota (tokens_per_hour or tokens_per_day) when accounting is disabled; no key in %s carries one", cfg.Auth.UsersFile)
-	}
-
-	// A token quota is only enforceable if a request whose usage the
-	// backend never reports still counts against it (PLAN §39). The
-	// fallback amount is unknown_usage_reservation, or the model's output
-	// cap on a generation model; with both zero such a request counts
-	// zero, the quota never advances, and the limit is silently
-	// unlimited. An embedding model has no output cap to fall back to, so
-	// only the reservation can account for it.
-	if quotaKeysConfigured(users.Keys) && cfg.Accounting.UnknownUsageReservation == 0 {
-		var uncounted []string
-		for name, m := range cfg.Models {
-			if m.Type == "embedding" || m.Policy.MaxOutputTokens == 0 {
-				uncounted = append(uncounted, name)
-			}
-		}
-		if len(uncounted) > 0 {
-			slices.Sort(uncounted)
-			return nil, fmt.Errorf("a per-key token quota is configured in %s, but a request to model(s) %s whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, strings.Join(uncounted, ", "))
-		}
-	}
-
-	prox, err := proxy.New(cfg, router, clients, log, quota, writer, quotaKeysConfigured(users.Keys))
+	prox, err := proxy.New(cfg, router, clients, log, quota, writer, hasTokenQuota)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}

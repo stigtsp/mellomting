@@ -117,7 +117,7 @@ uncommitted changes or a failing check.
 | C7 | shared `internal/testsupport` | low-med | pending |
 | D1 | one backend-error classification | low | complete |
 | D2 | one request outcome, settled once | med | complete |
-| D3 | split `dispatch` into named phases | med | pending |
+| D3 | split `dispatch` into named phases | med | complete |
 | D4 | immutable `operation`; stop logging the response ID | low | complete |
 | D5 | table-driven client errors | low | complete |
 | D6 | extract the startup consistency checks from `buildDaemon` | low-med | pending |
