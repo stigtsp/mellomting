@@ -1802,3 +1802,29 @@ func TestParseWildcardListener(t *testing.T) {
 		})
 	}
 }
+
+// A trailing colon splits into a host and an empty port, so
+// net.SplitHostPort alone accepts it. config check must reject what
+// backend.parseBaseURL rejects, or an operator gets "valid" from the
+// pre-flight and a refusal from serve.
+func TestBaseURLEmptyPortRejected(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`
+version: 1
+` + minimalServer + `
+servers:
+  qa:
+    url: "http://127.0.0.1:"
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`))
+	if err == nil {
+		t.Fatal("config check accepted a base_url with an empty port")
+	}
+	if !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("err = %v, want a base_url complaint", err)
+	}
+}

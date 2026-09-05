@@ -762,20 +762,23 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 	parser := newSSEParser(res.Body)
 
 	// One reader for the whole stream, rather than a goroutine, channel
-	// and timer per event. The channel is unbuffered, so back-pressure
-	// and the memory bound are exactly as before: the reader never runs
-	// ahead of the relay.
+	// and timer per event. The reader waits for a token before each
+	// read, so it never runs ahead of the relay: exactly one event is
+	// resident at a time, as with the per-event goroutine, and the idle
+	// timer below bounds the read itself rather than the read plus the
+	// previous event's relay.
 	//
 	// done is closed on every exit path below, so the reader can never
 	// block forever on a send the pump abandoned — an idle timeout
-	// leaves it parked in the select, not leaked. The reader may still
-	// be inside a network read when the pump leaves; the deferred
-	// ucancel tears the upstream down, which unblocks it.
+	// leaves it parked in a select, not leaked. The reader may still be
+	// inside a network read when the pump leaves; the deferred ucancel
+	// tears the upstream down, which unblocks it.
 	type evResult struct {
 		out []byte
 		err error
 	}
 	events := make(chan evResult)
+	want := make(chan struct{}, 1)
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -783,7 +786,7 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		// misbehaving backend body must never take the process down.
 		// This goroutine is spawned by the handler, so net/http's
 		// per-connection recover cannot reach it; a panic is converted
-		// into a stream error instead. The recover now covers the whole
+		// into a stream error instead. The recover covers the whole
 		// stream rather than one event.
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -794,6 +797,11 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			}
 		}()
 		for {
+			select {
+			case <-want:
+			case <-done:
+				return
+			}
 			out, err := parser.nextEvent()
 			select {
 			case events <- evResult{out: out, err: err}:
@@ -825,7 +833,10 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			rerr  error
 			abort bool
 		)
+		// Reset before asking for the read, so the bound covers the
+		// whole read and never starts late.
 		readTimer.Reset(idle)
+		want <- struct{}{}
 		select {
 		case r := <-events:
 			ev, rerr = r.out, r.err

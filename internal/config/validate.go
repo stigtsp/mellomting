@@ -484,8 +484,12 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 			errs = append(errs, fmt.Sprintf("%s.base_url: path %q makes endpoint construction ambiguous", prefix, p))
 		}
 
-		host, _, err := net.SplitHostPort(u.Host)
-		if err != nil || host == "" {
+		// A trailing colon splits cleanly into a host and an empty port,
+		// so it must be rejected explicitly. backend.parseBaseURL
+		// refuses it too; catching it here keeps `config check` from
+		// blessing a configuration `serve` then refuses.
+		host, port, err := net.SplitHostPort(u.Host)
+		if err != nil || host == "" || port == "" {
 			errs = append(errs, fmt.Sprintf("%s.base_url: host %q is malformed or missing a port", prefix, u.Host))
 		} else {
 			if bn.Mode == "loopback-only" && !isLoopbackHost(host) {

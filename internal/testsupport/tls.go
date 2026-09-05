@@ -61,8 +61,14 @@ func WriteSelfSignedCert(t *testing.T, dir string, opts CertOptions) (certPath, 
 		t.Fatal(err)
 	}
 
-	certPath = filepath.Join(dir, "tls.crt")
-	keyPath = filepath.Join(dir, "tls.key")
+	// Unique per call: two certificates written into one directory must
+	// not clobber each other, which fixed names would do silently.
+	f, err := os.MkdirTemp(dir, "cert-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath = filepath.Join(f, "tls.crt")
+	keyPath = filepath.Join(f, "tls.key")
 	writePEM(t, certPath, 0o644, &pem.Block{Type: "CERTIFICATE", Bytes: der})
 	// The private key is secret-bearing: securefile refuses a
 	// group- or world-readable mode (T-M8).
