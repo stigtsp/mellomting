@@ -27,7 +27,9 @@ type CertOptions struct {
 }
 
 // WriteSelfSignedCert writes a self-signed certificate and its PKCS#8
-// key into dir and returns their paths.
+// key into a fresh subdirectory of dir and returns their absolute paths,
+// so repeated calls with the same dir do not clobber each other. Use the
+// returned paths: the files are not at dir/tls.crt and dir/tls.key.
 func WriteSelfSignedCert(t *testing.T, dir string, opts CertOptions) (certPath, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -63,12 +65,12 @@ func WriteSelfSignedCert(t *testing.T, dir string, opts CertOptions) (certPath, 
 
 	// Unique per call: two certificates written into one directory must
 	// not clobber each other, which fixed names would do silently.
-	f, err := os.MkdirTemp(dir, "cert-")
+	certDir, err := os.MkdirTemp(dir, "cert-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPath = filepath.Join(f, "tls.crt")
-	keyPath = filepath.Join(f, "tls.key")
+	certPath = filepath.Join(certDir, "tls.crt")
+	keyPath = filepath.Join(certDir, "tls.key")
 	writePEM(t, certPath, 0o644, &pem.Block{Type: "CERTIFICATE", Bytes: der})
 	// The private key is secret-bearing: securefile refuses a
 	// group- or world-readable mode (T-M8).
