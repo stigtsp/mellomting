@@ -126,7 +126,7 @@ func testConfig(serverURL string) *config.Config {
 			MaxAttempts:    1,
 			InitialBackoff: config.Duration(5 * time.Millisecond),
 			MaxBackoff:     config.Duration(10 * time.Millisecond),
-			Jitter:         func() *bool { f := false; return &f }(),
+			Jitter:         new(false),
 		},
 		Backends: map[string]config.Backend{
 			"b1": {

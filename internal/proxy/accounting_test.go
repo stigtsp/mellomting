@@ -23,7 +23,7 @@ func newAccountingProxy(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writ
 	t.Helper()
 	cfg := testConfig(f.server.URL)
 	cfg.Accounting.Enabled = true
-	cfg.Accounting.EnsureStreamUsage = func() *bool { b := true; return &b }()
+	cfg.Accounting.EnsureStreamUsage = new(true)
 	router, err := routing.New(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestAccountingOffWithQuotaSettlesExactStreamUsage(t *testing.T) {
 	quota := accounting.NewQuota()
 	cfg := testConfig(f.server.URL)
 	cfg.Accounting.Enabled = false
-	cfg.Accounting.EnsureStreamUsage = func() *bool { b := true; return &b }()
+	cfg.Accounting.EnsureStreamUsage = new(true)
 	// A large cap mirrors the review scenario: tiny streams must not
 	// exhaust a large hourly budget by charging the whole cap each.
 	cfg.Models["gen-1"] = config.Model{

@@ -76,7 +76,7 @@ func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle
 		MaxAttempts:    maxAttempts,
 		InitialBackoff: config.Duration(2 * time.Millisecond),
 		MaxBackoff:     config.Duration(4 * time.Millisecond),
-		Jitter:         func() *bool { f := false; return &f }(),
+		Jitter:         new(false),
 	}
 
 	cl1, err := backend.New(backend.Options{
