@@ -56,7 +56,11 @@ func serveCmd(args []string) int {
 	fs := flag.NewFlagSet("mellomting serve", flag.ContinueOnError)
 	var configPath string
 	fs.StringVar(&configPath, "config", "", "configuration file path")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "mellomting: serve: unexpected arguments %q\n", fs.Args())
 		return 2
 	}
 	resolved := ResolveConfigPath(configPath)

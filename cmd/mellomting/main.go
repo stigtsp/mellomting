@@ -86,6 +86,10 @@ func configCmd(args []string) int {
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "mellomting: config %s: unexpected arguments %q\n", sub, fs.Args())
+		return 2
+	}
 	resolved := ResolveConfigPath(configPath)
 
 	if sub == "check" {
@@ -122,6 +126,10 @@ func sandboxCmd(args []string) int {
 	var configPath string
 	fs.StringVar(&configPath, "config", "", "configuration file for landlock mode/minimum_abi (optional)")
 	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "mellomting: sandbox %s: unexpected arguments %q\n", sub, fs.Args())
 		return 2
 	}
 

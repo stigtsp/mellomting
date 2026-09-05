@@ -197,3 +197,34 @@ func TestConfigRootLevelFlagRejected(t *testing.T) {
 		t.Fatalf("root-level --config stderr = %q (want unknown command)", errOut)
 	}
 }
+
+// Every config-dependent command rejects trailing operands rather than
+// silently ignoring them. A path typed without --config used to be
+// discarded, so `config check /some/typo.yaml` reported on the default
+// configuration instead — a misleading result from a fail-closed
+// validation command.
+func TestTrailingArgumentsRejected(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	stray := filepath.Join(dir, "typo.yaml")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"config check", []string{"config", "check", stray}},
+		{"config show-effective", []string{"config", "show-effective", stray}},
+		{"sandbox check", []string{"sandbox", "check", stray}},
+		{"serve", []string{"serve", stray}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, errOut := runCLI(t, bin, dir, tc.args...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 (usage error): %s%s", code, out, errOut)
+			}
+			if !strings.Contains(errOut, "unexpected arguments") {
+				t.Fatalf("stderr = %q, want an unexpected-arguments message", errOut)
+			}
+		})
+	}
+}
