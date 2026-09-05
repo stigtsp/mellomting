@@ -327,7 +327,15 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			up, _ := p.router.UpstreamFor(backendName)
 			var rerr error
 			if bd, rerr = encodeOutbound(ob.fields, up); rerr != nil {
-				fail(errNotNormal)
+				// A missing upstream model is a routing invariant
+				// failure, not a malformed client body: report it as
+				// internal so the class an operator greps for is not
+				// bad_request.
+				if errors.Is(rerr, errNoUpstreamModel) {
+					fail(errInternal)
+				} else {
+					fail(errNotNormal)
+				}
 				return
 			}
 		}
