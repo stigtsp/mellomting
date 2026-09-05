@@ -74,7 +74,8 @@ func (b *Bucket) Allow(now time.Time) (ok bool, retryAfter time.Duration) {
 // Concurrency bounds the number of simultaneously in-flight requests
 // of one key (PLAN §35). A limit of 0 means unbounded.
 type Concurrency struct {
-	ch chan struct{} // nil: unbounded
+	ch    chan struct{} // nil: unbounded
+	limit int           // 0: unbounded; recorded so a reload can carry an unchanged bound
 }
 
 // NewConcurrency builds a concurrency bound; limit < 1 is unbounded.
@@ -82,7 +83,7 @@ func NewConcurrency(limit int) *Concurrency {
 	if limit < 1 {
 		return &Concurrency{}
 	}
-	return &Concurrency{ch: make(chan struct{}, limit)}
+	return &Concurrency{ch: make(chan struct{}, limit), limit: limit}
 }
 
 // Acquire takes one slot non-blockingly. It returns a release function
@@ -134,6 +135,10 @@ type Registry struct {
 	mu    sync.Mutex
 	keys  map[string]*KeyState
 	carry map[string]*Bucket // buckets carried from the prior generation
+	// carryConc holds the prior generation's concurrency bounds; one is
+	// reused only when the key's limit is unchanged, so in-flight slots
+	// stay accounted across a reload.
+	carryConc map[string]*Concurrency
 }
 
 // NewRegistry builds an empty registry.
@@ -144,9 +149,16 @@ func NewRegistry() *Registry {
 // NewRegistryCarrying builds an empty registry that carries over the
 // token buckets of the previous generation for keys whose rate and burst
 // are unchanged, so a SIGHUP reload does not gift every key a fresh
-// burst (FIX-22, PLAN §30, §34). Concurrency bounds are never carried:
-// they are always built fresh from the reloaded store, so a changed
-// concurrent_requests limit applies immediately.
+// burst (FIX-22, PLAN §30, §34).
+//
+// A concurrency bound is carried on the same terms: only when
+// concurrent_requests is unchanged. A changed limit still applies
+// immediately, because a changed bound is rebuilt. Rebuilding an
+// UNCHANGED bound would hand the key a second full set of slots while
+// the previous generation's in-flight requests still hold release
+// closures bound to the old channel, so a reload — the common case being
+// key rotation, which changes no limit at all — transiently allowed up
+// to twice concurrent_requests.
 //
 // Only the carryable buckets are retained, as an immutable snapshot; the
 // previous Registry itself is deliberately not referenced, so a chain of
@@ -154,19 +166,24 @@ func NewRegistry() *Registry {
 // FIX-22 eval).
 func NewRegistryCarrying(prev *Registry) *Registry {
 	var carry map[string]*Bucket
+	var carryConc map[string]*Concurrency
 	if prev != nil {
 		prev.mu.Lock()
 		if n := len(prev.keys); n > 0 {
 			carry = make(map[string]*Bucket, n)
+			carryConc = make(map[string]*Concurrency, n)
 			for id, ks := range prev.keys {
 				if ks.Bucket != nil {
 					carry[id] = ks.Bucket
+				}
+				if ks.Concur != nil {
+					carryConc[id] = ks.Concur
 				}
 			}
 		}
 		prev.mu.Unlock()
 	}
-	return &Registry{keys: make(map[string]*KeyState), carry: carry}
+	return &Registry{keys: make(map[string]*KeyState), carry: carry, carryConc: carryConc}
 }
 
 // For returns the limit state of a key, creating it on first use.
@@ -203,7 +220,17 @@ func derivedBurst(rate float64, burst int) int {
 }
 
 func (r *Registry) build(key *auth.Key) *KeyState {
-	ks := &KeyState{Concur: NewConcurrency(key.Limits.ConcurrentRequests)}
+	// Reuse the prior generation's bound when the limit is unchanged, so
+	// its in-flight holders and this generation's share one set of slots.
+	conc := r.carryConc[key.ID]
+	want := key.Limits.ConcurrentRequests
+	if want < 1 {
+		want = 0
+	}
+	if conc == nil || conc.limit != want {
+		conc = NewConcurrency(key.Limits.ConcurrentRequests)
+	}
+	ks := &KeyState{Concur: conc}
 	if key.Limits.RequestsPerSecond > 0 {
 		burst := derivedBurst(key.Limits.RequestsPerSecond, key.Limits.Burst)
 		b, err := NewBucket(key.Limits.RequestsPerSecond, burst)

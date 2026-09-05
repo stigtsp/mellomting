@@ -326,3 +326,54 @@ func TestRegistryCarryOverAcrossGenerations(t *testing.T) {
 		t.Fatal("carried bucket must stay drained across generations")
 	}
 }
+
+// A reload must not transiently double a key's concurrency bound. The
+// previous generation's in-flight requests hold release closures bound
+// to its channel, so rebuilding an unchanged bound would hand out a
+// second full set of slots — and key rotation, the common reason to
+// reload, changes no limit at all. A changed limit must still apply
+// immediately.
+func TestConcurrencyBoundCarriesAcrossReloadWhenUnchanged(t *testing.T) {
+	key := auth.Key{ID: "k", Name: "n", Enabled: true,
+		Limits: auth.KeyLimits{ConcurrentRequests: 2}}
+
+	r1 := NewRegistry()
+	ks1 := r1.For(&key)
+	relA, okA := ks1.AcquireConcurrency()
+	relB, okB := ks1.AcquireConcurrency()
+	if !okA || !okB {
+		t.Fatal("could not take the two configured slots")
+	}
+	if _, ok := ks1.AcquireConcurrency(); ok {
+		t.Fatal("a third slot was granted past the limit")
+	}
+
+	// Reload with the same limit while both slots are still held.
+	r2 := NewRegistryCarrying(r1)
+	ks2 := r2.For(&key)
+	if _, ok := ks2.AcquireConcurrency(); ok {
+		t.Fatal("the reload handed out a slot while the previous generation still held both")
+	}
+	relA()
+	if rel, ok := ks2.AcquireConcurrency(); !ok {
+		t.Fatal("a slot released by the previous generation was not reusable after reload")
+	} else {
+		rel()
+	}
+	relB()
+
+	// A changed limit must not be carried.
+	changed := key
+	changed.Limits.ConcurrentRequests = 5
+	r3 := NewRegistryCarrying(r2)
+	ks3 := r3.For(&changed)
+	held := 0
+	for range 5 {
+		if _, ok := ks3.AcquireConcurrency(); ok {
+			held++
+		}
+	}
+	if held != 5 {
+		t.Fatalf("changed limit granted %d slots, want 5 (it must apply immediately)", held)
+	}
+}
