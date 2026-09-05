@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   quality:
@@ -64,13 +63,16 @@ jobs:
         # sources so a newly added target is picked up automatically.
         run: |
           set -euo pipefail
-          for pkg in internal/accounting internal/auth internal/backend internal/config internal/httpapi internal/proxy; do
-            files=$(grep -lE '^func Fuzz' "$pkg"/*_test.go 2>/dev/null || true)
-            [ -z "$files" ] && continue
-            fns=$(grep -hoE '^func Fuzz[A-Za-z0-9_]+' $files | sed 's/^func //')
+          # Both the package list and the target names are derived from
+          # the sources. Hardcoding the packages meant a target in an
+          # unlisted package (internal/discovery) was never fuzzed
+          # despite this job claiming to cover every one.
+          pkgs=$(grep -rlE '^func Fuzz' --include='*_test.go' . | xargs -n1 dirname | sort -u)
+          for pkg in $pkgs; do
+            fns=$(grep -hoE '^func Fuzz[A-Za-z0-9_]+' "$pkg"/*_test.go | sed 's/^func //' | sort -u)
             for f in $fns; do
               echo "=== fuzz $f ($pkg) ==="
-              go test -run='^$' -fuzz="^${f}\$" -fuzztime=15s "./$pkg"
+              go test -run='^$' -fuzz="^${f}\$" -fuzztime=15s "$pkg"
             done
           done
 
@@ -98,6 +100,26 @@ jobs:
 
       - name: Landlock required-mode serve tests (strict)
         run: MELLOMTING_LANDLOCK_STRICT=1 go test -count=1 -run 'TestServeSandboxRequiredApplies' ./cmd/mellomting/
+
+  integration:
+    name: integration journeys (build-tagged)
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # The journeys sit behind //go:build integration, so the quality
+      # job's `go test ./...` never compiles them, let alone runs them.
+      # They drive the real binary end to end (init, key create, serve,
+      # request) against local fake model servers.
+      - name: Integration journeys
+        run: go test -count=1 -tags integration ./integration/
 
   nonlinux:
     name: non-linux build (darwin) vet+test
