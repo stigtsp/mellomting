@@ -496,3 +496,50 @@ func TestWriterCloseSurfacesFinalSyncError(t *testing.T) {
 		t.Fatal("Close must surface the final-sync error, got nil")
 	}
 }
+
+// Quota windows must only ever advance. Rolling on any *different* key
+// also rolled backwards, zeroing the counter and handing out a fresh
+// quota — and that needs no clock change: Admit and Settle each sample
+// time.Now() at the call site and then contend for the quota lock, so a
+// goroutine that sampled just before an hour boundary can take the lock
+// after one that sampled just after it.
+func TestQuotaWindowNeverRollsBackwards(t *testing.T) {
+	lim := WindowLimit{TokensPerHour: 100}
+	base := time.Date(2026, 1, 1, 16, 0, 0, 0, time.UTC)
+
+	t.Run("wall clock steps backwards", func(t *testing.T) {
+		q := NewQuota()
+		q.Settle("k", 100, base)
+		if ok, _ := q.Admit("k", lim, 1, base); ok {
+			t.Fatal("admitted at the limit")
+		}
+		if ok, _ := q.Admit("k", lim, 100, base.Add(-time.Hour)); ok {
+			t.Fatal("a backwards clock step handed out a fresh hourly quota")
+		}
+	})
+
+	t.Run("straggler settle across the boundary", func(t *testing.T) {
+		q := NewQuota()
+		now := base                         // 16:00:00.000
+		late := base.Add(-time.Millisecond) // 15:59:59.999, sampled first, applied later
+		q.Settle("k", 90, now)
+		if ok, _ := q.Admit("k", lim, 20, now); ok {
+			t.Fatal("admitted past the limit")
+		}
+		q.Settle("k", 1, late)
+		if ok, _ := q.Admit("k", lim, 20, now); ok {
+			t.Fatal("a late settle from the previous hour reset the current window")
+		}
+	})
+
+	t.Run("forward rollover still resets", func(t *testing.T) {
+		q := NewQuota()
+		q.Settle("k", 100, base)
+		if ok, _ := q.Admit("k", lim, 1, base); ok {
+			t.Fatal("admitted at the limit")
+		}
+		if ok, _ := q.Admit("k", lim, 100, base.Add(time.Hour)); !ok {
+			t.Fatal("the next hour did not get a fresh quota")
+		}
+	})
+}

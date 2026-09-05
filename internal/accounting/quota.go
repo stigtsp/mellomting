@@ -105,11 +105,19 @@ func (q *Quota) stateFor(keyID string, now time.Time) *keyQuota {
 		q.states[keyID] = st
 		return st
 	}
-	if st.hourKey != h {
+	// Windows only ever advance. Comparing with != would also roll on an
+	// EARLIER timestamp, zeroing the counter and handing out a fresh
+	// quota — and that needs no clock change to happen: Admit and Settle
+	// each sample time.Now() at the call site and then contend for this
+	// lock, so a goroutine that sampled just before an hour boundary can
+	// take the lock after one that sampled just after it. A late or
+	// backwards-stamped settle now lands in the current window, which
+	// over-counts slightly: the fail-closed direction.
+	if h > st.hourKey {
 		st.hour = 0
 		st.hourKey = h
 	}
-	if st.dayKey != d {
+	if d > st.dayKey {
 		st.day = 0
 		st.dayKey = d
 	}
