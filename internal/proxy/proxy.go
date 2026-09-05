@@ -293,7 +293,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.class = "client_canceled"
 		out.bytesOut = 0
 	}
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		if q.R.Context().Err() != nil {
 			markClientCanceled()
 			return
