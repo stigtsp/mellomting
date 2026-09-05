@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"mellomting/internal/config"
@@ -190,10 +191,18 @@ func New(o Options) (*Client, error) {
 		// Bound physical connections to the backend host by the
 		// admission concurrency cap: at most maxConc requests are
 		// in-flight to a backend, so more connections can never be
-		// needed (T-L7, §9.1 fd bound). Match the idle pool to the same
-		// cap: Go's default MaxIdleConnsPerHost (2) makes MaxIdleConns
-		// alone inert, tearing down and re-handshaking connections
-		// under bursty load (M18).
+		// needed per pool (T-L7). Match the idle pool to the same cap:
+		// Go's default MaxIdleConnsPerHost (2) makes MaxIdleConns alone
+		// inert, tearing down and re-handshaking connections under
+		// bursty load (M18).
+		//
+		// The X6 split below clones this template twice and each clone
+		// owns an independent pool, so the per-backend socket ceiling is
+		// 2*maxConc, not maxConc: admission caps requests globally, but
+		// a workload mixing streaming and non-streaming requests spreads
+		// them across both pools. Size the host fd budget accordingly
+		// (§9.1). The cap is deliberately not halved, which would let
+		// one pool starve while the other sits idle.
 		MaxIdleConns:        maxConc,
 		MaxIdleConnsPerHost: maxConc,
 		MaxConnsPerHost:     maxConc,
@@ -436,18 +445,24 @@ type Result struct {
 	Body      io.ReadCloser
 	BodyBytes []byte
 	hold      *hold // admission slot; transferred to the Result for streams
+	closeOnce sync.Once
 }
 
 // Close releases the stream, if any, and the admission slot that is
 // held for a live stream response. It is idempotent.
 func (r *Result) Close() {
-	if r.Body != nil {
-		r.Body.Close()
-	}
-	if r.hold != nil {
-		r.hold.release()
-		r.hold = nil
-	}
+	// once, not a nil check: the admission slot must be released exactly
+	// once even if two goroutines close concurrently, or the second
+	// release would hand out a slot nobody holds.
+	r.closeOnce.Do(func() {
+		if r.Body != nil {
+			r.Body.Close()
+		}
+		if r.hold != nil {
+			r.hold.release()
+			r.hold = nil
+		}
+	})
 }
 
 // hold is the admission handle (PLAN §22) of a request admitted by acquire:

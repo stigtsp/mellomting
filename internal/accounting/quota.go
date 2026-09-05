@@ -158,16 +158,33 @@ func (q *Quota) Replay(path string, maxBytes int64) (err error) {
 		// Scan the whole file.
 		return q.scan(f)
 	}
-	// Read only the tail: seek to size-maxBytes, then discard the first
-	// (possibly partial) line.
-	if _, err := f.Seek(size-maxBytes, io.SeekStart); err != nil {
+	// Read only the tail. Peek at the byte before the window: when it is
+	// a newline the window already starts on a record boundary and the
+	// first line is whole, so discarding it would drop a real record and
+	// under-count the quota. Otherwise the first line is a fragment and
+	// must go.
+	start := size - maxBytes
+	aligned := false
+	if start > 0 {
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], start-1); err != nil && err != io.EOF {
+			return err
+		} else if err == nil {
+			aligned = prev[0] == '\n'
+		}
+	} else {
+		aligned = true // the window is the whole file
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return err
 	}
 	br := bufio.NewReaderSize(f, maxAccountingLine)
-	// Discard up to and including the first newline to avoid a partial
-	// leading line.
-	if _, err := br.ReadSlice('\n'); err != nil && err != io.EOF && err != bufio.ErrBufferFull {
-		return err
+	if !aligned {
+		// Discard up to and including the first newline, dropping the
+		// partial leading line.
+		if _, err := br.ReadSlice('\n'); err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+			return err
+		}
 	}
 	return q.scanBounded(br, q.now())
 }

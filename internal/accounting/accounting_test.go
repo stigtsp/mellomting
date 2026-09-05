@@ -543,3 +543,39 @@ func TestQuotaWindowNeverRollsBackwards(t *testing.T) {
 		}
 	})
 }
+
+// The tail window discards its first line because it is usually a
+// fragment — but when the window happens to start exactly on a record
+// boundary that line is whole, and dropping it silently under-counts the
+// quota by one record.
+func TestReplayKeepsWholeFirstLineWhenWindowIsAligned(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	now := time.Now().UTC()
+
+	line := func(tokens int64) string {
+		b, err := json.Marshal(Record{
+			Time: now, KeyID: "k", ChargedTokens: tokens, TotalTokens: tokens,
+			UsageStatus: UsageExact,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b) + "\n"
+	}
+	first, second := line(11), line(22)
+	if err := os.WriteFile(path, []byte(first+second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A window of exactly the second line starts on the boundary, so the
+	// second record is whole and must be counted.
+	q := NewQuota()
+	if err := q.Replay(path, int64(len(second))); err != nil {
+		t.Fatal(err)
+	}
+	lim := WindowLimit{TokensPerHour: 22}
+	if ok, _ := q.Admit("k", lim, 1, now); ok {
+		t.Fatal("the aligned first line was discarded: 22 tokens were not replayed")
+	}
+}
