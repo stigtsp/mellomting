@@ -31,11 +31,7 @@ func usageCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: usage %s: unexpected arguments %q\n", sub, fs.Args())
 		return 2
 	}
-	resolved, err := ResolveConfigPath(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: usage %s: %v\n", sub, err)
-		return 1
-	}
+	resolved := ResolveConfigPath(configPath)
 
 	cfg, err := config.Load(resolved)
 	if err != nil {

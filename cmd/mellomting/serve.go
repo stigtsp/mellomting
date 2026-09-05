@@ -60,11 +60,7 @@ func serveCmd(args []string) int {
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return 2
 	}
-	resolved, err := ResolveConfigPath(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
-		return 1
-	}
+	resolved := ResolveConfigPath(configPath)
 
 	cfg, err := config.Load(resolved)
 	if err != nil {

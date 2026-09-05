@@ -1,40 +1,20 @@
 package main
 
 import (
-	"errors"
-	"fmt"
-	"io/fs"
-	"os"
-
 	"mellomting/internal/config"
 )
 
 // ResolveConfigPath implements the D1 configuration lookup used by every
-// config-dependent CLI command. It returns the path to load, in priority
-// order:
+// config-dependent CLI command: an explicit --config PATH when supplied
+// (never falling back, even when the named path does not exist), and
+// otherwise /etc/mellomting/config.yaml.
 //
-//  1. an explicit --config PATH, when supplied (never falls back, even when
-//     the named path does not exist);
-//  2. ./config.yaml, when it exists as a regular non-symlink file;
-//  3. /etc/mellomting/config.yaml, only when ./config.yaml is absent.
-//
-// If the local path exists as a symlink (including dangling), directory,
-// FIFO, device, or other non-regular file, resolution fails instead of
-// falling through to /etc.
-func ResolveConfigPath(explicit string) (string, error) {
+// The working directory is never consulted: these commands run as root, so
+// an implicit ./config.yaml would let whoever can write the directory pick
+// the auth files, backends, and sandbox mode. Name it to use it.
+func ResolveConfigPath(explicit string) string {
 	if explicit != "" {
-		return explicit, nil
+		return explicit
 	}
-	st, err := os.Lstat("./config.yaml")
-	switch {
-	case err == nil:
-		if !st.Mode().IsRegular() {
-			return "", fmt.Errorf("./config.yaml exists but is not a regular file; remove or replace it, or pass --config explicitly")
-		}
-		return "./config.yaml", nil
-	case errors.Is(err, fs.ErrNotExist):
-		return config.DefaultConfigPath, nil
-	default:
-		return "", fmt.Errorf("checking ./config.yaml: %w", err)
-	}
+	return config.DefaultConfigPath
 }

@@ -758,6 +758,44 @@ models:
 			wantErr: "overflow",
 		},
 		{
+			name: "relative users_file rejected",
+			yaml: `
+version: 1
+` + minimalServer + `
+auth:
+  users_file: ./users.yaml
+  pepper_file: /etc/mellomting/auth.pepper
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "auth.users_file: must be an absolute path",
+		},
+		{
+			name: "relative pepper_file rejected",
+			yaml: `
+version: 1
+` + minimalServer + `
+auth:
+  users_file: /etc/mellomting/users.yaml
+  pepper_file: auth.pepper
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "auth.pepper_file: must be an absolute path",
+		},
+		{
 			name: "accounting negative reservation",
 			yaml: `
 version: 1

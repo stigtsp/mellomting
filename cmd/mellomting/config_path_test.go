@@ -29,88 +29,88 @@ func TestResolveConfigPathExplicit(t *testing.T) {
 	if err := os.WriteFile(explicit, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ResolveConfigPath(explicit)
-	if err != nil {
-		t.Fatalf("ResolveConfigPath(%q) error: %v", explicit, err)
-	}
-	if got != explicit {
+	if got := ResolveConfigPath(explicit); got != explicit {
 		t.Fatalf("ResolveConfigPath(%q) = %q, want %q", explicit, got, explicit)
 	}
 
 	missing := filepath.Join(dir, "does-not-exist.yaml")
-	got, err = ResolveConfigPath(missing)
-	if err != nil {
-		t.Fatalf("ResolveConfigPath(missing) error: %v", err)
-	}
-	if got != missing {
+	if got := ResolveConfigPath(missing); got != missing {
 		t.Fatalf("ResolveConfigPath(missing) = %q, want %q (no fallback)", got, missing)
 	}
 }
 
-// TestResolveConfigPathCwdWins pins D1: a regular ./config.yaml in the
-// working directory wins over /etc.
-func TestResolveConfigPathCwdWins(t *testing.T) {
+// TestResolveConfigPathIgnoresCwd pins D1: the working directory is never
+// consulted. These commands run as root, so a ./config.yaml planted by
+// whoever can write the directory root happens to run from must not be
+// picked up — it would choose users_file, pepper_file, the backends, and
+// the sandbox mode. Resolution returns the system default even when a
+// perfectly valid local config.yaml is present.
+func TestResolveConfigPathIgnoresCwd(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	chdirIn(t, dir)
-	got, err := ResolveConfigPath("")
-	if err != nil {
-		t.Fatalf("ResolveConfigPath error: %v", err)
-	}
-	if got != "./config.yaml" {
-		t.Fatalf("ResolveConfigPath = %q, want ./config.yaml", got)
+	if got := ResolveConfigPath(""); got != "/etc/mellomting/config.yaml" {
+		t.Fatalf("ResolveConfigPath = %q, want /etc/mellomting/config.yaml; the cwd must never be consulted", got)
 	}
 }
 
-// TestResolveConfigPathFallsBack pins D1: with no ./config.yaml present the
-// resolver returns the system default path.
-func TestResolveConfigPathFallsBack(t *testing.T) {
-	dir := t.TempDir()
-	chdirIn(t, dir)
-	got, err := ResolveConfigPath("")
-	if err != nil {
-		t.Fatalf("ResolveConfigPath error: %v", err)
-	}
-	if got != "/etc/mellomting/config.yaml" {
+// TestResolveConfigPathDefault pins D1: with no --config the resolver
+// returns the system default path.
+func TestResolveConfigPathDefault(t *testing.T) {
+	chdirIn(t, t.TempDir())
+	if got := ResolveConfigPath(""); got != "/etc/mellomting/config.yaml" {
 		t.Fatalf("ResolveConfigPath = %q, want /etc/mellomting/config.yaml", got)
 	}
 }
 
-// TestResolveConfigPathNonRegular pins D1: a local config.yaml that exists
-// as a symlink (including dangling), directory, or other non-regular file
-// fails resolution rather than falling through to /etc.
-func TestResolveConfigPathNonRegular(t *testing.T) {
-	dangling := t.TempDir()
-	chdirIn(t, dangling)
-	if err := os.Symlink(filepath.Join(dangling, "missing-target.yaml"), filepath.Join(dangling, "config.yaml")); err != nil {
+// TestCwdConfigNotPickedUp pins D1 against the real binary: a valid
+// config.yaml sitting in the working directory must not be loaded by a
+// config-dependent command run without --config. Running the command from
+// a directory someone else can write must not hand them the config, which
+// selects the auth files, the backends, and the sandbox mode.
+func TestCwdConfigNotPickedUp(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	planted := `version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/x.sock
+    mode: "0660"
+auth:
+  users_file: ` + dir + `/users.yaml
+  pepper_file: ` + dir + `/auth.pepper
+servers:
+  a:
+    url: http://127.0.0.1:8001
+models:
+  m:
+    type: generation
+    strategy: single
+    upstream_model: m
+    servers: [a]
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(planted), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := ResolveConfigPath(""); err == nil {
-		t.Fatal("dangling symlink config.yaml: want error, got nil")
 	}
 
-	realSymlink := t.TempDir()
-	target := filepath.Join(realSymlink, "real.yaml")
-	if err := os.WriteFile(target, []byte("version: 1\n"), 0o600); err != nil {
-		t.Fatal(err)
+	code, out, errOut := runCLI(t, bin, dir, "config", "check")
+	if code == 0 {
+		t.Fatalf("config check loaded the working-directory config (exit 0): %s", out)
 	}
-	if err := os.Symlink(target, filepath.Join(realSymlink, "config.yaml")); err != nil {
-		t.Fatal(err)
+	if strings.Contains(out+errOut, filepath.Join(dir, "config.yaml")) {
+		t.Fatalf("the planted config was resolved: %s", out+errOut)
 	}
-	chdirIn(t, realSymlink)
-	if _, err := ResolveConfigPath(""); err == nil {
-		t.Fatal("symlink config.yaml: want error, got nil")
+	if !strings.Contains(out+errOut, "/etc/mellomting/config.yaml") {
+		t.Fatalf("want the system default path in the output, got: %s", out+errOut)
 	}
 
-	dirAsConfig := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dirAsConfig, "config.yaml"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	chdirIn(t, dirAsConfig)
-	if _, err := ResolveConfigPath(""); err == nil {
-		t.Fatal("directory config.yaml: want error, got nil")
+	// Naming it explicitly still works.
+	code, out, errOut = runCLI(t, bin, dir, "config", "check", "--config", "./config.yaml")
+	if code != 0 {
+		t.Fatalf("explicit --config ./config.yaml exit = %d: %s%s", code, out, errOut)
 	}
 }
 

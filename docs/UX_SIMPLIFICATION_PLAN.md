@@ -685,18 +685,22 @@ the two namespaces are intentionally separate.
 Every config-dependent CLI command uses one resolver:
 
 1. an explicit `--config PATH`, when supplied;
-2. `./config.yaml`, when it exists as a regular non-symlink file; otherwise
-3. `/etc/mellomting/config.yaml` only when `./config.yaml` is absent.
+2. `/etc/mellomting/config.yaml` otherwise.
 
-If the local path exists as a symlink (including dangling), directory, FIFO,
-device, or other non-regular file, fail instead of falling through to `/etc`.
+The working directory is never consulted. These commands are routinely run as
+root, and an implicit `./config.yaml` would let anyone who can write to a
+directory root happens to run from supply the configuration — and with it
+`auth.users_file`, `auth.pepper_file`, the backends, and the sandbox mode. A
+local file is used by naming it: `--config ./config.yaml`.
 
 `mellomting init` is different because it creates a file: its default
 destination is an absolute path formed from the current working directory and
-`config.yaml`. It never falls back to `/etc`.
+`config.yaml`. It never falls back to `/etc`. It reports the path it wrote,
+which is the path to pass to `--config`.
 
-The generated config contains absolute users-file and pepper-file paths.
-Changing the working directory therefore does not change the auth files used.
+Users-file and pepper-file paths are absolute, and validation rejects a
+relative one. Changing the working directory therefore does not change the
+auth files used.
 
 Document and test `--config` with two dashes. Do not add compatibility logic
 for development-era spellings. Do not implement a root-level global flag:
@@ -1370,14 +1374,14 @@ Modify/create:
 - `cmd/mellomting/config_path_test.go`
 - all config-dependent command flag setup in `cmd/mellomting`
 
-Implement D1. Use `os.Lstat` for `./config.yaml`; accept it only when it is
-a regular non-symlink file. An existing symlink is an error, not a reason to
-fall through to `/etc`.
+Implement D1. The resolver returns the explicit `--config PATH` when given and
+`/etc/mellomting/config.yaml` otherwise; it never inspects the working
+directory.
 
 Apply the resolver to `serve`, `config check`, `config show-effective`, every
 `key` mutation/list operation, `usage report`, and optional-config
 `sandbox check`. Preserve sandbox check's ability to run without a config when
-no local or system config exists.
+the system config does not exist.
 
 Tests:
 

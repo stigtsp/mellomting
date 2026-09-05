@@ -2814,12 +2814,17 @@ authoritative.
 Every config-dependent CLI command MUST use one resolver:
 
 1. an explicit `--config PATH`, when supplied;
-2. `./config.yaml`, when it exists as a regular non-symlink file; otherwise
-3. `/etc/mellomting/config.yaml` only when `./config.yaml` is absent.
+2. `/etc/mellomting/config.yaml` otherwise.
 
-If the local path exists as a symlink (including dangling), directory, FIFO,
-device, or other non-regular file, the command MUST fail instead of falling
-through to `/etc`.
+The working directory MUST NOT be consulted. These commands are routinely run
+as root, and an implicit `./config.yaml` would let anyone who can write to a
+directory root happens to run from supply the configuration — and with it
+`auth.users_file`, `auth.pepper_file`, the backends, and the sandbox mode. A
+local file is used by naming it: `--config ./config.yaml`.
+
+`auth.users_file` and `auth.pepper_file` MUST be absolute paths, so the auth
+files a privileged `key` command reads and rewrites never depend on the
+working directory.
 
 `mellomting init` differs because it creates a file: its default destination
 is an absolute path formed from the current working directory and

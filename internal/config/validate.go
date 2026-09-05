@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -365,13 +366,23 @@ func validateServer(s *Server) []string {
 
 func tlsConfigured(t TLS) bool { return t.CertFile != "" || t.KeyFile != "" }
 
+// validateAuth requires both auth paths to be absolute. They select what a
+// privileged `key` command reads and rewrites, so resolving them against
+// the working directory would make the files used depend on where the
+// command was run from.
 func validateAuth(a *Auth) []string {
 	var errs []string
-	if a.UsersFile == "" {
+	switch {
+	case a.UsersFile == "":
 		errs = append(errs, "auth.users_file: required")
+	case !filepath.IsAbs(a.UsersFile):
+		errs = append(errs, "auth.users_file: must be an absolute path")
 	}
-	if a.PepperFile == "" {
+	switch {
+	case a.PepperFile == "":
 		errs = append(errs, "auth.pepper_file: required")
+	case !filepath.IsAbs(a.PepperFile):
+		errs = append(errs, "auth.pepper_file: must be an absolute path")
 	}
 	return errs
 }

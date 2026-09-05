@@ -85,11 +85,7 @@ func configCmd(args []string) int {
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
-	resolved, err := ResolveConfigPath(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: config %s: %v\n", sub, err)
-		return 1
-	}
+	resolved := ResolveConfigPath(configPath)
 
 	if sub == "check" {
 		if _, err := config.Load(resolved); err != nil {
@@ -128,27 +124,21 @@ func sandboxCmd(args []string) int {
 		return 2
 	}
 
-	resolved, err := ResolveConfigPath(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: sandbox check: %v\n", err)
-		return 1
-	}
+	resolved := ResolveConfigPath(configPath)
 
 	report := landlock.Check()
 	mode := landlock.ModeRequired
 	minABI := landlock.DefaultMinimumABI
 	enforce := false
-	local := resolved == "./config.yaml"
 	if cfg, loadErr := config.Load(resolved); loadErr == nil {
 		mode = cfg.Security.Landlock.Mode
 		minABI = cfg.Security.Landlock.MinimumABI
 		enforce = true
-	} else if local || configPath != "" {
-		// A discovered local ./config.yaml or an explicit --config must be
-		// loadable; report the failure rather than silently running
-		// report-only. An absent or unreadable system default (/etc) is
-		// allowed to fall back to report-only so the check works without a
-		// configuration.
+	} else if configPath != "" {
+		// An explicit --config must be loadable; report the failure rather
+		// than silently running report-only. An absent or unreadable system
+		// default (/etc) is allowed to fall back to report-only so the check
+		// works without a configuration.
 		fmt.Fprintf(os.Stderr, "mellomting: sandbox check failed: %v\n", loadErr)
 		return 1
 	}
@@ -315,12 +305,8 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 
 // keyState loads configuration and resolves the users-file and pepper paths.
 func keyState(c *keyFlags) (cfg *config.Config, usersPath, pepperPath string, exit int) {
-	resolved, err := ResolveConfigPath(c.configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: key: %v\n", err)
-		return nil, "", "", 1
-	}
-	cfg, err = config.Load(resolved)
+	resolved := ResolveConfigPath(c.configPath)
+	cfg, err := config.Load(resolved)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: key: load config: %v\n", err)
 		return nil, "", "", 1
