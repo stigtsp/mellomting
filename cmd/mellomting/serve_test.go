@@ -28,7 +28,6 @@ import (
 	"mellomting/internal/landlock"
 )
 
-// unixHTTPClient dials a pathname Unix socket for HTTP requests.
 func getURL(t *testing.T, client *http.Client, url, authValue string) (*http.Response, string) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)

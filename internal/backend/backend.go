@@ -732,7 +732,11 @@ func PolicyFromConfig(bn config.BackendNetwork) (Policy, error) {
 	for _, cidr := range bn.CIDRs {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return Policy{}, fmt.Errorf("security.backend_network.cidrs: %q is not a CIDR", cidr)
+			// No config-key prefix: discovery builds a policy from
+			// --server flags, where naming a config key the operator
+			// never wrote would be misleading. serve's caller reports
+			// the same failure against a config file it can name.
+			return Policy{}, fmt.Errorf("backend network CIDR %q is not a CIDR", cidr)
 		}
 		p.CIDRs = append(p.CIDRs, ipnet)
 	}

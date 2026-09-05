@@ -94,8 +94,6 @@ func runCmd(t *testing.T, bin, dir string, timeout time.Duration, args ...string
 	return code, outB.String(), errB.String()
 }
 
-// fakeModelsServer serves a bounded OpenAI /v1/models response.
-
 func mustStat(t *testing.T, path string) os.FileInfo {
 	t.Helper()
 	fi, err := os.Stat(path)

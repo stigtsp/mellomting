@@ -491,6 +491,14 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("key store: %w", err)
 	}
 
+	// Before any client, router, or writer is constructed: a
+	// configuration that cannot enforce its own quota should be reported
+	// without opening resources first.
+	if err := checkQuotaEnforceable(cfg, users); err != nil {
+		return nil, err
+	}
+	hasTokenQuota := quotaKeysConfigured(users.Keys)
+
 	policy, err := backend.PolicyFromConfig(cfg.Security.BackendNetwork)
 	if err != nil {
 		return nil, err
@@ -545,10 +553,6 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// whether usage records are written and replayed at startup. Startup
 	// is fail-closed: an unusable accounting file is a startup error
 	// rather than a silent reset.
-	if err := checkQuotaEnforceable(cfg, users); err != nil {
-		return nil, err
-	}
-	hasTokenQuota := quotaKeysConfigured(users.Keys)
 
 	quota := accounting.NewQuota()
 	var writer *accounting.Writer

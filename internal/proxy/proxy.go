@@ -936,21 +936,26 @@ func shallowParse(body []byte) (fields map[string]json.RawMessage, model string,
 	return fields, model, stream, nil
 }
 
-// rewriteModel sets the outbound model field and re-serializes, keeping
-// every other field byte-identical via json.RawMessage (PLAN §12, §13).
 // encodeOutbound sets the upstream model on the decoded body and
 // re-encodes it. This is the single canonicalizing marshal of the
 // request: a duplicate "model" key decodes last-wins and re-encodes to
 // one key, so a backend can never resolve a second one the ACL never
 // saw. Forwarding the client's bytes verbatim would reopen that.
 func encodeOutbound(fields map[string]json.RawMessage, upstream string) ([]byte, error) {
-	if upstream != "" {
-		enc, err := json.Marshal(upstream)
-		if err != nil {
-			return nil, err
-		}
-		fields["model"] = enc
+	// The map is shared across retry attempts, so the model is set on
+	// every call rather than only when an upstream name is supplied:
+	// leaving it untouched would forward the previous attempt's upstream
+	// model to a different backend. An empty upstream cannot occur —
+	// routing.New rejects a backend without one — so it is a programming
+	// error rather than a fallback.
+	if upstream == "" {
+		return nil, errNoUpstreamModel
 	}
+	enc, err := json.Marshal(upstream)
+	if err != nil {
+		return nil, err
+	}
+	fields["model"] = enc
 	return json.Marshal(fields)
 }
 
@@ -1085,22 +1090,26 @@ var (
 	// only honest outcome is a truncated stream classified as an
 	// upstream error (never a process kill).
 	errStreamPanic = errors.New("stream reader panicked")
+	// errNoUpstreamModel guards a routing invariant: routing.New refuses
+	// a backend without an upstream_model, so a selected backend always
+	// has one.
+	errNoUpstreamModel = errors.New("backend has no upstream model")
 )
 
 // prepareOutbound applies the generative output cap (PLAN §36) and, for
 // streams, injects stream_options.include_usage (PLAN §38). ensureUsage
 // selects whether stream-usage injection is enabled for this deployment.
-// It returns the transformed body, the configured token reservation to
-// charge when usage is unknown (PLAN §39), whether usage was injected on
-// the client's behalf, or an error if the client asked for more output
-// than the configured cap. configuredReservation is
+//
+// It mutates the decoded body in place and returns the token reservation
+// to charge when usage is unknown (PLAN §39), plus whether usage was
+// injected on the client's behalf. configuredReservation is
 // accounting.unknown_usage_reservation; when 0 the model's configured
 // output cap is the reservation. The reservation is never the client's
 // own output limit, so a small max_tokens cannot shrink the conservative
 // charge.
 //
-// The model field is left untouched here; rewriteModel still overrides it
-// per-attempt because the upstream model can differ across backends.
+// The model field is left untouched here; encodeOutbound sets it per
+// attempt because the upstream model can differ across backends.
 func prepareOutbound(fields map[string]json.RawMessage, o operation, cap int, stream, ensureUsage bool, configuredReservation int64) (reservation int64, injectedUsage bool, err error) {
 	if o.capField == "" && !(stream && ensureUsage) {
 		// Neither the output cap nor stream-usage injection applies

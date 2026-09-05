@@ -101,7 +101,6 @@ func (p *sseParser) nextEvent() ([]byte, error) {
 	}
 }
 
-// reset drops buffered state after an error so a later retry starts clean.
 // reset clears the accumulators for the next event. The buffers are
 // truncated rather than dropped so the next event does not regrow them
 // from zero capacity: nextEvent returns an independent copy of the

@@ -406,7 +406,7 @@ func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prepareOutbound: %v", err)
 		}
-		out, err := encodeOutbound(fields, "")
+		out, err := encodeOutbound(fields, "m")
 		if err != nil {
 			t.Fatalf("encode: %v", err)
 		}

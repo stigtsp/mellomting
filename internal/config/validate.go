@@ -595,8 +595,6 @@ func isLoopbackHost(host string) bool {
 	return err == nil && addr.IsLoopback()
 }
 
-// isNonLoopbackHost fails closed: unresolvable-or-DNS hosts count as
-// non-loopback.
 // IsNonLoopbackHost reports whether host is anything other than a
 // literal loopback address. It fails closed: any hostname — localhost
 // included — counts as non-loopback, because a name can resolve

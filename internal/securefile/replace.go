@@ -72,10 +72,14 @@ func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) 
 	if clamp != 0 && statErr == nil {
 		mode = existing.Mode().Perm() & clamp
 		if st, ok := existing.Sys().(*syscall.Stat_t); ok {
+			// Through the descriptor, not the path, for the same reason
+			// the mode is: a path-based chown follows a symlink and can
+			// land on a file swapped in underneath.
+			//
 			// Best-effort: an unprivileged caller cannot chown to a group
 			// it is not in. The mode clamp still applies and the rename
 			// below proceeds regardless.
-			_ = os.Chown(tmpName, int(st.Uid), int(st.Gid))
+			_ = tmp.Chown(int(st.Uid), int(st.Gid))
 		}
 	}
 

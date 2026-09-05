@@ -171,14 +171,6 @@ func (p *Provision) Run() (r Report, err error) {
 	return r, nil
 }
 
-// ensureConfig guarantees the config file the daemon will read (path):
-// when no file is present it writes the scaffold — deliberately invalid
-// until the operator fills in backends and models — with the given mode
-// and owner, so the service user can read it. An existing config is the
-// operator's work (secrets, limits, backend choices) and is never
-// rewritten; a non-regular file at the path (a symlink among them) is
-// refused, in line with the project's symlink stance. It reports whether
-// it created the file.
 // ensureFile creates path only when it does not already exist, with the
 // create-only contract the installer relies on: an existing regular file
 // is left untouched, and anything that is not a regular file — a symlink
