@@ -752,6 +752,57 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 	writeDeadlineUsable := true
 
 	parser := newSSEParser(res.Body)
+
+	// One reader for the whole stream, rather than a goroutine, channel
+	// and timer per event. The channel is unbuffered, so back-pressure
+	// and the memory bound are exactly as before: the reader never runs
+	// ahead of the relay.
+	//
+	// done is closed on every exit path below, so the reader can never
+	// block forever on a send the pump abandoned — an idle timeout
+	// leaves it parked in the select, not leaked. The reader may still
+	// be inside a network read when the pump leaves; the deferred
+	// ucancel tears the upstream down, which unblocks it.
+	type evResult struct {
+		out []byte
+		err error
+	}
+	events := make(chan evResult)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		// Panic containment (PLAN §5.1 robustness envelope): a
+		// misbehaving backend body must never take the process down.
+		// This goroutine is spawned by the handler, so net/http's
+		// per-connection recover cannot reach it; a panic is converted
+		// into a stream error instead. The recover now covers the whole
+		// stream rather than one event.
+		defer func() {
+			if rec := recover(); rec != nil {
+				select {
+				case events <- evResult{err: errStreamPanic}:
+				case <-done:
+				}
+			}
+		}()
+		for {
+			out, err := parser.nextEvent()
+			select {
+			case events <- evResult{out: out, err: err}:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Go 1.23+ timer channels are unbuffered, so Stop and Reset need no
+	// drain dance to avoid a stale tick.
+	readTimer := time.NewTimer(idle)
+	defer readTimer.Stop()
+
 	var bytesOut int
 	captured := false
 	for {
@@ -760,35 +811,15 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		}
 
 		// Read the next event, enforcing upstream stream idle
-		// (PLAN §24). One reader goroutine is alive at a time; it
-		// unwinds when the upstream is cancelled below.
-		type evResult struct {
-			out []byte
-			err error
-		}
-		ch := make(chan evResult, 1)
-		go func() {
-			// Panic containment (PLAN §5.1 robustness envelope): a
-			// misbehaving backend body must never take the process
-			// down. This goroutine is spawned by the handler, so
-			// net/http's per-connection recover cannot reach it; a
-			// panic here is converted into a stream error instead.
-			defer func() {
-				if rec := recover(); rec != nil {
-					ch <- evResult{err: errStreamPanic}
-				}
-			}()
-			out, err := parser.nextEvent()
-			ch <- evResult{out: out, err: err}
-		}()
+		// (PLAN §24).
 		var (
 			ev    []byte
 			rerr  error
 			abort bool
 		)
-		readTimer := time.NewTimer(idle)
+		readTimer.Reset(idle)
 		select {
-		case r := <-ch:
+		case r := <-events:
 			ev, rerr = r.out, r.err
 		case <-readTimer.C:
 			abort = true

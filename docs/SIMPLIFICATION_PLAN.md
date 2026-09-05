@@ -122,8 +122,8 @@ uncommitted changes or a failing check.
 | D5 | table-driven client errors | low | complete |
 | D6 | extract the startup consistency checks from `buildDaemon` | low-med | complete |
 | E1 | decode and encode the request body once | med | complete |
-| E2 | parse each SSE event once | low | pending |
-| E3 | reuse the SSE parser buffers | low | pending |
+| E2 | parse each SSE event once | low | complete |
+| E3 | reuse the SSE parser buffers | low | complete |
 | E4 | one reader goroutine per stream | med | pending |
 
 Per task: read the named files and their tests; implement only that

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -164,6 +165,28 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// newProxyCfg builds a single-backend proxy from an explicit config, for
+// tests that need to vary timeouts.
+func newProxyCfg(t *testing.T, cfg *config.Config) *Proxy {
+	t.Helper()
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1855,4 +1878,79 @@ func TestDuplicateModelKeyCollapsed(t *testing.T) {
 	if f.lastModel != "Upstream/Model" {
 		t.Fatalf("upstream model = %q, want the rewritten one", f.lastModel)
 	}
+}
+
+// The stream reader is one goroutine for the whole stream, parked on an
+// unbuffered send. Every pump exit must release it: an idle timeout, a
+// client disconnect, and a clean EOF all close done, and the deferred
+// upstream cancel unblocks a reader still inside a network read.
+func TestStreamReaderDoesNotLeak(t *testing.T) {
+	settle := func() int {
+		// Give abandoned readers a chance to unwind before counting.
+		for range 50 {
+			runtime.Gosched()
+			time.Sleep(2 * time.Millisecond)
+		}
+		return runtime.NumGoroutine()
+	}
+
+	t.Run("idle timeout", func(t *testing.T) {
+		// The reader is parked on a send the pump abandoned; only
+		// closing done releases it. Several streams, so a per-stream
+		// leak is unmistakable against connection-goroutine noise.
+		release := make(chan struct{})
+		f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"a\":1}\n\n"))
+			if fl, ok := w.(http.Flusher); ok {
+				fl.Flush()
+			}
+			<-release // stall past the idle bound
+		})
+		cfg := testConfig(f.server.URL)
+		cfg.Server.StreamIdleTimeout = config.Duration(30 * time.Millisecond)
+		be := cfg.Backends["b1"]
+		be.StreamIdleTimeout = config.Duration(30 * time.Millisecond)
+		cfg.Backends["b1"] = be
+		p := newProxyCfg(t, cfg)
+
+		const streams = 12
+		before := settle()
+		for range streams {
+			if rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gen-1","stream":true}`, testKey()); rec.Code != 200 {
+				t.Fatalf("status = %d", rec.Code)
+			}
+		}
+		close(release)
+		after := settle()
+		if after-before >= streams {
+			t.Fatalf("goroutines %d -> %d across %d timed-out streams: the reader leaks per stream",
+				before, after, streams)
+		}
+	})
+
+	t.Run("clean eof", func(t *testing.T) {
+		f := newFakeVLLM(t, chatSSE)
+		p := newProxy(t, f)
+		stream := func(n int) {
+			for range n {
+				if rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+					`{"model":"gen-1","stream":true}`, testKey()); rec.Code != 200 {
+					t.Fatalf("status = %d", rec.Code)
+				}
+			}
+		}
+		// Warm up first: the transport and the test server keep idle
+		// connection goroutines, which are not per-stream. A leaked
+		// reader would grow with the number of streams, so compare two
+		// equal batches rather than against a cold baseline.
+		stream(20)
+		before := settle()
+		stream(40)
+		after := settle()
+		if after > before+2 {
+			t.Fatalf("goroutines %d -> %d across 40 more streams: readers leak per stream", before, after)
+		}
+	})
 }
