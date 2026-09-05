@@ -166,7 +166,7 @@ func (r *Router) Select(publicModel string, exclude []string) (Target, error) {
 		return Target{}, ErrNoEligibleBackend
 	}
 
-	var pick int
+	pick := cands[0]
 	switch entry.strategy {
 	case "single":
 		pick = cands[0]
@@ -175,7 +175,24 @@ func (r *Router) Select(publicModel string, exclude []string) (Target, error) {
 		r.rr[publicModel]++
 		n := r.rr[publicModel] - 1
 		r.rrMu.Unlock()
-		pick = cands[int(n)%len(cands)]
+		// Rotate over the whole replica ring and take the first
+		// eligible one, rather than indexing into the candidate slice.
+		// The counter is shared per model while the candidate set
+		// shrinks with exclusions and health cooldowns, so indexing by
+		// len(cands) locks the counter's parity onto a subset: with the
+		// proxy's retry loop (one Select per attempt, with a growing
+		// exclude list) three equal replicas received 200/400/600 of
+		// 1200 picks, and with two replicas one never saw a first
+		// attempt at all. Rotating over the full ring keeps the
+		// counter's meaning independent of how many replicas happen to
+		// be eligible.
+		start := int(n % uint64(len(entry.replicas)))
+		for k := range entry.replicas {
+			if i := (start + k) % len(entry.replicas); slices.Contains(cands, i) {
+				pick = i
+				break
+			}
+		}
 	case "weighted-round-robin":
 		// nextWRR returns a replica index (drawn from cands); unlike
 		// "round-robin" it is not a position within cands, so no outer
@@ -198,6 +215,13 @@ func (r *Router) Select(publicModel string, exclude []string) (Target, error) {
 			}
 		}
 		pick = best
+	default:
+		// New validates the strategy against config.SupportedStrategies,
+		// but that coupling is one-directional: a name added there but
+		// not here would otherwise fall through with pick unset and
+		// return a replica that may be excluded or in cooldown, which
+		// the proxy would then retry against for its whole budget.
+		return Target{}, fmt.Errorf("routing: unimplemented strategy %q", entry.strategy)
 	}
 	rep := entry.replicas[pick]
 	return Target{

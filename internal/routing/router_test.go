@@ -414,3 +414,81 @@ func TestStrategySetAgreesWithConfig(t *testing.T) {
 		t.Fatal("router accepted a non-canonical strategy")
 	}
 }
+
+// Round-robin must stay fair when the candidate set shrinks. The counter
+// is shared per model while exclusions and health cooldowns remove
+// replicas, so indexing into the candidate slice by len(cands) used to
+// lock the counter's parity onto a subset: with the proxy's retry loop
+// (one Select per attempt, with a growing exclude list) three equal
+// replicas received 200/400/600 of 1200 picks, and two replicas left one
+// of them never receiving a first attempt.
+func TestRoundRobinFairWhenCandidatesShrink(t *testing.T) {
+	cfg := &config.Config{
+		Backends: map[string]config.Backend{
+			"A": {UpstreamModel: "U"}, "B": {UpstreamModel: "U"}, "C": {UpstreamModel: "U"},
+		},
+		Models: map[string]config.Model{
+			"m": {Type: "generation", Strategy: "round-robin", Backends: []config.BackendRef{
+				{Name: "A", Weight: 1}, {Name: "B", Weight: 1}, {Name: "C", Weight: 1},
+			}},
+		},
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The proxy's retry shape: attempt 0 over all replicas, attempt 1
+	// excluding whichever was just tried.
+	const requests = 600
+	counts := map[string]int{}
+	for range requests {
+		first, err := r.Select("m", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[first.Backend]++
+		second, err := r.Select("m", []string{first.Backend})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second.Backend == first.Backend {
+			t.Fatalf("Select returned the excluded backend %q", first.Backend)
+		}
+		counts[second.Backend]++
+	}
+	// 1200 picks over 3 replicas; allow a small remainder, not a 2x skew.
+	const want = requests * 2 / 3
+	for _, name := range []string{"A", "B", "C"} {
+		if got := counts[name]; got < want-len(counts) || got > want+len(counts) {
+			t.Errorf("backend %s got %d picks, want ~%d (counts: %v)", name, got, want, counts)
+		}
+	}
+}
+
+// A strategy accepted by config but not implemented by Select must fail
+// at construction rather than silently returning replica 0, which may be
+// excluded or in cooldown.
+func TestUnimplementedStrategyIsNotSilent(t *testing.T) {
+	cfg := &config.Config{
+		Backends: map[string]config.Backend{"A": {UpstreamModel: "U"}, "B": {UpstreamModel: "U"}},
+		Models: map[string]config.Model{
+			"m": {Type: "generation", Strategy: "round-robin", Backends: []config.BackendRef{
+				{Name: "A", Weight: 1}, {Name: "B", Weight: 1},
+			}},
+		},
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reach past New's validation the way a future config-only addition
+	// would: the router entry carries a strategy Select does not handle.
+	e := r.models["m"]
+	e.strategy = "not-implemented"
+	r.models["m"] = e
+
+	if _, err := r.Select("m", []string{"A"}); err == nil {
+		t.Fatal("Select accepted an unimplemented strategy instead of failing closed")
+	}
+}
