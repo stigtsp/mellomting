@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mellomting/internal/testsupport"
 	"net"
@@ -1119,5 +1120,43 @@ func TestForwardResolverClassification(t *testing.T) {
 				t.Fatalf("resolver err %v: got %v (want %v)", tc.err, err, tc.want)
 			}
 		})
+	}
+}
+
+// A caller that did not ask for a stream must never be handed a live
+// body, whatever Content-Type the backend chose. The non-stream path
+// holds a request-timeout context whose deferred cancel fires as soon as
+// Forward returns, so a live body would die mid-read: the client would
+// get a truncated 200 carrying text/event-stream it never asked for, and
+// nothing would be accounted. FIX-03/N3 narrows the other way (a
+// stream-flagged request answered with JSON is buffered); both
+// directions are needed.
+func TestNonStreamRequestNeverGetsLiveBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for i := range 10 {
+			fmt.Fprintf(w, "data: {\"n\":%d}\n\n", i)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	c := newTestClient(t, ts)
+
+	res, err := c.Forward(context.Background(), Request{
+		Path: "/v1/chat/completions", Method: http.MethodPost, Stream: false,
+		Body: []byte(`{"model":"m"}`), Headers: http.Header{},
+	})
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	defer res.Close()
+
+	if res.Body != nil {
+		t.Fatal("a non-stream request was handed a live body")
+	}
+	if len(res.BodyBytes) == 0 {
+		t.Fatal("the response was not buffered")
 	}
 }

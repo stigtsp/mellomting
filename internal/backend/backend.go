@@ -595,7 +595,15 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	// 200 (e.g. /v1/embeddings, which OpenAI never streams) is buffered
 	// and accounted like any non-streaming response, never fed to the
 	// SSE pump where it would charge zero tokens.
-	streamBody := resp.StatusCode == http.StatusOK && isEventStream(resp)
+	// Both directions matter. FIX-03/N3 is the narrowing one: a
+	// stream-flagged request answered with plain application/json (e.g.
+	// /v1/embeddings) is buffered, never fed to the SSE pump where it
+	// would charge zero tokens. The widening one is req.Stream: a caller
+	// that did not ask for a stream must never be handed a live body,
+	// because the non-stream path holds a request-timeout context whose
+	// deferred cancel fires the moment Forward returns — the body would
+	// die mid-read, delivering a truncated 200 and accounting nothing.
+	streamBody := req.Stream && resp.StatusCode == http.StatusOK && isEventStream(resp)
 	if !streamBody {
 		defer resp.Body.Close()
 		if boundTimer != nil {
