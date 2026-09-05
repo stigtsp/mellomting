@@ -1578,6 +1578,42 @@ models:
 			wantErr: "retry.max_backoff",
 		},
 		{
+			// A model named "*" is the ACL wildcard: a key created for
+			// that one model would be granted every model instead. A
+			// name is attacker-supplied when it comes from an inference
+			// server's /v1/models during init.
+			name: "model named as the ACL wildcard",
+			yaml: `
+version: 1
+` + minimalServer + `
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  "*":
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "ACL wildcard",
+		},
+		{
+			name: "model name with a comma",
+			yaml: `
+version: 1
+` + minimalServer + `
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  "a,b":
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "cannot contain a comma",
+		},
+		{
 			name: "model type invalid",
 			yaml: `
 version: 1

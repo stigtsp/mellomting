@@ -109,18 +109,31 @@ func TestSubcommandAndDescribeUnknownCommand(t *testing.T) {
 
 func TestSplitModels(t *testing.T) {
 	cases := []struct {
-		in   string
-		want []string
+		in      string
+		want    []string
+		wantErr bool
 	}{
-		{"", nil},
-		{"a", []string{"a"}},
-		{" a , b ", []string{"a", "b"}},
-		{"a,,b", []string{"a", "b"}},
-		{"a,*", []string{"*"}},
-		{"*", []string{"*"}},
+		{in: "", want: nil},
+		{in: "a", want: []string{"a"}},
+		{in: " a , b ", want: []string{"a", "b"}},
+		{in: "a,,b", want: []string{"a", "b"}},
+		{in: "*", want: []string{"*"}},
+		// The wildcard used to swallow every name beside it, so an ACL
+		// written to allow "a" allowed everything instead.
+		{in: "a,*", wantErr: true},
+		{in: "*,a", wantErr: true},
 	}
 	for _, tc := range cases {
-		got := splitModels(tc.in)
+		got, err := splitModels(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("splitModels(%q) = %v, want an error", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("splitModels(%q): %v", tc.in, err)
+		}
 		if len(got) != len(tc.want) {
 			t.Fatalf("splitModels(%q) = %v, want %v", tc.in, got, tc.want)
 		}
@@ -337,7 +350,11 @@ func TestKeyParseFlagsValid(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("key create valid flags exit = %d", code)
 	}
-	if !c.limitsSet || c.concurrentRequests != 4 || len(splitModels(c.models)) != 2 {
+	parsed, err := splitModels(c.models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.limitsSet || c.concurrentRequests != 4 || len(parsed) != 2 {
 		t.Fatalf("parsed flags = %+v", c)
 	}
 

@@ -2922,7 +2922,10 @@ The response MUST be decoded as a bounded subset: top-level `object == "list"`,
 non-null `data`, each entry `object == "model"`, and each `id` valid UTF-8,
 non-empty, at most 256 bytes, with no Unicode control/format character, no
 Unicode line/paragraph separator, and no leading/trailing Unicode whitespace,
-with no duplicate ID within one server. Capabilities are not inferred from
+with no duplicate ID within one server. An `id` MUST NOT be `*` or contain a
+comma: `*` is the model-ACL wildcard and a comma separates entries in
+`key create --models`, so a discovered ID that is either would let the queried
+server name a model the authorization language reads as a sentinel. Capabilities are not inferred from
 other response fields; every discovered model defaults to `type: generation`.
 
 Accepted server syntax is `--server URL` and `--server NAME=URL`. A sole
@@ -3004,7 +3007,12 @@ operator-facing configuration.
 
 When `--models` is absent: exactly one configured public model is inferred;
 zero models fails; two or more models fails and lists only the model names,
-sorted, with a request to pass `--models`; wildcard access is never inferred.
+sorted, with a request to pass `--models`; wildcard access is never inferred,
+including when the sole configured model is itself named `*`, which fails with
+the same request to pass `--models`. In `--models`, `*` is accepted only on its
+own: mixed with named models it is a usage error rather than a list that
+collapses to the wildcard. Configuration validation independently rejects a
+public model named `*` or containing a comma.
 
 Every generated and accepted client API key MUST have exactly the form
 `sk-<username>-<keyid>-<secret>` with `username` matching

@@ -552,6 +552,18 @@ func validateModels(models map[string]Model, backends map[string]Backend) []stri
 	for name, m := range models {
 		prefix := fmt.Sprintf("models.%s", name)
 
+		// A public model name also has to survive being written into a
+		// key's model ACL. "*" is the wildcard that grants every model,
+		// and a comma is the separator `key create --models` splits on,
+		// so a model carrying either would silently widen an ACL meant
+		// to name it alone.
+		switch {
+		case name == "*":
+			errs = append(errs, prefix+": \"*\" is the ACL wildcard and cannot name a model")
+		case strings.Contains(name, ","):
+			errs = append(errs, fmt.Sprintf("%s: a model name cannot contain a comma, which separates entries in a key's model list", prefix))
+		}
+
 		switch m.Type {
 		case "generation", "embedding":
 		default:

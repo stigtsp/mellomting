@@ -150,6 +150,13 @@ func TestParseModelsRejects(t *testing.T) {
 		{name: "leading nbsp", in: `{"object":"list","data":[` + entry(`\u00A0a`) + `]}`, want: "model ID is invalid"},
 		{name: "trailing em space", in: `{"object":"list","data":[` + entry(`a\u2003`) + `]}`, want: "model ID is invalid"},
 		{name: "leading ideographic space", in: `{"object":"list","data":[` + entry(`\u3000a`) + `]}`, want: "model ID is invalid"},
+		// A model ID that means something else once it reaches a key's
+		// model ACL: "*" is the wildcard granting every model, and a
+		// comma separates entries in `key create --models`. The server
+		// answering this endpoint is not trusted yet, so it must not be
+		// able to name one.
+		{name: "acl wildcard", in: `{"object":"list","data":[` + entry("*") + `]}`, want: "model ID is invalid"},
+		{name: "acl separator", in: `{"object":"list","data":[` + entry("a,*") + `]}`, want: "model ID is invalid"},
 		{name: "duplicate object field", in: `{"object":"list","object":"list","data":[]}`, want: "duplicate object field"},
 		{name: "duplicate data field", in: `{"object":"list","data":[],"data":[]}`, want: "duplicate data field"},
 	}

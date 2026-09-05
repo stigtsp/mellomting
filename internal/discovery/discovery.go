@@ -189,8 +189,18 @@ func parseData(dec *json.Decoder, maxModels int) ([]string, error) {
 // most MaxModelIDBytes bytes, no control/format character, no Unicode
 // line or paragraph separator, and no leading or trailing Unicode
 // whitespace.
+//
+// It also rejects the two names that mean something other than
+// themselves once a discovered ID reaches a key's model ACL: "*" is the
+// wildcard auth.Key.Allows grants every model on, and a comma is the
+// separator `key create --models` splits on. A server the operator has
+// not decided to trust yet answers this endpoint, so it must not be able
+// to name a model that the authorization language reads as a sentinel.
 func validModelID(s string) bool {
 	if s == "" || len(s) > MaxModelIDBytes || !utf8.ValidString(s) {
+		return false
+	}
+	if s == "*" || strings.Contains(s, ",") {
 		return false
 	}
 	for _, r := range s {
