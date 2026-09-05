@@ -1104,11 +1104,13 @@ var (
 func prepareOutbound(body []byte, o operation, cap int, stream, ensureUsage bool, configuredReservation int64) (out []byte, reservation int64, injectedUsage bool, err error) {
 	if o.capField == "" && !(stream && ensureUsage) {
 		// Neither the output cap nor stream-usage injection applies
-		// (e.g. embeddings, or usage injection disabled).
-		return body, 0, false, nil
+		// (e.g. embeddings, or usage injection disabled). The
+		// unknown-usage reservation still does: returning 0 here would
+		// let such a request settle nothing against the quota.
+		return body, configuredReservation, false, nil
 	}
 	if len(body) == 0 {
-		return body, 0, false, nil
+		return body, configuredReservation, false, nil
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
@@ -1208,9 +1210,15 @@ func tokenLimit(fields map[string]json.RawMessage, name string, cap int) (presen
 
 // injectStreamUsage sets stream_options.include_usage=true, preserving
 // any other existing stream options (PLAN §38). It reports whether it
-// actually injected the key: a client-set value (true or false) is never
-// overwritten and yields false, so callers set injectedUsage only for a
-// real injection (FIX-09).
+// injected the key, so callers set injectedUsage only for a real
+// injection (FIX-09).
+//
+// An explicit include_usage:true is honoured and yields false: the
+// client asked for the chunk, so the pump must not swallow it. Any other
+// client value is overwritten, because suppressing the usage report
+// would make the request settle the unknown-usage reservation instead of
+// its real usage — a client-selectable quota bypass (T-A2). The injected
+// chunk is swallowed, so the client's stream is unchanged.
 func injectStreamUsage(fields map[string]json.RawMessage) bool {
 	var so map[string]json.RawMessage
 	if raw, ok := fields["stream_options"]; ok {
@@ -1219,8 +1227,11 @@ func injectStreamUsage(fields map[string]json.RawMessage) bool {
 	if so == nil {
 		so = map[string]json.RawMessage{}
 	}
-	if _, ok := so["include_usage"]; ok {
-		return false
+	if raw, ok := so["include_usage"]; ok {
+		var want bool
+		if err := json.Unmarshal(raw, &want); err == nil && want {
+			return false
+		}
 	}
 	so["include_usage"] = json.RawMessage(`true`)
 	enc, err := json.Marshal(so)

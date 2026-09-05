@@ -388,27 +388,33 @@ func TestUsageNullFrameReEmitted(t *testing.T) {
 	}
 }
 
-// FIX-09: injectedUsage must be true only when the proxy actually wrote
-// include_usage. An explicit client value (true or false) is preserved
-// upstream and never counts as injected, so the pump does not swallow a
-// real backend usage-only chunk the client did not ask the proxy to add.
+// FIX-09/T-A2: injectedUsage must be true whenever the proxy wrote
+// include_usage, so the pump swallows exactly the chunk it caused. An
+// explicit include_usage:true is honoured and is not an injection, so a
+// usage chunk the client asked for is never swallowed. include_usage:false
+// is overridden instead of forwarded: suppressing the usage report would
+// let the client pick the unknown-usage reservation over its real usage.
 func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
-	prep := func(body string) bool {
+	prep := func(body string) (string, bool) {
 		o := operation{endpoint: "chat.completions", generative: true}
-		_, _, inj, err := prepareOutbound([]byte(body), o, 100000, true, true, 0)
+		out, _, inj, err := prepareOutbound([]byte(body), o, 100000, true, true, 0)
 		if err != nil {
 			t.Fatalf("prepareOutbound: %v", err)
 		}
-		return inj
+		return string(out), inj
 	}
-	if !prep(`{"model":"m","stream":true,"messages":[]}`) {
+	if _, inj := prep(`{"model":"m","stream":true,"messages":[]}`); !inj {
 		t.Fatal("omit stream_options: injectedUsage should be true")
 	}
-	if prep(`{"model":"m","stream":true,"stream_options":{"include_usage":false},"messages":[]}`) {
-		t.Fatal("explicit include_usage:false: injectedUsage should be false")
+	out, inj := prep(`{"model":"m","stream":true,"stream_options":{"include_usage":false},"messages":[]}`)
+	if !inj {
+		t.Fatal("explicit include_usage:false: injectedUsage should be true (the proxy overrides it)")
 	}
-	if prep(`{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[]}`) {
-		t.Fatal("explicit include_usage:true: injectedUsage should be false")
+	if !strings.Contains(out, `"include_usage":true`) {
+		t.Fatalf("include_usage:false must be overridden upstream, got: %s", out)
+	}
+	if out, inj := prep(`{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[]}`); inj {
+		t.Fatalf("explicit include_usage:true: injectedUsage should be false, got: %s", out)
 	}
 
 	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -436,15 +442,23 @@ func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
 	if err := json.Unmarshal(f.lastBody, &upstream); err != nil {
 		t.Fatalf("backend body: %v", err)
 	}
-	if upstream.StreamOptions.IncludeUsage {
-		t.Fatalf("client's include_usage:false must be preserved upstream: %s", f.lastBody)
+	if !upstream.StreamOptions.IncludeUsage {
+		t.Fatalf("include_usage:false must be overridden upstream: %s", f.lastBody)
 	}
 	got := w.Body.String()
-	if !strings.Contains(got, `"total_tokens":15`) {
-		t.Fatalf("usage-only chunk must be relayed when the client set include_usage:false:\n%s", got)
+	if strings.Contains(got, `"total_tokens":15`) {
+		t.Fatalf("the overridden usage chunk must be swallowed, leaving the client's stream unchanged:\n%s", got)
 	}
 	if !strings.Contains(got, "Hi") || !strings.Contains(got, "[DONE]") {
 		t.Fatalf("stream content missing:\n%s", got)
+	}
+	// The point of the override: the request settles its real usage
+	// rather than the unknown-usage reservation. Exactly 15 settled.
+	if ok, _ := quota.Admit("K1", accounting.WindowLimit{TokensPerHour: 15, TokensPerDay: 100}, 0, time.Now()); !ok {
+		t.Fatal("more than 15 tokens settled")
+	}
+	if ok, _ := quota.Admit("K1", accounting.WindowLimit{TokensPerHour: 14, TokensPerDay: 100}, 0, time.Now()); ok {
+		t.Fatal("real usage was not settled; the client suppressed the usage report")
 	}
 }
 

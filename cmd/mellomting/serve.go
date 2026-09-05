@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -582,6 +583,26 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		(cfg.Accounting.EnsureStreamUsage != nil || cfg.Accounting.UnknownUsageReservation != 0) &&
 		!quotaKeysConfigured(users.Keys) {
 		return nil, fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require a per-key token quota (tokens_per_hour or tokens_per_day) when accounting is disabled; no key in %s carries one", cfg.Auth.UsersFile)
+	}
+
+	// A token quota is only enforceable if a request whose usage the
+	// backend never reports still counts against it (PLAN §39). The
+	// fallback amount is unknown_usage_reservation, or the model's output
+	// cap on a generation model; with both zero such a request counts
+	// zero, the quota never advances, and the limit is silently
+	// unlimited. An embedding model has no output cap to fall back to, so
+	// only the reservation can account for it.
+	if quotaKeysConfigured(users.Keys) && cfg.Accounting.UnknownUsageReservation == 0 {
+		var uncounted []string
+		for name, m := range cfg.Models {
+			if m.Type == "embedding" || m.Policy.MaxOutputTokens == 0 {
+				uncounted = append(uncounted, name)
+			}
+		}
+		if len(uncounted) > 0 {
+			sort.Strings(uncounted)
+			return nil, fmt.Errorf("a per-key token quota is configured in %s, but a request to model(s) %s whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, strings.Join(uncounted, ", "))
+		}
 	}
 
 	prox, err := proxy.New(cfg, router, clients, log, quota, writer, quotaKeysConfigured(users.Keys))
