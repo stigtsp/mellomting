@@ -28,8 +28,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Static check (staticcheck v0.7.0)
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+      # The pin has to keep up with the toolchain in go.mod: staticcheck
+      # reads the compiler's export data for stdlib imports, and a
+      # release that predates the toolchain fails every package with
+      # "export data version N is greater than maximum supported
+      # version M" before it analyses anything. v0.8.1 reads Go 1.27.
+      - name: Static check (staticcheck v0.8.1)
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
       - name: Vulnerability check (govulncheck x/vuln v1.7.0)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
