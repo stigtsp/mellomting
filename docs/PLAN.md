@@ -193,7 +193,10 @@ These are non-negotiable project invariants.
 20. Config reload must never widen the active Landlock sandbox.
 21. A client may not bypass a public model ACL using a backend model name.
 22. Unknown response IDs must never be broadcast to multiple backends to discover their owner.
-23. Remote qualifier models may not receive prompt contents without explicit configuration.
+23. Remote qualifier models may not receive prompt contents without explicit
+    configuration. (Forward-looking: qualifiers are shelved for v1 and the
+    source schema has no `qualifiers` key, so nothing in the running daemon
+    can reach a qualifier. See §96.)
 24. Mellomting emits no product telemetry unless a future operator explicitly configures it.
 
 ---
