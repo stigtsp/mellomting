@@ -396,7 +396,7 @@ func TestUsageNullFrameReEmitted(t *testing.T) {
 // let the client pick the unknown-usage reservation over its real usage.
 func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
 	prep := func(body string) (string, bool) {
-		o := operation{endpoint: "chat.completions", generative: true}
+		o := operation{endpoint: "chat.completions", capField: "max_completion_tokens"}
 		out, _, inj, err := prepareOutbound([]byte(body), o, 100000, true, true, 0)
 		if err != nil {
 			t.Fatalf("prepareOutbound: %v", err)

@@ -1791,3 +1791,47 @@ func TestAffinityPinBoundToModel(t *testing.T) {
 
 // Ensure the context-cancellation path compiles and is referenced.
 var _ = context.Canceled
+
+// The request log's endpoint field identifies the route, not the
+// request. The response-ID operations used to mutate the operation's
+// path in place, and the deferred logger reads it, so a retrieve logged
+// "GET /v1/responses/resp_123" — turning a fixed enum into
+// high-cardinality client input and breaking aggregation by endpoint.
+func TestLogEndpointExcludesResponseID(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, responsesJSON)
+	var buf bytes.Buffer
+	cfg := testConfig(f.server.URL)
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
+		slog.New(slog.NewJSONHandler(&buf, nil)), nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := testKey()
+
+	// Create, so the retrieve below has an affinity entry to resolve.
+	if rec := run(t, p, http.MethodPost, "/v1/responses", `{"model":"gen-1","input":"hi"}`, key); rec.Code != 200 {
+		t.Fatalf("create status = %d", rec.Code)
+	}
+	if rec := run(t, p, http.MethodGet, "/v1/responses/resp_123", "", key); rec.Code != 200 {
+		t.Fatalf("retrieve status = %d", rec.Code)
+	}
+
+	if strings.Contains(buf.String(), "resp_123") {
+		t.Fatalf("the response ID reached the request log:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"endpoint":"GET /v1/responses"`) {
+		t.Fatalf("endpoint is not the route template:\n%s", buf.String())
+	}
+}

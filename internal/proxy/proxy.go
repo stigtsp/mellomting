@@ -45,28 +45,44 @@ type Req struct {
 }
 
 // operation describes one allow-listed backend operation (PLAN §11.1).
+// routeKind says where an operation's target comes from. The two are
+// exhaustive and mutually exclusive, so one field states what two
+// complementary booleans used to.
+type routeKind int
+
+const (
+	// routeByModel resolves the backend from the body's "model" field.
+	routeByModel routeKind = iota
+	// routeByResponseID resolves it from the response ID in the path,
+	// through the affinity table (retrieve/cancel).
+	routeByResponseID
+)
+
 type operation struct {
-	path       string // backend path
-	method     string
-	needsModel bool // body must carry a "model" field
-	generative bool // streams output tokens (chat/completions/responses)
-	capture    bool // record created response IDs (responses create)
-	respID     bool // ResponseID is authoritative (retrieve/cancel)
-	endpoint   string
+	path     string // backend path
+	method   string
+	route    routeKind
+	capture  bool // record created response IDs (responses create)
+	endpoint string
 	// capField and altCapField name the generative output-limit request
-	// fields (PLAN §36); empty means the operation is not generative
-	// (no output cap applies).
+	// fields (PLAN §36). An operation is generative exactly when
+	// capField is set, so that is the single spelling of the predicate:
+	// a separate flag could contradict it.
 	capField    string
 	altCapField string
 }
 
+// generative reports whether the operation streams output tokens and so
+// carries an output cap (PLAN §36).
+func (o operation) generative() bool { return o.capField != "" }
+
 var (
-	opChat       = operation{path: "/v1/chat/completions", method: "POST", needsModel: true, generative: true, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
-	opLegacy     = operation{path: "/v1/completions", method: "POST", needsModel: true, generative: true, endpoint: "completions", capField: "max_tokens"}
-	opEmbed      = operation{path: "/v1/embeddings", method: "POST", needsModel: true, endpoint: "embeddings"}
-	opResp       = operation{path: "/v1/responses", method: "POST", needsModel: true, generative: true, capture: true, endpoint: "responses", capField: "max_output_tokens"}
-	opRespGet    = operation{path: "/v1/responses", method: "GET", respID: true, endpoint: "responses"}
-	opRespCancel = operation{path: "/v1/responses", method: "POST", respID: true, endpoint: "responses"}
+	opChat       = operation{path: "/v1/chat/completions", method: "POST", route: routeByModel, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
+	opLegacy     = operation{path: "/v1/completions", method: "POST", route: routeByModel, endpoint: "completions", capField: "max_tokens"}
+	opEmbed      = operation{path: "/v1/embeddings", method: "POST", route: routeByModel, endpoint: "embeddings"}
+	opResp       = operation{path: "/v1/responses", method: "POST", route: routeByModel, capture: true, endpoint: "responses", capField: "max_output_tokens"}
+	opRespGet    = operation{path: "/v1/responses", method: "GET", route: routeByResponseID, endpoint: "responses"}
+	opRespCancel = operation{path: "/v1/responses", method: "POST", route: routeByResponseID, endpoint: "responses"}
 )
 
 // Proxy wires configuration, routing, and backend clients together.
@@ -269,7 +285,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 	// 3. Shallow parse, model resolution, ACL (PLAN §12, §13, §31).
 	fixedBackend := ""
-	if o.needsModel {
+	if o.route == routeByModel {
 		var perr error
 		body, publicModel, stream, perr = shallowParse(body)
 		out.model = publicModel
@@ -288,7 +304,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// accepting "stream": true here would otherwise let a
 		// misrouted SSE response charge zero tokens. Fail closed with a
 		// 4xx before any accounting or forwarding happens.
-		if stream && !o.generative {
+		if stream && !o.generative() {
 			fail(errNoStream)
 			return
 		}
@@ -304,7 +320,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// exist here (checked above), so this is a 400, not a 404.
 		switch p.router.TypeOf(publicModel) {
 		case "embedding":
-			if o.generative {
+			if o.generative() {
 				fail(errNotGenerate)
 				return
 			}
@@ -328,7 +344,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				fixedBackend = b
 			}
 		}
-	} else if o.respID {
+	} else if o.route == routeByResponseID {
 		// Responses retrieve/cancel (PLAN §21.1, §21.3): route only to
 		// the backend that owns the response for THIS key. A different
 		// key must not be able to retrieve or cancel another key's
@@ -344,18 +360,24 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		fixedBackend = b
 	}
 
-	if o.respID {
-		// Build the outbound path with the response ID. The ID is
-		// restricted to a safe charset here as defense in depth (the
-		// route layer also validates it) so it can never inject a path
-		// or host into the backend URL.
+	// outPath is the backend path for this request. The response-ID
+	// operations append the client's ID, which is why it is a local:
+	// operation is an immutable table entry, and the deferred logger
+	// reads o.path as the route's identity. Mutating it there put the
+	// client's response ID into the log's endpoint field, making a fixed
+	// enum high-cardinality client input.
+	outPath := o.path
+	if o.route == routeByResponseID {
+		// The ID is restricted to a safe charset here as defense in
+		// depth (the route layer also validates it) so it can never
+		// inject a path or host into the backend URL.
 		if !isValidResponseID(q.ResponseID) {
 			fail(errRespBadID)
 			return
 		}
-		o.path = "/v1/responses/" + q.ResponseID
+		outPath = "/v1/responses/" + q.ResponseID
 		if o.method == http.MethodPost {
-			o.path += "/cancel"
+			outPath += "/cancel"
 		}
 	}
 
@@ -368,7 +390,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		reservation   int64
 		injectedUsage bool
 	)
-	if o.needsModel {
+	if o.route == routeByModel {
 		cap := 0
 		if m, ok := p.cfg.Models[publicModel]; ok {
 			cap = m.Policy.MaxOutputTokens
@@ -457,7 +479,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 		}
 		var bd []byte = prepared
-		if o.needsModel {
+		if o.route == routeByModel {
 			up, _ := p.router.UpstreamFor(backendName)
 			if up != "" {
 				var rerr error
@@ -488,7 +510,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 		res, err := client.Forward(uctx, backend.Request{
 			Method:  o.method,
-			Path:    o.path,
+			Path:    outPath,
 			Body:    bd,
 			Headers: headers,
 			Stream:  stream,
