@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -81,14 +82,14 @@ func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle
 
 	cl1, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cl2, err := backend.New(backend.Options{
 		Name: "b2", Cfg: cfg.Backends["b2"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.p, err = New(cfg, router, clients, discardLogger(), nil, nil, false)
+	e.p, err = New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func newDeadClient(t *testing.T) *backend.Client {
 		},
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: 1 << 20,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +345,7 @@ func TestQueueFullFallsBack(t *testing.T) {
 	cfg.Backends["b1"] = b
 	c, err := backend.New(backend.Options{
 		Name: "b1", Cfg: b, Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)

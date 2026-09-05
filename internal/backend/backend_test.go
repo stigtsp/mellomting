@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -956,7 +957,7 @@ func TestForwardPolicyRejectsNonLoopback(t *testing.T) {
 		Name:    "remote",
 		Cfg:     config.Backend{BaseURL: "http://100.64.0.1:8000"},
 		Network: Policy{Mode: "loopback-only"},
-		Log:     discardLogger(),
+		Log:     testsupport.DiscardLogger(),
 	}
 	if _, err := New(o); !errors.Is(err, ErrPolicy) {
 		t.Fatalf("err = %v, want ErrPolicy", err)
@@ -1119,8 +1120,4 @@ func TestForwardResolverClassification(t *testing.T) {
 			}
 		})
 	}
-}
-
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 10}))
 }

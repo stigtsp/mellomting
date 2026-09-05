@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -207,7 +208,7 @@ func TestAcquireQueueTimeoutAndCancel(t *testing.T) {
 		},
 		Network:          Policy{Mode: "loopback-only"},
 		MaxResponseBytes: 1 << 20,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	}
 	c, err := New(o)
 	if err != nil {

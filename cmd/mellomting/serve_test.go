@@ -3,19 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,16 +29,6 @@ import (
 )
 
 // unixHTTPClient dials a pathname Unix socket for HTTP requests.
-func unixHTTPClient(sock string) *http.Client {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
-		},
-	}
-	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
-}
-
 func getURL(t *testing.T, client *http.Client, url, authValue string) (*http.Response, string) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -276,7 +259,7 @@ func startServeWithLog(t *testing.T, bin, cfgPath string) (*exec.Cmd, *syncBuffe
 
 func waitReady(t *testing.T, sock string) *http.Client {
 	t.Helper()
-	client := unixHTTPClient(sock)
+	client := testsupport.UnixClient(sock)
 	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
 	var lastCode, lastBody string
@@ -592,57 +575,6 @@ func configListenUnix(address, mode string) config.Listen {
 	return config.Listen{Network: "unix", Address: address, Mode: mode}
 }
 
-// writeSelfSignedTLS writes a self-signed certificate (CN localhost,
-// SAN localhost/127.0.0.1) and its key into dir (PLAN §67 tests).
-func writeSelfSignedTLS(t *testing.T, dir string) (certPath, keyPath string) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derKey, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "localhost"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	derCert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPath = filepath.Join(dir, "cert.pem")
-	certOut, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derCert}); err != nil {
-		t.Fatal(err)
-	}
-	if err := certOut.Close(); err != nil {
-		t.Fatal(err)
-	}
-	keyPath = filepath.Join(dir, "key.pem")
-	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: derKey}); err != nil {
-		t.Fatal(err)
-	}
-	if err := keyOut.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return certPath, keyPath
-}
-
 // tlsHTTPClient returns an https client that trusts the test certificate.
 func tlsHTTPClient() *http.Client {
 	return &http.Client{
@@ -669,7 +601,7 @@ func TestServeStaticTLS(t *testing.T) {
 	addr := probe.Addr().String()
 	_ = probe.Close()
 
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}, IPs: []string{"127.0.0.1"}})
 	pepperPath := filepath.Join(dir, "auth.pepper")
 	if err := os.WriteFile(pepperPath, []byte("e2e-tls-pepper-long-enough"), 0o600); err != nil {
 		t.Fatal(err)
@@ -805,7 +737,7 @@ func TestServeTLSHandshakeErrorsStructured(t *testing.T) {
 	addr := probe.Addr().String()
 	_ = probe.Close()
 
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}, IPs: []string{"127.0.0.1"}})
 	pepperPath := filepath.Join(dir, "auth.pepper")
 	if err := os.WriteFile(pepperPath, []byte("e2e-tls-pepper-long-enough"), 0o600); err != nil {
 		t.Fatal(err)

@@ -11,19 +11,12 @@ package integration
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,28 +95,6 @@ func runCmd(t *testing.T, bin, dir string, timeout time.Duration, args ...string
 }
 
 // fakeModelsServer serves a bounded OpenAI /v1/models response.
-func fakeModelsServer(t *testing.T, ids ...string) *httptest.Server {
-	t.Helper()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		var b strings.Builder
-		b.WriteString(`{"object":"list","data":[`)
-		for i, id := range ids {
-			if i > 0 {
-				b.WriteString(",")
-			}
-			b.WriteString(fmt.Sprintf(`{"id":%q,"object":"model"}`, id))
-		}
-		b.WriteString(`]}`)
-		_, _ = io.WriteString(w, b.String())
-	}))
-	t.Cleanup(ts.Close)
-	return ts
-}
 
 func mustStat(t *testing.T, path string) os.FileInfo {
 	t.Helper()
@@ -169,53 +140,6 @@ func freeTCPPort(t *testing.T) string {
 	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
-// genSelfSignedCert writes a self-signed server certificate and key.
-func genSelfSignedCert(t *testing.T) (certPath, keyPath string) {
-	t.Helper()
-	dir := privateDir(t)
-	certPath = filepath.Join(dir, "cert.pem")
-	keyPath = filepath.Join(dir, "key.pem")
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "mellomting-test"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cf, err := os.Create(certPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(cf, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
-		t.Fatal(err)
-	}
-	_ = cf.Close()
-	kf, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(kf, &pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}); err != nil {
-		t.Fatal(err)
-	}
-	_ = kf.Close()
-	return certPath, keyPath
-}
-
 // addTLSBlock inserts a `tls:` block (with the given "field: value" entries)
 // as a child of the top-level `server:` mapping, matching the existing child
 // indentation so `listen:` remains a sibling rather than nesting under `tls`.
@@ -257,7 +181,7 @@ func addTLSBlock(t *testing.T, raw string, fields ...string) string {
 // --- journey 1+2: local init ---
 
 func journeyInitOneServer(t *testing.T, bin string) {
-	backend := fakeModelsServer(t, "qwen3.8-27b")
+	backend := testsupport.FakeModelsServer(t, "qwen3.8-27b")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 	sock := filepath.Join(dir, "m.sock")
@@ -282,8 +206,8 @@ func journeyInitOneServer(t *testing.T, bin string) {
 }
 
 func journeyInitTwoServers(t *testing.T, bin string) {
-	a := fakeModelsServer(t, "model-a", "model-shared")
-	b := fakeModelsServer(t, "model-b", "model-shared")
+	a := testsupport.FakeModelsServer(t, "model-a", "model-shared")
+	b := testsupport.FakeModelsServer(t, "model-b", "model-shared")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
@@ -314,7 +238,7 @@ func journeyInitTwoServers(t *testing.T, bin string) {
 // own unit tests (B6); here we assert the observable contract on this host.
 func journeyInitLandlock(t *testing.T, bin string) {
 	report := landlock.Check()
-	backend := fakeModelsServer(t, "m")
+	backend := testsupport.FakeModelsServer(t, "m")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 	sock := filepath.Join(dir, "m.sock")
@@ -349,7 +273,7 @@ func journeyInitLandlock(t *testing.T, bin string) {
 // journeyInitDryRun asserts the D4 dry-run contract: the exact config YAML on
 // stdout, a bounded summary on stderr, and zero files written.
 func journeyInitDryRun(t *testing.T, bin string) {
-	backend := fakeModelsServer(t, "m")
+	backend := testsupport.FakeModelsServer(t, "m")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
@@ -405,7 +329,7 @@ func journeySystemd(t *testing.T, bin string) {
 // journeyModelsEndpoint runs the full journey: init -> key create -> serve,
 // then an authenticated request to /v1/models and an unauthenticated one.
 func journeyModelsEndpoint(t *testing.T, bin string) {
-	backend := fakeModelsServer(t, "qwen3.8-27b")
+	backend := testsupport.FakeModelsServer(t, "qwen3.8-27b")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 	sock := filepath.Join(dir, "m.sock")
@@ -432,7 +356,7 @@ func journeyModelsEndpoint(t *testing.T, bin string) {
 		t.Fatalf("serve did not become ready: stderr=%s", serve.err.String())
 	}
 
-	client := unixClient(sock)
+	client := testsupport.UnixClient(sock)
 	// Authenticated: the model the key is allowed to see.
 	req, _ := http.NewRequest("GET", "http://unix/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -465,7 +389,7 @@ func journeyModelsEndpoint(t *testing.T, bin string) {
 // plaintext is not served on a TLS listener, and a partial cert/key config
 // fails before bind.
 func journeyStaticTLS(t *testing.T, bin string) {
-	backend := fakeModelsServer(t, "qwen3.8-27b")
+	backend := testsupport.FakeModelsServer(t, "qwen3.8-27b")
 	dir := privateDir(t)
 	cfg := filepath.Join(dir, "config.yaml")
 	addr := freeTCPPort(t)
@@ -476,7 +400,7 @@ func journeyStaticTLS(t *testing.T, bin string) {
 		t.Fatalf("init exit = %d; stderr=%s", code, errOut)
 	}
 
-	cert, key := genSelfSignedCert(t)
+	cert, key := testsupport.WriteSelfSignedCert(t, t.TempDir(), testsupport.CertOptions{CommonName: "mellomting-test", IPs: []string{"127.0.0.1"}})
 	raw, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -547,18 +471,6 @@ func mustKey(t *testing.T, bin, dir, cfg string) string {
 	return strings.TrimSpace(out)
 }
 
-func unixClient(sock string) *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", sock)
-			},
-		},
-	}
-}
-
 func insecureTLSClient() *http.Client {
 	// InsecureSkipVerify is acceptable here: the journey's self-signed
 	// certificate is exercised by the test, not validated by this client.
@@ -607,7 +519,7 @@ func (sp *serveProc) waitReady(t *testing.T, sock string) bool {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		c := unixClient(sock)
+		c := testsupport.UnixClient(sock)
 		resp, err := c.Get("http://unix/v1/models")
 		if err == nil {
 			_, _ = io.ReadAll(resp.Body)

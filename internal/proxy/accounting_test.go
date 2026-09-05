@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"mellomting/internal/testsupport"
 	"net/http"
 	"os"
 	"strings"
@@ -33,12 +34,12 @@ func newAccountingProxy(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writ
 		Cfg:              cfg.Backends["b1"],
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, writer, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func tmpWriter(t *testing.T) (*accounting.Writer, string) {
 		Path:      path,
 		QueueSize: 16,
 		FSync:     "every",
-		Log:       discardLogger(),
+		Log:       testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,9 +102,9 @@ func TestOutputCapRejectsExcess(t *testing.T) {
 	router, _ := routing.New(cfg, nil)
 	client, _ := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","max_completion_tokens":200}`, testKey())
@@ -129,9 +130,9 @@ func TestOutputCapInjectWhenAbsent(t *testing.T) {
 	router, _ := routing.New(cfg, nil)
 	client, _ := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -221,13 +222,13 @@ func TestAccountingOffWithQuotaSettlesExactStreamUsage(t *testing.T) {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// quotaConfigured=true: accounting is off but quotas are active.
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, nil, true)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,12 +282,12 @@ func TestQuotaOnlyDefaultsEnsureStreamUsage(t *testing.T) {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, nil, true)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,9 +631,9 @@ func TestStreamUnknownUsageChargesConfiguredReservation(t *testing.T) {
 	router, _ := routing.New(cfg, nil)
 	client, _ := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, writer, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -677,9 +678,9 @@ func TestStreamUnknownUsageChargesExplicitReservation(t *testing.T) {
 	router, _ := routing.New(cfg, nil)
 	client, _ := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), quota, writer, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -765,12 +766,12 @@ func TestOutputCapCannotBeBypassed(t *testing.T) {
 		}
 		client, err := backend.New(backend.Options{
 			Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-			MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+			MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+		p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -858,14 +859,14 @@ func TestFailedRequestRecordsRetryCount(t *testing.T) {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writer, path := tmpWriter(t)
 	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
-		discardLogger(), accounting.NewQuota(), writer, false)
+		testsupport.DiscardLogger(), accounting.NewQuota(), writer, false)
 	if err != nil {
 		t.Fatal(err)
 	}

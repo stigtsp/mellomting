@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mellomting/internal/testsupport"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,7 @@ type env struct {
 // mod, when non-nil, tweaks the effective configuration before wiring;
 // k1lim is the per-key limit block of the model-a key.
 func buildEnv(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits) *env {
-	return buildEnvWithLog(t, behaviour, mod, k1lim, testLogger())
+	return buildEnvWithLog(t, behaviour, mod, k1lim, testsupport.DiscardLogger())
 }
 
 // buildEnvWithLog is buildEnv with a caller-supplied logger (used to
@@ -141,10 +142,6 @@ func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*confi
 	s.SetReady(true)
 
 	return &env{srv: s, key: k1, key2: k2}
-}
-
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 10}))
 }
 
 func (e *env) do(t *testing.T, method, path, key, body string) *httptest.ResponseRecorder {
@@ -491,7 +488,7 @@ func TestAuthMatrix(t *testing.T) {
 		c.Limits.PreauthBurst = 1000
 		c.Limits.GlobalRequestsPerSecond = 1000
 		c.Limits.GlobalBurst = 1000
-	}, auth.KeyLimits{}, testLogger(), func(uf *auth.UsersFile) {
+	}, auth.KeyLimits{}, testsupport.DiscardLogger(), func(uf *auth.UsersFile) {
 		uf.Keys = append(uf.Keys,
 			auth.Key{ID: did, Name: "disabled", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), dk)), Enabled: false, Models: []string{"*"}},
 			auth.Key{ID: eid, Name: "expired", SecretHash: auth.FormatHashValue(auth.Hash([]byte("httpapi-test-pepper-16b"), ek)), Enabled: true, ExpiresAt: &expiry, Models: []string{"*"}},

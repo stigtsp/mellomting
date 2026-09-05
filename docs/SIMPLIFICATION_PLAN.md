@@ -124,7 +124,7 @@ uncommitted changes or a failing check.
 | E1 | decode and encode the request body once | med | complete |
 | E2 | parse each SSE event once | low | complete |
 | E3 | reuse the SSE parser buffers | low | complete |
-| E4 | one reader goroutine per stream | med | pending |
+| E4 | one reader goroutine per stream | med | complete |
 
 Per task: read the named files and their tests; implement only that
 deliverable; `gofmt`; run the task's verification command; run `go test ./...`

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mellomting/internal/testsupport"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,12 +165,12 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 		Cfg:              cfg.Backends["b1"],
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,20 +187,16 @@ func newProxyCfg(t *testing.T, cfg *config.Config) *Proxy {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 10}))
 }
 
 func testKey(models ...string) *auth.Key {
@@ -306,7 +303,7 @@ func TestClientDisconnectClassified(t *testing.T) {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,12 +427,12 @@ func TestEndpointModelTypeAgreement(t *testing.T) {
 		Cfg:              cfg.Backends["b1"],
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +522,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	f := newFakeVLLM(t, embJSON)
 
 	accPath := filepath.Join(t.TempDir(), "usage.jsonl")
-	acc, err := accounting.NewWriter(accounting.WriterConfig{Path: accPath, FSync: "never", Log: discardLogger()})
+	acc, err := accounting.NewWriter(accounting.WriterConfig{Path: accPath, FSync: "never", Log: testsupport.DiscardLogger()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,12 +542,12 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 		Name: "b1", Cfg: cfg.Backends["b1"],
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, acc, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, acc, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1170,12 +1167,12 @@ func TestStreamIdleUsesPerBackendBound(t *testing.T) {
 		Cfg:              cfg.Backends["b1"],
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
-		Log:              discardLogger(),
+		Log:              testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, discardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1485,12 +1482,12 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	router3, _ := routing.New(cfg3, nil)
 	cl3, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg3.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg3.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg3.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, discardLogger(), nil, nil, false)
+	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, testsupport.DiscardLogger(), nil, nil, false)
 	rec = run(t, p3, http.MethodPost, "/v1/chat/completions", big, testKey())
 	if rec.Code != 413 {
 		t.Fatalf("oversized body: status = %d", rec.Code)
@@ -1752,14 +1749,14 @@ func TestAffinityPinBoundToModel(t *testing.T) {
 			Cfg:              cfg.Backends[name],
 			Network:          backend.Policy{Mode: "loopback-only"},
 			MaxResponseBytes: cfg.Server.MaxResponseBytes,
-			Log:              discardLogger(),
+			Log:              testsupport.DiscardLogger(),
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		clients[name] = c
 	}
-	p, err := New(cfg, router, clients, discardLogger(), nil, nil, false)
+	p, err := New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1829,7 +1826,7 @@ func TestLogEndpointExcludesResponseID(t *testing.T) {
 	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: discardLogger(),
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -3,8 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"mellomting/internal/testsupport"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -349,7 +348,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("dry-run succeeds without files", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		ts := fakeModelsServer(t, "alpha")
+		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
@@ -391,7 +390,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("explicit best-effort unsupported dry-run succeeds", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
-		ts := fakeModelsServer(t, "alpha")
+		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
@@ -411,7 +410,7 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("duplicate last flag wins", func(t *testing.T) {
 		withInitLandlock(t, unsupportedLandlockReport())
-		ts := fakeModelsServer(t, "alpha")
+		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
@@ -1343,29 +1342,6 @@ func TestCommitInitArtifacts(t *testing.T) {
 
 }
 
-func fakeModelsServer(t *testing.T, ids ...string) *httptest.Server {
-	t.Helper()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		var b strings.Builder
-		b.WriteString(`{"object":"list","data":[`)
-		for i, id := range ids {
-			if i > 0 {
-				b.WriteString(",")
-			}
-			b.WriteString(fmt.Sprintf(`{"id":%q,"object":"model"}`, id))
-		}
-		b.WriteString(`]}`)
-		_, _ = fmt.Fprint(w, b.String())
-	}))
-	t.Cleanup(ts.Close)
-	return ts
-}
-
 func TestInitEndToEnd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("init commit is Linux-only")
@@ -1373,8 +1349,8 @@ func TestInitEndToEnd(t *testing.T) {
 
 	t.Run("two overlapping servers", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		ts1 := fakeModelsServer(t, "alpha", "beta")
-		ts2 := fakeModelsServer(t, "beta", "gamma")
+		ts1 := testsupport.FakeModelsServer(t, "alpha", "beta")
+		ts2 := testsupport.FakeModelsServer(t, "beta", "gamma")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, stdout, stderr := captureOutput(t, func() int {
@@ -1419,7 +1395,7 @@ func TestInitEndToEnd(t *testing.T) {
 
 	t.Run("dry-run emits config only and no files", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		ts := fakeModelsServer(t, "alpha")
+		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, stdout, stderr := captureOutput(t, func() int {
@@ -1442,7 +1418,7 @@ func TestInitEndToEnd(t *testing.T) {
 
 	t.Run("broken stdout before publication writes nothing", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		ts := fakeModelsServer(t, "alpha")
+		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		r, w, err := os.Pipe()
@@ -1467,7 +1443,7 @@ func TestInitEndToEnd(t *testing.T) {
 		for i := range ids {
 			ids[i] = fmt.Sprintf("model-%02d", i)
 		}
-		ts := fakeModelsServer(t, ids...)
+		ts := testsupport.FakeModelsServer(t, ids...)
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, stdout, stderr := captureOutput(t, func() int {

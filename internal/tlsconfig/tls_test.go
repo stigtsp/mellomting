@@ -1,14 +1,8 @@
 package tlsconfig
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
+	"mellomting/internal/testsupport"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,59 +11,9 @@ import (
 	"time"
 )
 
-// writeSelfSignedTLS writes a self-signed certificate for DNS name
-// "localhost" and its key into dir and returns their paths.
-func writeSelfSignedTLS(t *testing.T, dir string) (string, string) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "localhost"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-	}
-	derCert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derKey, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPath := filepath.Join(dir, "cert.pem")
-	certOut, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derCert}); err != nil {
-		t.Fatal(err)
-	}
-	if err := certOut.Close(); err != nil {
-		t.Fatal(err)
-	}
-	keyPath := filepath.Join(dir, "key.pem")
-	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "PKCS8 PRIVATE KEY", Bytes: derKey}); err != nil {
-		t.Fatal(err)
-	}
-	if err := keyOut.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return certPath, keyPath
-}
-
 func TestFiles(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 
 	cfg, err := Files(certPath, keyPath)
 	if err != nil {
@@ -85,7 +29,7 @@ func TestFiles(t *testing.T) {
 
 func TestFilesHandshake(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	cfg, err := Files(certPath, keyPath)
 	if err != nil {
 		t.Fatalf("Files: %v", err)
@@ -115,11 +59,11 @@ func TestFilesHandshake(t *testing.T) {
 
 func TestFilesMissingFile(t *testing.T) {
 	dir := t.TempDir()
-	_, keyPath := writeSelfSignedTLS(t, dir)
+	_, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	if _, err := Files(filepath.Join(dir, "absent.pem"), keyPath); err == nil {
 		t.Fatal("missing cert accepted")
 	}
-	certPath, _ := writeSelfSignedTLS(t, dir)
+	certPath, _ := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	if _, err := Files(certPath, filepath.Join(dir, "absent-key.pem")); err == nil {
 		t.Fatal("missing key accepted")
 	}
@@ -131,8 +75,8 @@ func TestFilesKeyMismatch(t *testing.T) {
 	if err := os.Mkdir(dirB, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	certA, _ := writeSelfSignedTLS(t, dir)
-	_, keyB := writeSelfSignedTLS(t, dirB)
+	certA, _ := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
+	_, keyB := testsupport.WriteSelfSignedCert(t, dirB, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	if _, err := Files(certA, keyB); err == nil {
 		t.Fatal("certificate/key pair mismatch accepted")
 	}
@@ -140,7 +84,7 @@ func TestFilesKeyMismatch(t *testing.T) {
 
 func TestFilesSymlinkRefused(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	link := filepath.Join(dir, "link.pem")
 	if err := os.Symlink(certPath, link); err != nil {
 		t.Fatal(err)
@@ -152,7 +96,7 @@ func TestFilesSymlinkRefused(t *testing.T) {
 
 func TestFilesRejectsWorldReadableKeyAcceptsWorldReadableCert(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath := writeSelfSignedTLS(t, dir)
+	certPath, keyPath := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	// A world-readable private key is refused fail-closed (T-M8).
 	if err := os.Chmod(keyPath, 0o644); err != nil {
 		t.Fatal(err)
@@ -184,7 +128,7 @@ func TestFilesRejectsWorldReadableKeyAcceptsWorldReadableCert(t *testing.T) {
 // hold for it.
 func TestFilesPublicCertStillSymlinkRefused(t *testing.T) {
 	dir := t.TempDir()
-	certPath, _ := writeSelfSignedTLS(t, dir)
+	certPath, _ := testsupport.WriteSelfSignedCert(t, dir, testsupport.CertOptions{CommonName: "localhost", DNSNames: []string{"localhost"}})
 	link := filepath.Join(dir, "link.pem")
 	if err := os.Symlink(certPath, link); err != nil {
 		t.Fatal(err)
