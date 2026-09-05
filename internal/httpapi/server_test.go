@@ -1285,7 +1285,7 @@ func TestReloadAppliesNewPerKeyLimits(t *testing.T) {
 	// Reload with the same key but a raised concurrency limit. The users
 	// file is rebuilt from the live key record so the new store matches
 	// the running one except for the raised bound.
-	old, err := e.srv.store.Load().Lookup(e.key)
+	old, err := e.srv.snap.Load().store.Lookup(e.key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1326,7 +1326,7 @@ func TestReloadPreservesPerKeyBucket(t *testing.T) {
 	}
 
 	// Reload with identical limits, then immediately probe again.
-	old, err := e.srv.store.Load().Lookup(e.key)
+	old, err := e.srv.snap.Load().store.Lookup(e.key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1441,5 +1441,51 @@ func TestResponsesIDAndSafeSegment(t *testing.T) {
 		if isSafeSegment(bad) {
 			t.Fatalf("isSafeSegment accepted %q", bad)
 		}
+	}
+}
+
+// A request that is admitted across a SIGHUP must not carry the old
+// generation's limits into the new one. The store and the limit registry
+// used to be two independent atomic reads: a request that resolved its
+// key record before the swap and reached the registry after it built the
+// new generation's cached KeyState from the superseded record. Registry
+// entries are never revalidated, so the tightened limits an operator had
+// just applied to that exact key never took effect until the next
+// reload. The sequence below is the handler's own, with the reload
+// dropped into the window.
+func TestReloadRaceDoesNotPinOldPerKeyLimits(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}, nil, auth.KeyLimits{RequestsPerSecond: 100, Burst: 100})
+
+	// A racing request resolves its key record from the current
+	// generation.
+	racing := e.srv.snap.Load()
+	rec, err := racing.store.Lookup(e.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator throttles that key and reloads.
+	tightened := *rec
+	tightened.Limits = auth.KeyLimits{RequestsPerSecond: 1, Burst: 1}
+	st2, err := auth.NewStore(&auth.UsersFile{Version: 1, Keys: []auth.Key{tightened}}, []byte("httpapi-test-pepper-16b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.ReloadStore(st2)
+
+	// The racing request now materializes its limit state. It must land
+	// in the generation its key record came from, not in the new one.
+	racing.limits.For(rec)
+
+	// The tightened burst of 1 is what a fresh request must meet.
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 200 {
+		t.Fatalf("first request after reload: %d body=%s (want 200)", w.Code, w.Body.String())
+	}
+	if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 429 {
+		t.Fatalf("second request after reload: %d body=%s (want 429; the racing request pinned the pre-reload limits)",
+			w.Code, w.Body.String())
 	}
 }

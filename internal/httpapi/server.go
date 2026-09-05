@@ -24,11 +24,23 @@ import (
 	"mellomting/internal/routing"
 )
 
+// snapshot is the key store together with the limit registry built for
+// it. They are one pointer because they must be read as one: a request
+// that took its key record from one generation and its limit registry
+// from another materializes the registry entry from the wrong record,
+// and Registry.For caches that entry for the life of the generation. A
+// SIGHUP that tightens a key's limits would then never apply to the key
+// it was aimed at (PLAN §30, §34, §35).
+type snapshot struct {
+	store  *auth.Store
+	limits *limiter.Registry
+}
+
 // Server owns the ingress routes and limits.
 type Server struct {
 	cfg         *config.Config
 	log         *slog.Logger
-	store       atomic.Pointer[auth.Store] // swapped atomically on SIGHUP reload (PLAN §30)
+	snap        atomic.Pointer[snapshot] // swapped atomically on SIGHUP reload (PLAN §30)
 	router      *routing.Router
 	proxy       *proxy.Proxy
 	inflight    chan struct{}
@@ -36,12 +48,6 @@ type Server struct {
 	sourceLimit *limiter.SourceRegistry
 	authLog     *limiter.Bucket
 	authDropped atomic.Int64
-	// keyLimits is swapped atomically alongside store on SIGHUP reload
-	// (PLAN §30: "key rate limits" reload with the snapshot). A fresh
-	// registry is built from the reloaded store's key records so changed
-	// limits take effect for new requests; in-flight requests keep the
-	// KeyState they were admitted against (PLAN §74).
-	keyLimits   atomic.Pointer[limiter.Registry]
 	ready       atomic.Bool
 	startedUnix int64
 }
@@ -98,25 +104,24 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		authLog:     authLog,
 		startedUnix: time.Now().Unix(),
 	}
-	s.store.Store(store)
-	s.keyLimits.Store(limiter.NewRegistry())
+	s.snap.Store(&snapshot{store: store, limits: limiter.NewRegistry()})
 	return s
 }
 
 // ReloadStore atomically swaps the key store and the per-key limit
 // registry (SIGHUP reload, PLAN §30). In-flight requests keep serving
 // against the store and limits they were admitted under, so a reload
-// never severs an active stream (PLAN §74). The registry is swapped
-// before the store so a request that races the reload can at worst build
-// fresh limit state from the previous store's keys — never keep a stale
-// registry entry for the reloaded store (which would silently retain the
-// old, possibly more permissive limits). Token buckets are carried over
+// never severs an active stream (PLAN §74). Store and registry are
+// published as one pointer, so no request can pair a key record with a
+// registry from a different generation. Token buckets are carried over
 // across the reload for keys whose rate and burst are unchanged, so a
 // reload does not gift every key a fresh burst; changed limits rebuild
 // the bucket from the reloaded store (FIX-22).
 func (s *Server) ReloadStore(st *auth.Store) {
-	s.keyLimits.Store(limiter.NewRegistryCarrying(s.keyLimits.Load()))
-	s.store.Store(st)
+	s.snap.Store(&snapshot{
+		store:  st,
+		limits: limiter.NewRegistryCarrying(s.snap.Load().limits),
+	})
 }
 
 // SetReady flips readiness (PLAN §69 /readyz).
@@ -250,7 +255,11 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.authorize(r)
+	// One load for the whole request: the key record and the limit
+	// registry it is admitted against come from the same generation
+	// even when a SIGHUP lands mid-request.
+	snap := s.snap.Load()
+	key, err := s.authorize(r, snap.store)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
 		return
@@ -259,7 +268,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	// Per-key limits (PLAN §34, §35): request rate, then concurrency.
 	// Acquired before bodies are read (the proxy reads after this
 	// point) so a single key cannot pile up resources (PLAN §35).
-	ks := s.keyLimits.Load().For(key)
+	ks := snap.limits.For(key)
 	if ok, ra := ks.AllowRate(time.Now()); !ok {
 		writeRateLimit(w, ra)
 		return
@@ -368,8 +377,10 @@ func (s *Server) allowFor(path string) string {
 //	Authorization: Bearer sk-...   (primary)
 //	X-Api-Key: sk-...              (compatibility)
 //
-// Credentials in query parameters are never read.
-func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
+// Credentials in query parameters are never read. The store is passed
+// in rather than loaded here so the caller's snapshot governs the whole
+// request.
+func (s *Server) authorize(r *http.Request, store *auth.Store) (*auth.Key, error) {
 	var bearer string
 	auths := r.Header.Values("Authorization")
 	if len(auths) > 1 {
@@ -413,7 +424,7 @@ func (s *Server) authorize(r *http.Request) (*auth.Key, error) {
 	default:
 		return nil, errAuth
 	}
-	rec, err := s.store.Load().Lookup(rawKey)
+	rec, err := store.Lookup(rawKey)
 	if err != nil {
 		// All key failures read identically to the client (no oracle);
 		// the cause is an operator concern, not a client one.

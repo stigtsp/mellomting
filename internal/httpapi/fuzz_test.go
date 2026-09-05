@@ -34,7 +34,7 @@ func FuzzAuthorize(f *testing.F) {
 		f.Fatal(err)
 	}
 	s := &Server{}
-	s.store.Store(store)
+	s.snap.Store(&snapshot{store: store, limits: limiter.NewRegistry()})
 	s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	s.authLog = authLog
 
@@ -50,7 +50,7 @@ func FuzzAuthorize(f *testing.F) {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		r.Header.Set("Authorization", authz)
 		r.Header.Set("X-Api-Key", xkey)
-		_, err := s.authorize(r)
+		_, err := s.authorize(r, store)
 		if err != nil {
 			// The client-facing error must never embed the raw key.
 			if strings.Contains(err.Error(), "sk-") {

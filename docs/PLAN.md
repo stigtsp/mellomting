@@ -1393,11 +1393,20 @@ This prevents reload from trying to widen an already-enforced Landlock sandbox.
 A reload must:
 
 1. read the new users file;
-2. fully validate it;
+2. fully validate it, including the admission gates startup applies — a key
+   set startup would have refused to serve MUST NOT be installable through a
+   reload;
 3. build an immutable auth/policy snapshot;
 4. atomically swap the snapshot.
 
 On failure, retain the previous valid snapshot.
+
+The snapshot is one value: the key store and the per-key limit registry built
+for it swap together, so a request that resolves its key record and its limit
+state across a reload cannot pair the two generations. Anything derived from
+the key set — such as whether a token quota is in effect, which decides
+stream-usage injection (§38) — MUST be read from the live key record rather
+than sampled once at startup.
 
 Under `security.landlock.mode: required` the users file is pinned to its
 startup inode (the only file read the post-startup policy grants, §58).
