@@ -105,7 +105,7 @@ func TestAcquireQueueFullClassifiesDisconnect(t *testing.T) {
 	// cancelled client context.
 	c.queueTimeout = 0
 
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if _, err := c.acquire(ctx); err == nil {
@@ -444,7 +444,6 @@ func TestRequestErrorClassification(t *testing.T) {
 		{"plain connect", requestError, false, errors.New("boom"), ErrConnect},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.fn(tc.err, tc.stream); got != tc.want {
@@ -471,7 +470,6 @@ func TestBodyReadErrorClassification(t *testing.T) {
 		{"dropped connection", errors.New("boom"), ErrConnect},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := bodyReadError(tc.err); got != tc.want {
@@ -666,11 +664,9 @@ func TestBackendConnectionReuse(t *testing.T) {
 	const workers = 4
 	const perWorker = 16
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < perWorker; i++ {
+	for range workers {
+		wg.Go(func() {
+			for range perWorker {
 				res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`)})
 				if err != nil {
 					t.Errorf("Forward: %v", err)
@@ -678,7 +674,7 @@ func TestBackendConnectionReuse(t *testing.T) {
 				}
 				res.Close()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -722,7 +718,7 @@ func TestAcquireIdleConcurrencyIgnoresQueue(t *testing.T) {
 	const arrivals = 8
 	start := make(chan struct{})
 	errs := make(chan error, arrivals)
-	for i := 0; i < arrivals; i++ {
+	for range arrivals {
 		go func() {
 			<-start
 			res, err := c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
@@ -737,7 +733,7 @@ func TestAcquireIdleConcurrencyIgnoresQueue(t *testing.T) {
 	// Every arrival must be admitted (reach the handler): reaching the
 	// handler proves it passed admission, so waiting for all `arrivals`
 	// proves idle concurrency is never gated by queue_size.
-	for i := 0; i < arrivals; i++ {
+	for i := range arrivals {
 		select {
 		case <-admitted:
 		case <-time.After(3 * time.Second):
@@ -747,7 +743,7 @@ func TestAcquireIdleConcurrencyIgnoresQueue(t *testing.T) {
 	close(release)
 
 	// None of the admitted requests may report an admission error.
-	for i := 0; i < arrivals; i++ {
+	for range arrivals {
 		if err := <-errs; err != nil {
 			t.Fatalf("admitted arrival errored: %v", err)
 		}
@@ -913,8 +909,7 @@ func TestForwardQueueFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() {
 		res, err := c.Forward(ctx, Request{
 			Method:  "POST",
@@ -1109,7 +1104,6 @@ func TestForwardResolverClassification(t *testing.T) {
 		{"refused", &net.DNSError{Err: "server misbehaving", Name: "refused.invalid"}, ErrConnect},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			o := testOptions(t, "http://resolve.invalid")

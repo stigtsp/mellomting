@@ -44,7 +44,6 @@ func TestPolicyAllow(t *testing.T) {
 		{"loopback-only unknown mode falls back to loopback", Policy{Mode: "bogus"}, net.ParseIP("10.0.0.5"), false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tc.p.allow(tc.ip); got != tc.want {
@@ -95,7 +94,6 @@ func TestDialError(t *testing.T) {
 		{"connection refused", errors.New("connect: connection refused"), ErrConnect},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := dialError(tc.err); got != tc.want {
@@ -125,7 +123,6 @@ func TestIsTimeout(t *testing.T) {
 		{"nil", nil, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isTimeout(tc.err); got != tc.want {
@@ -152,7 +149,6 @@ func TestBodyReadErrorUnwrapsURLAndCancel(t *testing.T) {
 		{"client cancel", context.Canceled, context.Canceled},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := bodyReadError(tc.err); got != tc.want {

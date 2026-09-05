@@ -329,7 +329,7 @@ func TestEnsureUsers(t *testing.T) {
 // file — is the field reference.
 func TestScaffoldLineCap(t *testing.T) {
 	nonEmpty := 0
-	for _, line := range strings.Split(string(ConfigTemplate()), "\n") {
+	for line := range strings.SplitSeq(string(ConfigTemplate()), "\n") {
 		if strings.TrimSpace(line) != "" {
 			nonEmpty++
 		}

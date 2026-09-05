@@ -96,7 +96,7 @@ func TestReportFileDoesNotWrap(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.jsonl")
 	f, _ := os.Create(path)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		b, _ := json.Marshal(Record{KeyID: "k", TotalTokens: math.MaxInt64, InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64})
 		_, _ = f.Write(append(b, '\n'))
 	}

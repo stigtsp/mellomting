@@ -26,7 +26,6 @@ func TestParseLevel(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
 			got, err := ParseLevel(tc.in)

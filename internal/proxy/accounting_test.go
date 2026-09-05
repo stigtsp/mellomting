@@ -469,7 +469,6 @@ func TestInjectedUsageOnlyWhenAbsent(t *testing.T) {
 // chunk, not the fallback reservation.
 func TestStreamFinalEventNoBlankLineDelivered(t *testing.T) {
 	for _, trailer := range []string{"", "\n", "\r"} {
-		trailer := trailer
 		t.Run(fmt.Sprintf("trailer=%q", trailer), func(t *testing.T) {
 			f := newFakeVLLM(t, streamWithTrailer(trailer))
 			quota := accounting.NewQuota()

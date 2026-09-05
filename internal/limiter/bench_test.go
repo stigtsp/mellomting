@@ -30,7 +30,7 @@ func BenchmarkSourceRegistryAllowFull(b *testing.B) {
 		b.Fatal(err)
 	}
 	now := time.Now()
-	for i := 0; i < 4096; i++ {
+	for i := range 4096 {
 		ok, _ := r.Allow(fmt.Sprintf("10.0.0.%d", i), now)
 		if !ok {
 			b.Fatal("pre-fill request rejected")

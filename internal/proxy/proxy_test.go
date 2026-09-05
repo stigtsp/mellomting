@@ -100,7 +100,7 @@ func upstream429(w http.ResponseWriter, _ *http.Request) {
 func bigSSEEvent(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	const line = 64 * 1024
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		_, _ = w.Write([]byte("data: "))
 		_, _ = w.Write(make([]byte, line))
 		_, _ = w.Write([]byte("\n"))
@@ -559,7 +559,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recs []accounting.Record
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -1188,7 +1188,7 @@ func TestStreamCumulativeBound(t *testing.T) {
 	var sent atomic.Int64
 	go func() {
 		defer pw.Close()
-		for i := 0; i < 10000; i++ {
+		for range 10000 {
 			sent.Add(1)
 			if _, err := io.WriteString(pw, event); err != nil {
 				return
@@ -1221,7 +1221,7 @@ func TestStreamCumulativeBound(t *testing.T) {
 	pr2, pw2 := io.Pipe()
 	go func() {
 		defer pw2.Close()
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, _ = io.WriteString(pw2, event)
 		}
 		_, _ = io.WriteString(pw2, `data: [DONE]`+"\n\n")
@@ -1304,7 +1304,7 @@ func TestPumpClientWriteDeadlineBounded(t *testing.T) {
 	defer pr.Close()
 	go func() {
 		ev := "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\n"
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			if _, err := pw.Write([]byte(ev)); err != nil {
 				return
 			}
@@ -1497,7 +1497,7 @@ func TestDrainingRejectsNewInference(t *testing.T) {
 func TestBudgetWeightsAndOverload(t *testing.T) {
 	t.Parallel()
 	b := newBudget(64 * 1024 * budgetWeight)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		if !b.Acquire(4 * 1024) {
 			t.Fatalf("acquire %d: unexpected overload", i)
 		}
@@ -1653,7 +1653,7 @@ func TestManyShortKeysBodyRejected(t *testing.T) {
 
 	var b strings.Builder
 	b.WriteString(`{"model":"gen-1","messages":[{"role":"user","content":"x"}]`)
-	for i := 0; i < 60000; i++ {
+	for i := range 60000 {
 		fmt.Fprintf(&b, ",\"k%d\":%d", i, i)
 	}
 	b.WriteString("}")

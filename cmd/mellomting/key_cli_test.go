@@ -384,7 +384,7 @@ func TestInferSoleModel(t *testing.T) {
 
 	t.Run("more than 20 models are truncated", func(t *testing.T) {
 		m := make(map[string]config.Model, 25)
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			m[fmt.Sprintf("m%02d", i)] = config.Model{}
 		}
 		_, err := inferSoleModel(&config.Config{Models: m})

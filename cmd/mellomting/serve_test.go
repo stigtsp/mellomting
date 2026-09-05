@@ -1953,7 +1953,7 @@ models:
 
 	const total = 6
 	conns := make([]net.Conn, 0, total)
-	for i := 0; i < total; i++ {
+	for range total {
 		c, err := net.DialTimeout("unix", sock, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)

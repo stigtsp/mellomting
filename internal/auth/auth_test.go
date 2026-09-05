@@ -35,7 +35,7 @@ func newTestStore(t *testing.T, rawKey string) *Store {
 func TestGenerateAndParseRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		key, id, err := Generate("test")
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
@@ -546,7 +546,6 @@ func TestValidateUsersRejectsMalformedKeys(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			key := base

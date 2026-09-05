@@ -115,7 +115,6 @@ func TestParseInitServers(t *testing.T) {
 		{"duplicate destination", []string{"http://127.0.0.1:8000", "http://[::ffff:127.0.0.1]:8000"}, "duplicate canonical destination"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := parseInitServers(tc.args)
@@ -159,7 +158,6 @@ func TestParseInitListen(t *testing.T) {
 		{"leading zero port", ":08080", initListener{Network: "tcp", Address: ":8080", Port: 8080, AllowPlaintext: true}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := parseInitListen(tc.raw)
@@ -192,7 +190,6 @@ func TestParseInitListen(t *testing.T) {
 		{"root Unix path", "/", "cleaned"},
 	}
 	for _, tc := range errCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := parseInitListen(tc.raw)
@@ -1025,7 +1022,6 @@ func TestCommitInitArtifacts(t *testing.T) {
 			{"FIFO", "fifo"},
 		}
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.kind, func(t *testing.T) {
 				dir := newCommitDir(t)
 				target := filepath.Join(dir, "target")
@@ -1080,7 +1076,6 @@ func TestCommitInitArtifacts(t *testing.T) {
 			"fsyncDir",
 		}
 		for _, key := range keys {
-			key := key
 			t.Run(key, func(t *testing.T) {
 				dir := newCommitDir(t)
 				args := commitTestArgs(t, dir, oneServer...)

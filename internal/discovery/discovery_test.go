@@ -242,10 +242,7 @@ func FuzzParseModels(f *testing.F) {
 	f.Add(bytes.Repeat([]byte("x"), 2000))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		maxBytes := int64(len(b))
-		if maxBytes > 1024 {
-			maxBytes = 1024
-		}
+		maxBytes := min(int64(len(b)), 1024)
 		if maxBytes == 0 {
 			maxBytes = 1
 		}
@@ -460,7 +457,6 @@ func TestFetchHTTPBehavior(t *testing.T) {
 			{name: "malformed", ct: "application/", want: ErrContentType},
 		}
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if tc.ct != "" {

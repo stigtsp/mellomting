@@ -20,7 +20,6 @@ func TestSSEParserFinalEventFlushed(t *testing.T) {
 		{"crlf-trailer", "data: {\"x\":1}\r\n"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			p := newSSEParser(strings.NewReader(tc.stream))
 			ev, err := p.nextEvent()
@@ -139,7 +138,7 @@ func TestSSEParserEventBound(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		buf.WriteString("data: ")
 		buf.WriteString(strings.Repeat("a", 64*1024))
 		buf.WriteString("\n")

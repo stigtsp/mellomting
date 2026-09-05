@@ -12,11 +12,11 @@ import (
 // first-select step.
 func BenchmarkModelLookup(b *testing.B) {
 	backends := map[string]config.Backend{}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		backends[fmt.Sprintf("back-%d", i)] = config.Backend{BaseURL: fmt.Sprintf("http://127.0.0.1:800%d", i), UpstreamModel: "Up"}
 	}
 	models := map[string]config.Model{}
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		models[fmt.Sprintf("model-%d", i)] = config.Model{
 			Type:     "generation",
 			Strategy: "single",
@@ -42,7 +42,7 @@ func BenchmarkModelLookup(b *testing.B) {
 func BenchmarkBackendRouting(b *testing.B) {
 	backends := map[string]config.Backend{}
 	refs := []config.BackendRef{}
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		name := fmt.Sprintf("back-%d", i)
 		backends[name] = config.Backend{BaseURL: fmt.Sprintf("http://127.0.0.1:800%d", i), UpstreamModel: "Up"}
 		refs = append(refs, config.BackendRef{Name: name, Weight: 1})

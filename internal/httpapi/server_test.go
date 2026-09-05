@@ -959,7 +959,7 @@ func TestPreauthSourceFloodDoesNotDrainGlobal(t *testing.T) {
 
 	// The flooding host blasts bogus bearer tokens.
 	var flood429s, flood401s int
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		rec := e.doFrom(t, http.MethodPost, "/v1/chat/completions", "badbearer", `{"model":"model-a"}`, "10.0.0.1:1234")
 		switch rec.Code {
 		case http.StatusUnauthorized:
@@ -1003,7 +1003,7 @@ func TestAuthFailureLogBounded(t *testing.T) {
 	}, auth.KeyLimits{}, capLog)
 
 	const attempts = 200
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		rec := e.doFrom(t, http.MethodPost, "/v1/chat/completions", "badbearer", `{"model":"model-a"}`, "10.0.0.1:1234")
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: status = %d, want 401 (body=%s)", i, rec.Code, rec.Body.String())
@@ -1055,7 +1055,7 @@ func TestInflightLimit(t *testing.T) {
 		c.Backends["b1"] = b
 	}, auth.KeyLimits{})
 	// Hold the four inflight slots with blocking backend requests.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
 		req.Header.Set("Authorization", "Bearer "+e.key2)
 		rr := httptest.NewRecorder()
@@ -1064,7 +1064,7 @@ func TestInflightLimit(t *testing.T) {
 	// Wait until all four are admitted (deterministic: no request may
 	// reach the backend while the inflight bound is full).
 	by := time.Now().Add(5 * time.Second)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		select {
 		case <-arrived:
 		case <-time.After(time.Until(by)):
@@ -1111,7 +1111,7 @@ func TestKeyDefaultConcurrencyNoStarve(t *testing.T) {
 	}, auth.KeyLimits{})
 
 	// The no-limits key holds exactly DefaultConcurrentRequests in flight.
-	for i := 0; i < auth.DefaultConcurrentRequests; i++ {
+	for range auth.DefaultConcurrentRequests {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
 		req.Header.Set("Authorization", "Bearer "+e.key)
 		req.Header.Set("User-Agent", "tx8-aggressor")
@@ -1119,7 +1119,7 @@ func TestKeyDefaultConcurrencyNoStarve(t *testing.T) {
 		go func() { e.srv.Handler().ServeHTTP(rr, req) }()
 	}
 	by := time.Now().Add(5 * time.Second)
-	for i := 0; i < auth.DefaultConcurrentRequests; i++ {
+	for i := range auth.DefaultConcurrentRequests {
 		select {
 		case <-arrived:
 		case <-time.After(time.Until(by)):
@@ -1197,11 +1197,11 @@ func TestKeyConcurrencyLimit429(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	firstAdmitted := make(chan struct{}, 1)
-	var holder int32 // only the first request may hold the backend
+	var holder atomic.Int32 // only the first request may hold the backend
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		// Only the first request (key 1's held request) blocks; later
 		// requests must be able to complete while it is held.
-		if atomic.CompareAndSwapInt32(&holder, 0, 1) {
+		if holder.CompareAndSwap(0, 1) {
 			select {
 			case firstAdmitted <- struct{}{}:
 			default:
@@ -1253,9 +1253,9 @@ func TestReloadAppliesNewPerKeyLimits(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	firstAdmitted := make(chan struct{}, 1)
-	var holder int32
+	var holder atomic.Int32
 	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
-		if atomic.CompareAndSwapInt32(&holder, 0, 1) {
+		if holder.CompareAndSwap(0, 1) {
 			select {
 			case firstAdmitted <- struct{}{}:
 			default:
@@ -1319,7 +1319,7 @@ func TestReloadPreservesPerKeyBucket(t *testing.T) {
 	}, nil, auth.KeyLimits{RequestsPerSecond: 1, Burst: 2})
 
 	// Drain the key's bucket: 2 admits (burst), then a throttle.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if w := e.do(t, http.MethodPost, "/v1/chat/completions", "bearer", `{"model":"model-a"}`); w.Code != 200 {
 			t.Fatalf("drain request %d: %d body=%s", i, w.Code, w.Body.String())
 		}

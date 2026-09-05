@@ -29,7 +29,7 @@ func BenchmarkShallowParseAndRewrite(b *testing.B) {
 
 var benchSSEStream = func() []byte {
 	var sb strings.Builder
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		sb.WriteString("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"token stream \"}}]}\n\n")
 	}
 	return []byte(sb.String())
@@ -81,7 +81,7 @@ func BenchmarkAffinityPutFull(b *testing.B) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("resp_%d", i)
 	}
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		a.Put("K", keys[i], "b1", "gen-1")
 	}
 	b.ReportAllocs()

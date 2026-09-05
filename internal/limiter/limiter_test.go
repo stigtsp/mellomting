@@ -14,7 +14,7 @@ func TestBucketBurstAndRefill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if ok, _ := b.Allow(t0); !ok {
 			t.Fatalf("burst of 3 must admit 3 immediately (admitted %d)", i)
 		}
@@ -86,7 +86,7 @@ func TestConcurrencyLimit(t *testing.T) {
 	}
 	// Unbounded variant never rejects.
 	u := NewConcurrency(0)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		if _, ok := u.Acquire(); !ok {
 			t.Fatal("unbounded limit rejected a request")
 		}
@@ -120,7 +120,7 @@ func TestRegistryPerKeyState(t *testing.T) {
 		t.Fatal("unlimited key must be admitted")
 	}
 	// Unbounded key can take many concurrency slots.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		release, ok := s3.AcquireConcurrency()
 		if !ok {
 			t.Fatal("unbounded concurrency rejected a request")
@@ -311,7 +311,7 @@ func TestRegistryCarryOverAcrossGenerations(t *testing.T) {
 		t.Fatal("fresh burst-2 bucket must admit twice")
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		next := NewRegistryCarrying(prev)
 		if next.Size() != 0 {
 			t.Fatalf("generation %d starts non-empty (Size=%d), want lazy", i+1, next.Size())

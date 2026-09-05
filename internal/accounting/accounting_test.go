@@ -284,7 +284,7 @@ func TestQuotaReplayTail(t *testing.T) {
 	var f *os.File
 	f, _ = os.Create(path)
 	// Many old records, one current.
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		b, _ := json.Marshal(Record{Time: now.Add(-5 * time.Hour), KeyID: "old", TotalTokens: 10})
 		_, _ = f.Write(append(b, '\n'))
 	}
@@ -311,7 +311,7 @@ func TestWriterEnqueueAndDrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		w.Enqueue(Record{KeyID: "k", TotalTokens: int64(i + 1), Time: time.Now()})
 	}
 	if err := w.Close(); err != nil {
@@ -343,7 +343,7 @@ func TestWriterDropAndAlert(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	// Fill the queue; further Enqueue calls must not block and must drop.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
 	}
 	if w.Dropped() == 0 {
@@ -429,12 +429,10 @@ func TestWriterDroppedCounterRealPath(t *testing.T) {
 	}
 	const total = 2000
 	var wg sync.WaitGroup
-	for i := 0; i < total; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range total {
+		wg.Go(func() {
 			w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
-		}()
+		})
 	}
 	wg.Wait()
 	if err := w.Close(); err != nil {
@@ -445,7 +443,7 @@ func TestWriterDroppedCounterRealPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var written int64
-	for _, ln := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for ln := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if ln != "" {
 			written++
 		}
@@ -474,7 +472,7 @@ func TestWriterEnqueueAfterCloseCountsDropped(t *testing.T) {
 	if w.Dropped() != 0 {
 		t.Fatalf("pre-close record dropped: %d", w.Dropped())
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		w.Enqueue(Record{KeyID: "k", TotalTokens: 1, Time: time.Now()})
 	}
 	if w.Dropped() != 3 {

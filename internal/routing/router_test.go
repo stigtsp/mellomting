@@ -110,7 +110,7 @@ func TestSelectWeightedRoundRobin(t *testing.T) {
 		t.Fatal(err)
 	}
 	count := map[string]int{}
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		t1, err := r.Select("m", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -123,7 +123,7 @@ func TestSelectWeightedRoundRobin(t *testing.T) {
 	// Smooth WRR spreads the lighter backend in between heavier ones:
 	// over the first 4 picks it must appear at least once.
 	first4 := map[string]int{}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		t1, err := r.Select("m", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -162,7 +162,7 @@ func TestSelectWeightedRoundRobinSparseCandidates(t *testing.T) {
 	}
 	// Exclude "back-b" every other call so the candidate slice becomes
 	// sparse; before the fix the outer cands[...] indexing panics.
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		var exclude []string
 		if i%2 == 1 {
 			exclude = []string{"back-b"}
@@ -177,7 +177,7 @@ func TestSelectWeightedRoundRobinSparseCandidates(t *testing.T) {
 	}
 	// Every replica must be reachable when nothing is excluded.
 	seen := map[string]bool{}
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		tgt, err := r.Select("m", nil)
 		if err != nil {
 			t.Fatal(err)
