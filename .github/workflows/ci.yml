@@ -101,6 +101,26 @@ jobs:
       - name: Landlock required-mode serve tests (strict)
         run: MELLOMTING_LANDLOCK_STRICT=1 go test -count=1 -run 'TestServeSandboxRequiredApplies' ./cmd/mellomting/
 
+      # The shipped unit filters syscalls, and @sandbox (the landlock_*
+      # calls) is NOT part of @system-service — filtering without it would
+      # make the daemon's own confinement fail at startup. Run the
+      # Landlock acceptance tests under the exact directives deploy/
+      # ships, read out of the unit so this can never drift from it.
+      - name: Shipped syscall filter permits Landlock
+        run: |
+          set -euo pipefail
+          filter=$(sed -n 's/^SystemCallFilter=//p' deploy/mellomting.service)
+          arches=$(sed -n 's/^SystemCallArchitectures=//p' deploy/mellomting.service)
+          test -n "$filter" && test -n "$arches"
+          echo "unit filter: $filter / $arches"
+          go test -c -o /tmp/landlock.test ./internal/landlock/
+          sudo systemd-run --wait --pipe --collect \
+            --setenv=MELLOMTING_LANDLOCK_STRICT=1 \
+            --property="SystemCallFilter=$filter" \
+            --property="SystemCallArchitectures=$arches" \
+            --property=NoNewPrivileges=yes \
+            /tmp/landlock.test -test.run 'TestAllThreadsEnforced|TestScopedAbstractSocket' -test.v
+
   integration:
     name: integration journeys (build-tagged)
     runs-on: ubuntu-latest

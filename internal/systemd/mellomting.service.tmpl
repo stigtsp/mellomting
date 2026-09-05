@@ -74,12 +74,34 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 
+# System calls. @system-service is the standard allow-list for a service
+# like this; @sandbox must be named explicitly alongside it because it is
+# NOT a member of @system-service — verified against systemd's
+# seccomp-util.c, whose @system-service list runs @resources, @setuid
+# with no @sandbox between them. @sandbox carries
+# landlock_create_ruleset, landlock_add_rule and landlock_restrict_self,
+# so filtering without it makes the daemon's own Landlock confinement
+# fail — and under security.landlock.mode: required that is a startup
+# abort, not a degradation (systemd issue #26913 is the same trap).
+# No SystemCallErrorNumber: an unexpected syscall kills the process
+# rather than returning EPERM into a code path that may not check.
+SystemCallFilter=@system-service @sandbox
+# Without this, a filtered syscall can be re-entered through a secondary
+# architecture's ABI (x86-64 hosts also expose i386/x32).
+SystemCallArchitectures=native
+
 # Process restrictions.
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+# Other processes' entries in /proc are hidden. ProcSubset=pid is
+# deliberately NOT set: it also hides /proc/sys, which the Go runtime
+# reads.
+ProtectProc=invisible
+# The daemon uses no SysV IPC or POSIX message queues.
+RemoveIPC=yes
 
 # Network: only the families Mellomting needs, and only to localhost
 # (the backends). Landlock adds port-level connect restrictions on top
