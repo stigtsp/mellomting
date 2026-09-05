@@ -928,3 +928,40 @@ func TestExactlyOneRecordPerRequest(t *testing.T) {
 		})
 	}
 }
+
+// PLAN §38: when the proxy injected include_usage on the client's
+// behalf, the synthetic final usage-only chunk is swallowed so the
+// client's stream is unchanged. That must not depend on the usage object
+// carrying tokens the parser recognises — a backend reporting zero, or
+// fields we do not read, still produced a chunk the client never asked
+// for.
+func TestUsageOnlyChunkSwallowedRegardlessOfParsedTokens(t *testing.T) {
+	for _, usage := range []string{`{}`, `{"total_tokens":0}`, `{"unrelated":1}`} {
+		t.Run(usage, func(t *testing.T) {
+			f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(
+					`data: {"id":"c","choices":[{"delta":{"content":"Hi"}}]}` + "\n\n" +
+						`data: {"id":"c","choices":[],"usage":` + usage + `}` + "\n\n" +
+						`data: [DONE]` + "\n\n",
+				))
+			})
+			quota := accounting.NewQuota()
+			writer, _ := tmpWriter(t)
+			p := newAccountingProxy(t, f, quota, writer)
+
+			w := run(t, p, http.MethodPost, "/v1/chat/completions",
+				`{"model":"gen-1","stream":true,"messages":[]}`, testKey())
+			if w.Code != 200 {
+				t.Fatalf("status = %d", w.Code)
+			}
+			got := w.Body.String()
+			if strings.Contains(got, `"usage"`) {
+				t.Fatalf("the injected usage-only chunk reached the client:\n%s", got)
+			}
+			if !strings.Contains(got, "Hi") || !strings.Contains(got, "[DONE]") {
+				t.Fatalf("stream content missing:\n%s", got)
+			}
+		})
+	}
+}

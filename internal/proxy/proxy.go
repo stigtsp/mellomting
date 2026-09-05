@@ -864,15 +864,18 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		// final usage-only chunk when it was injected on the client's
 		// behalf (PLAN §38) so the client sees no semantic change.
 		if hasData {
-			// A chunk carrying no usage can never be the usage-only
-			// chunk, so the second parse is gated on the first's result
-			// rather than run for every delta event.
 			if u := accounting.ParseStreamChunk(data); u.Present {
 				*usage = u
-				if injectedUsage && isUsageOnlyChunk(data) {
-					// Record the usage above; do not relay the chunk.
-					continue
-				}
+			}
+			// Deliberately not gated on the usage above having parsed:
+			// a usage-only chunk whose usage object carries no field we
+			// read (an empty object, or a backend reporting zero) is
+			// still a chunk the client never asked for, and swallowing
+			// it is what keeps the injected include_usage invisible
+			// (PLAN §38).
+			if injectedUsage && isUsageOnlyChunk(data) {
+				// The usage above is recorded; do not relay the chunk.
+				continue
 			}
 		}
 
@@ -1077,7 +1080,6 @@ var (
 	errModelNotString = errors.New("model not a string")
 	errCapExceeded    = errors.New("output limit exceeds policy cap")
 	errCapInvalid     = errors.New("output limit must be a non-negative integer")
-	errNotJSONObject  = errors.New("body is not a JSON object")
 	// errStreamPanic is the sentinel a recovered pump-goroutine panic
 	// becomes: the client already has committed stream headers, so the
 	// only honest outcome is a truncated stream classified as an
