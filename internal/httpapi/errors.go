@@ -33,10 +33,7 @@ func writeErr(w http.ResponseWriter, status int, typ, code, msg string) {
 // computable wait exists (PLAN §34).
 func writeRateLimit(w http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfter > 0 {
-		sec := int(math.Ceil(retryAfter.Seconds()))
-		if sec < 1 {
-			sec = 1
-		}
+		sec := max(int(math.Ceil(retryAfter.Seconds())), 1)
 		w.Header().Set("Retry-After", strconv.Itoa(sec))
 	}
 	writeErr(w, http.StatusTooManyRequests, "rate_limit_error", "too_many_requests", msgRateLimit)

@@ -52,10 +52,7 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 	if log == nil {
 		log = slog.Default()
 	}
-	size := cfg.Server.MaxInflightRequests
-	if size < 1 {
-		size = 1
-	}
+	size := max(cfg.Server.MaxInflightRequests, 1)
 	// Configuration validation guarantees rate > 0 after defaults;
 	// fall back to the PLAN defaults if an un-validated configuration
 	// ever reaches the daemon (PLAN §76).
@@ -454,8 +451,8 @@ func classifyAuthError(err error) string {
 // suffix must govern routing so a GET on it 405s instead of retrieving.
 func (s *Server) responsesID(r *http.Request) (id string, cancel, ok bool) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/responses/")
-	if strings.HasSuffix(rest, "/cancel") {
-		rest = strings.TrimSuffix(rest, "/cancel")
+	if before, ok0 := strings.CutSuffix(rest, "/cancel"); ok0 {
+		rest = before
 		cancel = true
 	}
 	if !isSafeSegment(rest) {

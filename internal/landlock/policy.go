@@ -3,7 +3,7 @@ package landlock
 import (
 	"fmt"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -80,7 +80,7 @@ func BackendPorts(baseURLs ...string) ([]uint16, error) {
 			ports = append(ports, uint16(n))
 		}
 	}
-	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
+	slices.Sort(ports)
 	return ports, nil
 }
 

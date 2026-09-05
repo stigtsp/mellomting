@@ -297,10 +297,7 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	}
 	// Enforce at the highest ABI supported by both the kernel and the
 	// pinned library (PLAN §55 step 3).
-	abi := report.KernelABI
-	if abi > landlock.MaxABI {
-		abi = landlock.MaxABI
-	}
+	abi := min(report.KernelABI, landlock.MaxABI)
 	// On non-Linux builds Apply always returns a non-nil error by design
 	// (PLAN §7 fail-closed), so the nil check is statically "always
 	// true" there; staticcheck reports SA4023 only under GOOS=darwin and

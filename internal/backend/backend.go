@@ -182,14 +182,8 @@ func New(o Options) (*Client, error) {
 		}
 	}
 
-	maxConc := o.Cfg.MaxConcurrency
-	if maxConc < 1 {
-		maxConc = 1
-	}
-	queueSize := int(o.Cfg.QueueSize)
-	if queueSize < 0 {
-		queueSize = 0
-	}
+	maxConc := max(o.Cfg.MaxConcurrency, 1)
+	queueSize := max(int(o.Cfg.QueueSize), 0)
 
 	t := &http.Transport{
 		DisableKeepAlives: false,
@@ -393,8 +387,7 @@ func isTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var de *net.DNSError
-	if errors.As(err, &de) {
+	if de, ok := errors.AsType[*net.DNSError](err); ok {
 		return de.IsTimeout || de.IsTemporary
 	}
 	var ne net.Error
@@ -673,8 +666,7 @@ func requestError(err error, stream bool) error {
 	if errors.Is(err, ErrConnect) || errors.Is(err, ErrPolicy) || errors.Is(err, ErrDialTimeout) {
 		return err
 	}
-	var ne net.Error
-	if errors.As(err, &ne) {
+	if ne, ok := errors.AsType[net.Error](err); ok {
 		if ne.Timeout() {
 			if stream {
 				return ErrHeaderTimeout
@@ -697,8 +689,7 @@ func bodyReadError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrTimeout
 	}
-	var ue *url.Error
-	if errors.As(err, &ue) {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
 		err = ue.Err
 	}
 	var ne net.Error

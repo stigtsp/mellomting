@@ -544,7 +544,7 @@ func userIDExists(uf *auth.UsersFile, id string) bool {
 // the selection itself. The generator is injectable so the bounded-retry
 // behaviour is testable without real randomness.
 func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile, maxAttempts int) (string, string, error) {
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for range maxAttempts {
 		key, id, err := generate()
 		if err != nil {
 			return "", "", err

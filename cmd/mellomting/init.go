@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -274,11 +275,11 @@ func parseInitServers(raw []string) ([]discovery.Server, error) {
 	anyExplicit := false
 	for _, v := range raw {
 		p := parsedServer{url: v}
-		if eq := strings.IndexByte(v, '='); eq >= 0 {
-			prefix := v[:eq]
+		if before, after, ok := strings.Cut(v, "="); ok {
+			prefix := before
 			if prefix == "" || initServerNameLike.MatchString(prefix) {
 				p.name = prefix
-				p.url = v[eq+1:]
+				p.url = after
 				p.explicit = true
 				anyExplicit = true
 			}
@@ -726,7 +727,7 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, dryRun boo
 
 	// D4 order: publish and unlink the two auth entries, durably sync the
 	// directory, then publish the config destination last.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := publishCommitFile(ops, dirFD, &files[i]); err != nil {
 			rollbackCommitFiles(ops, dirFD, files)
 			return err
@@ -768,20 +769,20 @@ func publishCommitFile(ops commitOps, dirFD int, f *commitFile) error {
 }
 
 func rollbackCommitFiles(ops commitOps, dirFD int, files []commitFile) {
-	for i := len(files) - 1; i >= 0; i-- {
-		if !files[i].published {
+	for _, file := range slices.Backward(files) {
+		if !file.published {
 			continue
 		}
-		if id, err := ops.lstatInDir(dirFD, files[i].final); err == nil && id.Dev == files[i].id.Dev && id.Ino == files[i].id.Ino {
-			_ = ops.unlinkInDir(dirFD, files[i].final)
+		if id, err := ops.lstatInDir(dirFD, file.final); err == nil && id.Dev == file.id.Dev && id.Ino == file.id.Ino {
+			_ = ops.unlinkInDir(dirFD, file.final)
 		}
 	}
-	for i := len(files) - 1; i >= 0; i-- {
-		if files[i].id.Ino == 0 {
+	for _, file := range slices.Backward(files) {
+		if file.id.Ino == 0 {
 			continue
 		}
-		if id, err := ops.lstatInDir(dirFD, files[i].temp); err == nil && id.Dev == files[i].id.Dev && id.Ino == files[i].id.Ino {
-			_ = ops.unlinkInDir(dirFD, files[i].temp)
+		if id, err := ops.lstatInDir(dirFD, file.temp); err == nil && id.Dev == file.id.Dev && id.Ino == file.id.Ino {
+			_ = ops.unlinkInDir(dirFD, file.temp)
 		}
 	}
 }

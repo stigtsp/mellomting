@@ -158,7 +158,7 @@ func (p *sseParser) readLine() ([]byte, error) {
 // lines joined with \n). Returns ok=false for an event with no data.
 func dataField(event []byte) (string, bool) {
 	var sb bytes.Buffer
-	for _, line := range bytes.Split(TrimEventNewline(event), []byte("\n")) {
+	for line := range bytes.SplitSeq(TrimEventNewline(event), []byte("\n")) {
 		l, ok := bytes.CutPrefix(line, []byte("data:"))
 		if !ok {
 			continue

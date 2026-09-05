@@ -197,10 +197,7 @@ func (r *Registry) For(key *auth.Key) *KeyState {
 // (at least one), mirroring build().
 func derivedBurst(rate float64, burst int) int {
 	if burst < 1 {
-		burst = int(rate)
-		if burst < 1 {
-			burst = 1
-		}
+		burst = max(int(rate), 1)
 	}
 	return burst
 }

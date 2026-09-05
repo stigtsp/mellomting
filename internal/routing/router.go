@@ -17,6 +17,7 @@ package routing
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -136,10 +137,7 @@ func New(cfg *config.Config, inflight func(string) int) (*Router, error) {
 			if b.UpstreamModel == "" {
 				return nil, fmt.Errorf("routing: backend %q has no upstream_model", ref.Name)
 			}
-			w := ref.Weight
-			if w < 1 {
-				w = 1
-			}
+			w := max(ref.Weight, 1)
 			reps = append(reps, replica{name: ref.Name, upstream: b.UpstreamModel, weight: w})
 		}
 		r.models[name] = modelEntry{typ: m.Type, strategy: m.Strategy, replicas: reps}
@@ -250,12 +248,7 @@ func (r *Router) nextWRR(model string, entry modelEntry, cands []int) int {
 }
 
 func excluded(exclude []string, name string) bool {
-	for _, e := range exclude {
-		if e == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(exclude, name)
 }
 
 // Has reports whether the public model exists (without saying more).
@@ -346,14 +339,8 @@ func (h *health) recordFailure(name string) {
 		h.states[name] = s
 	}
 	s.streak++
-	shift := s.streak - 1
-	if shift > healthShiftCap {
-		shift = healthShiftCap
-	}
-	cooldown := h.base << shift
-	if cooldown > h.max {
-		cooldown = h.max
-	}
+	shift := min(s.streak-1, healthShiftCap)
+	cooldown := min(h.base<<shift, h.max)
 	s.until = h.now().Add(cooldown)
 }
 

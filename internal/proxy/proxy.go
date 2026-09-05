@@ -421,10 +421,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	// backend is immediate; repeating a backend that already failed
 	// waits the jittered exponential backoff. Nothing is retried once
 	// any byte has reached the client (PLAN §24).
-	maxAttempts := p.cfg.Retry.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	maxAttempts := max(p.cfg.Retry.MaxAttempts, 1)
 	uctx, ucancel := context.WithCancel(q.R.Context())
 	defer ucancel()
 
@@ -597,10 +594,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			if deadlineOK {
 				deadlineOK = ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
 			}
-			end := off + writeChunk
-			if end > len(res.BodyBytes) {
-				end = len(res.BodyBytes)
-			}
+			end := min(off+writeChunk, len(res.BodyBytes))
 			_, werr = q.W.Write(res.BodyBytes[off:end])
 		}
 		// Clear the deadline only when the write completed, so it cannot
@@ -624,8 +618,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	// Budget exhausted or a non-retryable failure: emit the sanitized
 	// class of the last error (PLAN §43, §72).
 	if lastErr != nil {
-		var up *backend.Upstream
-		if errors.As(lastErr, &up) {
+		if up, ok := errors.AsType[*backend.Upstream](lastErr); ok {
 			switch {
 			case up.Status == 429:
 				// Forward the upstream's Retry-After when it sent one,
@@ -689,8 +682,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 // retrying re-issues a full generation that cannot succeed within the
 // header bound (X6).
 func retryableBackendError(err error) bool {
-	var up *backend.Upstream
-	if errors.As(err, &up) {
+	if up, ok := errors.AsType[*backend.Upstream](err); ok {
 		switch up.Status {
 		case 429, 502, 503, 504:
 			return true
