@@ -1,6 +1,7 @@
 package landlock
 
 import (
+	"mellomting/internal/redact"
 	"runtime"
 	"strings"
 	"testing"
@@ -71,7 +72,7 @@ func TestBackendPortsErrorRedactsUserinfo(t *testing.T) {
 		if strings.Contains(err.Error(), "user:secret") {
 			t.Errorf("BackendPorts(%q) leaked userinfo: %v", raw, err)
 		}
-		if !strings.Contains(err.Error(), "***@") {
+		if !strings.Contains(err.Error(), redact.Marker+"@") {
 			t.Errorf("BackendPorts(%q) did not redact: %v", raw, err)
 		}
 	}

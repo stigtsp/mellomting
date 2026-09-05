@@ -1689,22 +1689,6 @@ func TestMalformedBaseURLCredentialsRedacted(t *testing.T) {
 	}
 }
 
-// TestRedactURL pins the redaction helper's edge cases (T-M13).
-func TestRedactURL(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"http://admin:pass@host\x7f", "http://<redacted>@host\x7f"},
-		{"http://user:pass@127.0.0.1:8001", "http://<redacted>@127.0.0.1:8001"},
-		{"http://127.0.0.1:8001", "http://127.0.0.1:8001"},
-		{"http://127.0.0.1:8001/v1", "http://127.0.0.1:8001/v1"},
-		{"no-scheme-value", "no-scheme-value"},
-	}
-	for _, tc := range cases {
-		if got := redactURL(tc.in); got != tc.want {
-			t.Fatalf("redactURL(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 const restOfConfig = `
 server:
   listen:

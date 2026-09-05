@@ -5,7 +5,8 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
+
+	"mellomting/internal/redact"
 )
 
 // Policy is the post-startup Landlock policy of the daemon (PLAN
@@ -56,24 +57,24 @@ func BackendPorts(baseURLs ...string) ([]uint16, error) {
 	for _, raw := range baseURLs {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
-			return nil, fmt.Errorf("%q is not a valid backend base URL", redactURL(raw))
+			return nil, fmt.Errorf("%q is not a valid backend base URL", redact.URL(raw))
 		}
 		switch u.Scheme {
 		case "http", "https":
 		default:
-			return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redactURL(raw), u.Scheme)
+			return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redact.URL(raw), u.Scheme)
 		}
 		port := u.Port()
 		if port == "" {
 			var ok bool
 			port, ok = DefaultPortForScheme(u.Scheme)
 			if !ok {
-				return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redactURL(raw), u.Scheme)
+				return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redact.URL(raw), u.Scheme)
 			}
 		}
 		n, err := strconv.ParseUint(port, 10, 16)
 		if err != nil || n < 1 || n > 65535 {
-			return nil, fmt.Errorf("%q carries an invalid TCP port %q", redactURL(raw), port)
+			return nil, fmt.Errorf("%q carries an invalid TCP port %q", redact.URL(raw), port)
 		}
 		if !seen[uint16(n)] {
 			seen[uint16(n)] = true
@@ -82,32 +83,4 @@ func BackendPorts(baseURLs ...string) ([]uint16, error) {
 	}
 	slices.Sort(ports)
 	return ports, nil
-}
-
-// redactURL removes any userinfo (credentials) from a URL string for use
-// in error messages, so a malformed backend base_url with inlined
-// credentials never leaks them to the operator or logs (T-M13). The
-// policy is fail-closed (PLAN §55), so a valid URL that already passed
-// config validation carries no userinfo; this is defence-in-depth for
-// direct callers. Best-effort: it works even when the URL failed to
-// parse. Mirrored locally because internal/config cannot be imported
-// here (config imports landlock).
-func redactURL(raw string) string {
-	schemeEnd := strings.Index(raw, "://")
-	if schemeEnd < 0 {
-		return raw
-	}
-	rest := raw[schemeEnd+3:]
-	at := strings.Index(rest, "@")
-	if at < 0 {
-		return raw
-	}
-	// Only redact when the '@' is part of the authority (before any
-	// path/query/fragment separator), not an email-like string in a
-	// path.
-	slash := strings.IndexAny(rest, "/?#")
-	if slash >= 0 && at > slash {
-		return raw
-	}
-	return raw[:schemeEnd+3] + "***@" + rest[at+1:]
 }

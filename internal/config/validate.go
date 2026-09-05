@@ -15,6 +15,7 @@ import (
 	"slices"
 
 	"mellomting/internal/landlock"
+	"mellomting/internal/redact"
 )
 
 // Defaults follow PLAN §76 and the per-section suggested defaults;
@@ -460,7 +461,7 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 
 		u, err := url.Parse(b.BaseURL)
 		if err != nil || b.BaseURL == "" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: %q is not a valid URL", prefix, redactURL(b.BaseURL)))
+			errs = append(errs, fmt.Sprintf("%s.base_url: %q is not a valid URL", prefix, redact.URL(b.BaseURL)))
 			continue
 		}
 		switch u.Scheme {
@@ -611,30 +612,6 @@ func urlHost(raw string) string {
 		return u.Hostname()
 	}
 	return host
-}
-
-// redactURL removes any userinfo (credentials) from a URL string for use
-// in error messages, so a malformed base_url with inlined credentials
-// never leaks them to the operator or logs (T-M13). Best-effort: it
-// works even when the URL failed to parse.
-func redactURL(raw string) string {
-	schemeEnd := strings.Index(raw, "://")
-	if schemeEnd < 0 {
-		return raw
-	}
-	rest := raw[schemeEnd+3:]
-	at := strings.Index(rest, "@")
-	if at < 0 {
-		return raw
-	}
-	// Only redact when the '@' is part of the authority (before any
-	// path/query/fragment separator), not an email-like string in a
-	// path.
-	slash := strings.IndexAny(rest, "/?#")
-	if slash >= 0 && at > slash {
-		return raw
-	}
-	return raw[:schemeEnd+3] + "<redacted>@" + rest[at+1:]
 }
 
 func inAnyPrefix(addr netip.Addr, prefixes []netip.Prefix) bool {

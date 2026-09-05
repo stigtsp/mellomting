@@ -25,17 +25,3 @@ func TestDefaultPortForScheme(t *testing.T) {
 		}
 	}
 }
-
-// TestRedactURLKeepsPathAtSign pins the redactURL guard: an '@' inside a
-// path (not the authority) must not be mistaken for userinfo, so the URL
-// is returned unchanged and no credential is fabricated.
-func TestRedactURLKeepsPathAtSign(t *testing.T) {
-	for _, raw := range []string{
-		"http://127.0.0.1:8001/v1/a@b/c", // '@' in the path
-		"http://127.0.0.1/a@b",           // '@' after a slash
-	} {
-		if got := redactURL(raw); got != raw {
-			t.Fatalf("redactURL(%q) = %q, want unchanged", raw, got)
-		}
-	}
-}
