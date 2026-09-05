@@ -12,7 +12,7 @@ var benchUsageBody = []byte(`{"id":"chatcmpl-1","object":"chat.completion","choi
 // (PLAN §87): the tolerated-shallow usage parse per completed request.
 func BenchmarkParseUsage(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = ParseUsage(benchUsageBody, "/v1/chat/completions")
 	}
 }
@@ -44,8 +44,7 @@ func BenchmarkEnqueue(b *testing.B) {
 		CachedTokens: 900,
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		w.Enqueue(rec)
 	}
 }

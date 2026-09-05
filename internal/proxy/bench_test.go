@@ -16,7 +16,7 @@ var benchChatBody = []byte(`{"model":"qwen-coder","messages":[{"role":"user","co
 // (PLAN §87).
 func BenchmarkShallowParseAndRewrite(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		body, _, _, err := shallowParse(benchChatBody)
 		if err != nil {
 			b.Fatal(err)
@@ -41,8 +41,7 @@ var benchSSEStream = func() []byte {
 func BenchmarkSSEParse(b *testing.B) {
 	src := benchSSEStream
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		p := newSSEParser(bytes.NewReader(src))
 		for {
 			_, err := p.nextEvent()
@@ -65,8 +64,7 @@ func BenchmarkAffinityPutEmpty(b *testing.B) {
 		keys[i] = fmt.Sprintf("resp_%d", i)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		a.Put("K", keys[i%len(keys)], "b1", "gen-1")
 	}
 }
@@ -85,8 +83,7 @@ func BenchmarkAffinityPutFull(b *testing.B) {
 		a.Put("K", keys[i], "b1", "gen-1")
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		a.Put("K", keys[i%len(keys)], "b1", "gen-1")
 	}
 }

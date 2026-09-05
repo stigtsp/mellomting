@@ -28,8 +28,7 @@ func BenchmarkModelLookup(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		if _, err := r.Select(fmt.Sprintf("model-%d", i%200), nil); err != nil {
 			b.Fatal(err)
 		}
@@ -58,8 +57,7 @@ func BenchmarkBackendRouting(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := r.Select("hot-model", nil); err != nil {
 			b.Fatal(err)
 		}

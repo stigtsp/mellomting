@@ -14,8 +14,7 @@ func BenchmarkBucketAllow(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = bk.Allow(time.Now())
 	}
 }
@@ -37,8 +36,7 @@ func BenchmarkSourceRegistryAllowFull(b *testing.B) {
 		}
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		_, _ = r.Allow(fmt.Sprintf("10.0.1.%d", i%1024), now)
 	}
 }

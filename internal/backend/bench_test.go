@@ -47,8 +47,7 @@ func BenchmarkForwardNonStream(b *testing.B) {
 		Body:   []byte(`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`),
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		res, err := c.Forward(context.Background(), req)
 		if err != nil {
 			b.Fatal(err)
