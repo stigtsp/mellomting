@@ -306,6 +306,14 @@ func parseBaseURL(raw string) (*url.URL, error) {
 	if u.Hostname() == "" {
 		return nil, errors.New("base_url must have a host")
 	}
+	// A trailing colon ("http://host:") parses as a present-but-empty
+	// port. net.SplitHostPort accepts it, so the scheme-default fallback
+	// in splitHostPort never fires and both the dialer and the Landlock
+	// port policy are left with no port at all. Reject it rather than
+	// resolve it (found by FuzzSplitHostPort).
+	if _, port, err := net.SplitHostPort(u.Host); err == nil && port == "" {
+		return nil, errors.New("base_url port must not be empty")
+	}
 	return u, nil
 }
 

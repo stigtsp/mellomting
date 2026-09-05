@@ -2,6 +2,8 @@
 /bin/
 /dist/
 *.exe
+# `go build ./cmd/...` drops the binary in the repo root
+/mellomting
 
 # tests / coverage
 *.test
