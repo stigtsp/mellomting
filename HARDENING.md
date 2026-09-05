@@ -47,7 +47,7 @@ control lands in the implementation plan.
 
 ## Ingress TLS
 
-- Static TLS (`server.tls.mode: files`) wraps the TCP listener before
+- Static TLS (`server.tls.cert_file` / `key_file`) wraps the TCP listener before
   Landlock enforcement: the certificate and key are loaded before the
   sandbox is applied and their FDs are closed before activation
   (§57 step 9, §59, §67). [Phase 6]
@@ -55,10 +55,10 @@ control lands in the implementation plan.
   (§97). Certificate reload requires a process restart in v1 (§67).
 - Certificate and key are read without following the final symlink and
   must be regular files bounded to 1 MiB (§28, via `internal/securefile`).
-- `tls.mode: acme` is shelved for the first release: the configuration
-  stays validated, but `serve` refuses to start with it, so it is never a
-  silent no-op (§68). Reverse-proxy TLS remains the recommended hardened
-  deployment (§67, §68).
+- Native ACME is shelved for the first release: the source schema has no
+  `tls.mode` key, so an `acme` configuration is refused by the strict
+  decoder at `config check` time rather than by a runtime check (§68).
+  Reverse-proxy TLS remains the recommended hardened deployment (§67, §68).
 - Plaintext non-loopback TCP requires explicit opt-in (§8.2); loopback
   TCP and the Unix socket are the intended fronting modes for nginx or
   `tailscale serve`.

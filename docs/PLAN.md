@@ -2450,10 +2450,13 @@ Certificate reload can require process restart in v1.
 
 # 68. Optional ACME
 
-> **Status: shelved for the first release.** The configuration schema
-> (`tls.mode: acme` with `hostname` and `email`) stays validated and
-> forward-compatible, but v1 `serve` refuses to start when ACME is
-> configured. This design is retained for a later release.
+> **Status: shelved for the first release.** The v1 source schema has no
+> `tls.mode` key (static TLS is `cert_file`/`key_file` alone), so an
+> `acme` configuration is refused by the strict decoder as an unknown
+> field at `config check` time. That rejection is the whole mechanism:
+> there is no ACME code and no separate runtime refusal. This design is
+> retained for a later release, which re-adds the schema and the runtime
+> together.
 
 Native ACME is a convenience feature, not the recommended hardened deployment.
 

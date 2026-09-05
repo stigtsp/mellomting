@@ -185,9 +185,10 @@ enforces a TLS 1.2 minimum, and the TCP ingress listener is wrapped with
 process restart in v1.
 
 Shelved beyond the first release: the qualifier framework (PLAN §96) and
-native ACME (PLAN §68). The configuration schema stays forward-compatible,
-but `serve` refuses to start when a qualifier or `tls.mode: acme` is
-configured, so neither is ever a silent no-op.
+native ACME (PLAN §68). Neither has a key in the source schema, so a
+configuration naming one is refused by the strict decoder as an unknown
+field — that rejection is the whole mechanism, and there is no separate
+runtime check to keep in step with it.
 
 Remaining deferred work (later phases): optional stickiness (PLAN §20);
 defence-in-depth review (PLAN §98). (The §30 SIGHUP users-file reload is
