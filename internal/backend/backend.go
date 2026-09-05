@@ -713,3 +713,20 @@ func (c *Client) Inflight() int {
 
 // StreamIdleTimeout is the backend stream-idle bound (PLAN §24).
 func (c *Client) StreamIdleTimeout() time.Duration { return c.streamIdle }
+
+// PolicyFromConfig builds the egress policy from validated configuration
+// and fail-closed validates it. Callers that need a Policy before
+// constructing a Client (serve, discovery) use this rather than parsing
+// the CIDR list themselves, so the parse and the validation never drift
+// apart.
+func PolicyFromConfig(bn config.BackendNetwork) (Policy, error) {
+	p := Policy{Mode: bn.Mode}
+	for _, cidr := range bn.CIDRs {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return Policy{}, fmt.Errorf("security.backend_network.cidrs: %q is not a CIDR", cidr)
+		}
+		p.CIDRs = append(p.CIDRs, ipnet)
+	}
+	return parsePolicy(p)
+}

@@ -197,7 +197,7 @@ func validateServer(s *Server) []string {
 		host, _, err := net.SplitHostPort(s.Listen.Address)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("server.listen.address: %q must be host:port for network tcp", s.Listen.Address))
-		} else if isNonLoopbackHost(host) && !tlsConfigured(s.TLS) && !s.AllowPlaintextNonLoopback {
+		} else if IsNonLoopbackHost(host) && !TLSConfigured(s.TLS) && !s.AllowPlaintextNonLoopback {
 			errs = append(errs, "server: non-loopback TCP listener requires tls configuration or allow_plaintext_non_loopback: true")
 		}
 	case "unix":
@@ -248,18 +248,20 @@ func validateServer(s *Server) []string {
 		errs = append(errs, "server.stream_write_timeout: must be > 0")
 	}
 
-	if s.Listen.Network == "unix" && tlsConfigured(s.TLS) {
+	if s.Listen.Network == "unix" && TLSConfigured(s.TLS) {
 		errs = append(errs, "server.tls: only valid when listen network is tcp")
 	}
 
-	if tlsConfigured(s.TLS) && (s.TLS.CertFile == "" || s.TLS.KeyFile == "") {
+	if TLSConfigured(s.TLS) && (s.TLS.CertFile == "" || s.TLS.KeyFile == "") {
 		errs = append(errs, "server.tls: cert_file and key_file are required together")
 	}
 
 	return errs
 }
 
-func tlsConfigured(t TLS) bool { return t.CertFile != "" || t.KeyFile != "" }
+// TLSConfigured reports whether a static TLS keypair is configured at
+// all; validate requires both halves together.
+func TLSConfigured(t TLS) bool { return t.CertFile != "" || t.KeyFile != "" }
 
 // validateAuth requires both auth paths to be absolute. They select what a
 // privileged `key` command reads and rewrites, so resolving them against
@@ -595,11 +597,27 @@ func isLoopbackHost(host string) bool {
 
 // isNonLoopbackHost fails closed: unresolvable-or-DNS hosts count as
 // non-loopback.
-func isNonLoopbackHost(host string) bool {
+// IsNonLoopbackHost reports whether host is anything other than a
+// literal loopback address. It fails closed: any hostname — localhost
+// included — counts as non-loopback, because a name can resolve
+// anywhere (T-Q11, PLAN §8.2).
+func IsNonLoopbackHost(host string) bool {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return !addr.IsLoopback()
 	}
 	return true
+}
+
+// IsNonLoopbackListenAddress reports whether a tcp listen address is
+// non-loopback, failing closed on a malformed address. validate reports
+// a malformed address separately with its own message, so it splits the
+// address itself rather than calling this.
+func IsNonLoopbackListenAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	return IsNonLoopbackHost(host)
 }
 
 func urlHost(raw string) string {

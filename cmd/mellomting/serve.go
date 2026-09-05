@@ -104,8 +104,8 @@ func serveCmd(args []string) int {
 	// unlinking a start-before-stop / blue-green replacement's fresh
 	// socket and taking it off the path while its process keeps running.
 
-	if !staticTLSConfigured(cfg.Server.TLS) && cfg.Server.Listen.Network == "tcp" &&
-		isNonLoopbackListenAddr(cfg.Server.Listen.Address) &&
+	if !config.TLSConfigured(cfg.Server.TLS) && cfg.Server.Listen.Network == "tcp" &&
+		config.IsNonLoopbackListenAddress(cfg.Server.Listen.Address) &&
 		cfg.Server.AllowPlaintextNonLoopback {
 		log.Warn("plaintext non-loopback TCP listener is active")
 	}
@@ -431,20 +431,6 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 	return srv
 }
 
-// buildNetworkPolicy parses the backend egress policy (PLAN §16).
-func buildNetworkPolicy(bn config.BackendNetwork) (backend.Policy, error) {
-	var p backend.Policy
-	p.Mode = bn.Mode
-	for _, cidr := range bn.CIDRs {
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
-			return backend.Policy{}, fmt.Errorf("security.backend_network.cidrs: %q is not a CIDR", cidr)
-		}
-		p.CIDRs = append(p.CIDRs, ipnet)
-	}
-	return p, nil
-}
-
 // buildDaemon wires the key store, router, backend clients, proxy, and
 // HTTP surface from validated configuration. It performs no I/O beyond
 // reading the key store, pepper, backend credentials, and the static TLS
@@ -464,7 +450,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("key store: %w", err)
 	}
 
-	policy, err := buildNetworkPolicy(cfg.Security.BackendNetwork)
+	policy, err := backend.PolicyFromConfig(cfg.Security.BackendNetwork)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +459,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// loaded once, before the sandbox, and are reloaded only by a process
 	// restart in v1.
 	var tlsConfig *tls.Config
-	if staticTLSConfigured(cfg.Server.TLS) {
+	if config.TLSConfigured(cfg.Server.TLS) {
 		tlsCfg, err := tlsconfig.Files(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
 		if err != nil {
 			return nil, err
@@ -635,27 +621,4 @@ func (d *daemon) logReloadFailed(err error) {
 		return
 	}
 	d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
-}
-
-// isNonLoopbackListenAddr reports whether a TCP listen address is NOT
-// loopback (PLAN §8.2).
-func isNonLoopbackListenAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return true // fail closed on malformed addresses
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !ip.IsLoopback()
-	}
-	// Any hostname — localhost included — is treated as potentially
-	// exposed, matching config.isNonLoopbackHost (T-Q11, PLAN §8.2):
-	// a hostname listener is refused without allow_plaintext_non_loopback
-	// and the §8.2 warning fires when the opt-in is set.
-	return true
-}
-
-// staticTLSConfigured reports whether static TLS is enabled (D11): either
-// file field being set enables it, and validation requires both.
-func staticTLSConfigured(t config.TLS) bool {
-	return t.CertFile != "" || t.KeyFile != ""
 }

@@ -387,7 +387,7 @@ func Fetch(ctx context.Context, server Server, opts Options) ([]string, error) {
 		opts.totalTimeout = defaultTotalTimeout
 	}
 	if opts.parseNetwork == nil {
-		opts.parseNetwork = parseNetwork
+		opts.parseNetwork = backend.PolicyFromConfig
 	}
 	if opts.newDialer == nil {
 		opts.newDialer = newDialerFunc
@@ -518,18 +518,6 @@ func DerivePolicy(servers []Server) (config.BackendNetwork, error) {
 	}
 	slices.Sort(cidrs)
 	return config.BackendNetwork{Mode: "allowed-cidrs", CIDRs: cidrs}, nil
-}
-
-func parseNetwork(bn config.BackendNetwork) (backend.Policy, error) {
-	p := backend.Policy{Mode: bn.Mode}
-	for _, cidr := range bn.CIDRs {
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
-			return backend.Policy{}, fmt.Errorf("network policy cidr %q is not a CIDR", cidr)
-		}
-		p.CIDRs = append(p.CIDRs, ipnet)
-	}
-	return backend.ParsePolicy(p)
 }
 
 func classifyRequestError(ctx context.Context, err error) error {
