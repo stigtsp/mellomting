@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -74,192 +75,97 @@ const (
 // values that an operator would want explicitly (e.g. queue_size 0) are
 // not distinguishable from omitted fields in YAML and take the default.
 func applyDefaults(c *Config) {
-	if c.Auth.UsersFile == "" {
-		c.Auth.UsersFile = DefaultUsersFile
-	}
-	if c.Auth.PepperFile == "" {
-		c.Auth.PepperFile = DefaultPepperFile
-	}
+	c.Auth.UsersFile = cmp.Or(c.Auth.UsersFile, DefaultUsersFile)
+	c.Auth.PepperFile = cmp.Or(c.Auth.PepperFile, DefaultPepperFile)
 
 	s := &c.Server
-	if s.MaxHeaderBytes == 0 {
-		s.MaxHeaderBytes = defaultMaxHeaderBytes
-	}
-	if s.MaxBodyBytes == 0 {
-		s.MaxBodyBytes = defaultMaxBodyBytes
-	}
-	if s.MaxResponseBytes == 0 {
-		s.MaxResponseBytes = defaultMaxResponseBytes
-	}
-	if s.MaxInflightRequests == 0 {
-		s.MaxInflightRequests = defaultMaxInflightRequests
-	}
-	if s.MaxBufferedRequestBytes == 0 {
-		s.MaxBufferedRequestBytes = defaultMaxBufferedRequestBytes
-	}
-	if s.MaxConnections == 0 {
-		s.MaxConnections = defaultMaxConnections
-	}
-	if s.ReadHeaderTimeout == 0 {
-		s.ReadHeaderTimeout = Duration(defaultReadHeaderTimeout)
-	}
-	if s.ReadBodyTimeout == 0 {
-		s.ReadBodyTimeout = Duration(defaultReadBodyTimeout)
-	}
-	if s.IdleTimeout == 0 {
-		s.IdleTimeout = Duration(defaultIdleTimeout)
-	}
-	if s.StreamIdleTimeout == 0 {
-		s.StreamIdleTimeout = Duration(defaultStreamIdleTimeout)
-	}
-	if s.StreamWriteTimeout == 0 {
-		s.StreamWriteTimeout = Duration(defaultStreamWriteTimeout)
+	s.MaxHeaderBytes = cmp.Or(s.MaxHeaderBytes, defaultMaxHeaderBytes)
+	s.MaxBodyBytes = cmp.Or(s.MaxBodyBytes, defaultMaxBodyBytes)
+	s.MaxResponseBytes = cmp.Or(s.MaxResponseBytes, defaultMaxResponseBytes)
+	s.MaxInflightRequests = cmp.Or(s.MaxInflightRequests, defaultMaxInflightRequests)
+	s.MaxBufferedRequestBytes = cmp.Or(s.MaxBufferedRequestBytes, defaultMaxBufferedRequestBytes)
+	s.MaxConnections = cmp.Or(s.MaxConnections, defaultMaxConnections)
+	s.ReadHeaderTimeout = cmp.Or(s.ReadHeaderTimeout, Duration(defaultReadHeaderTimeout))
+	s.ReadBodyTimeout = cmp.Or(s.ReadBodyTimeout, Duration(defaultReadBodyTimeout))
+	s.IdleTimeout = cmp.Or(s.IdleTimeout, Duration(defaultIdleTimeout))
+	s.StreamIdleTimeout = cmp.Or(s.StreamIdleTimeout, Duration(defaultStreamIdleTimeout))
+	s.StreamWriteTimeout = cmp.Or(s.StreamWriteTimeout, Duration(defaultStreamWriteTimeout))
+
+	// Only a unix listener has a file mode to default.
+	if s.Listen.Network == "unix" {
+		s.Listen.Mode = cmp.Or(s.Listen.Mode, DefaultUnixSocketMode)
 	}
 
-	if c.Server.Listen.Network == "unix" && c.Server.Listen.Mode == "" {
-		c.Server.Listen.Mode = DefaultUnixSocketMode
-	}
+	sec := &c.Security
+	sec.BackendNetwork.Mode = cmp.Or(sec.BackendNetwork.Mode, "loopback-only")
+	sec.Landlock.Mode = cmp.Or(sec.Landlock.Mode, landlock.ModeRequired)
+	sec.Landlock.MinimumABI = cmp.Or(sec.Landlock.MinimumABI, landlock.DefaultMinimumABI)
 
-	if c.Security.BackendNetwork.Mode == "" {
-		c.Security.BackendNetwork.Mode = "loopback-only"
-	}
-	if c.Security.Landlock.Mode == "" {
-		c.Security.Landlock.Mode = landlock.ModeRequired
-	}
-	if c.Security.Landlock.MinimumABI == 0 {
-		c.Security.Landlock.MinimumABI = landlock.DefaultMinimumABI
-	}
+	c.Logging.Format = cmp.Or(c.Logging.Format, "json")
+	c.Logging.Level = cmp.Or(c.Logging.Level, "info")
 
-	if c.Logging.Format == "" {
-		c.Logging.Format = "json"
-	}
-	if c.Logging.Level == "" {
-		c.Logging.Level = "info"
-	}
-
-	a := &c.Accounting
-	if a.Enabled {
-		if a.Path == "" {
-			a.Path = DefaultAccountingPath
-		}
-		if a.EnsureStreamUsage == nil {
-			t := true
-			a.EnsureStreamUsage = &t
-		}
-		if a.ReplayOnStart == nil {
-			t := true
-			a.ReplayOnStart = &t
-		}
-		if a.ReplayMaxBytes == 0 {
-			a.ReplayMaxBytes = defaultAccountingReplayMaxBytes
-		}
-		if a.QueueSize == 0 {
-			a.QueueSize = defaultAccountingQueue
-		}
-		if a.Overflow == "" {
-			a.Overflow = "drop-and-alert"
-		}
-		if a.FSync == "" {
-			a.FSync = "interval"
-		}
-		if a.FSync == "interval" && a.FSyncInterval == 0 {
-			a.FSyncInterval = Duration(5 * time.Second)
+	// Accounting fields default only when accounting is enabled: validate
+	// rejects them when it is off, and defaulting them here would mask
+	// that rejection.
+	if a := &c.Accounting; a.Enabled {
+		a.Path = cmp.Or(a.Path, DefaultAccountingPath)
+		a.EnsureStreamUsage = cmp.Or(a.EnsureStreamUsage, new(true))
+		a.ReplayOnStart = cmp.Or(a.ReplayOnStart, new(true))
+		a.ReplayMaxBytes = cmp.Or(a.ReplayMaxBytes, defaultAccountingReplayMaxBytes)
+		a.QueueSize = cmp.Or(a.QueueSize, defaultAccountingQueue)
+		a.Overflow = cmp.Or(a.Overflow, "drop-and-alert")
+		a.FSync = cmp.Or(a.FSync, "interval")
+		if a.FSync == "interval" {
+			a.FSyncInterval = cmp.Or(a.FSyncInterval, Duration(5*time.Second))
 		}
 	}
 
-	if c.Limits.GlobalRequestsPerSecond == 0 {
-		c.Limits.GlobalRequestsPerSecond = defaultGlobalRPS
-	}
-	if c.Limits.GlobalBurst == 0 {
-		c.Limits.GlobalBurst = defaultGlobalBurst
-	}
-	if c.Limits.PreauthRequestsPerSecond == 0 {
-		c.Limits.PreauthRequestsPerSecond = defaultPreauthRPS
-	}
-	if c.Limits.PreauthBurst == 0 {
-		c.Limits.PreauthBurst = defaultPreauthBurst
-	}
-	if c.Limits.AuthFailureLogRate == 0 {
-		c.Limits.AuthFailureLogRate = defaultAuthLogRate
-	}
+	l := &c.Limits
+	l.GlobalRequestsPerSecond = cmp.Or(l.GlobalRequestsPerSecond, defaultGlobalRPS)
+	l.GlobalBurst = cmp.Or(l.GlobalBurst, defaultGlobalBurst)
+	l.PreauthRequestsPerSecond = cmp.Or(l.PreauthRequestsPerSecond, defaultPreauthRPS)
+	l.PreauthBurst = cmp.Or(l.PreauthBurst, defaultPreauthBurst)
+	l.AuthFailureLogRate = cmp.Or(l.AuthFailureLogRate, defaultAuthLogRate)
 
-	if c.Shutdown.GracePeriod == 0 {
-		c.Shutdown.GracePeriod = Duration(30 * time.Second)
-	}
+	c.Shutdown.GracePeriod = cmp.Or(c.Shutdown.GracePeriod, Duration(30*time.Second))
 
-	if c.Responses.AffinityTTL == 0 {
-		c.Responses.AffinityTTL = Duration(defaultAffinityTTL)
-	}
-	if c.Responses.MaxAffinityEntries == 0 {
-		c.Responses.MaxAffinityEntries = defaultMaxAffinityEntries
-	}
+	c.Responses.AffinityTTL = cmp.Or(c.Responses.AffinityTTL, Duration(defaultAffinityTTL))
+	c.Responses.MaxAffinityEntries = cmp.Or(c.Responses.MaxAffinityEntries, defaultMaxAffinityEntries)
 
-	if c.Retry.MaxAttempts == 0 {
-		c.Retry.MaxAttempts = defaultRetryMaxAttempts
-	}
-	if c.Retry.InitialBackoff == 0 {
-		c.Retry.InitialBackoff = Duration(defaultRetryInitialBackoff)
-	}
-	if c.Retry.MaxBackoff == 0 {
-		c.Retry.MaxBackoff = Duration(defaultRetryMaxBackoff)
-	}
+	c.Retry.MaxAttempts = cmp.Or(c.Retry.MaxAttempts, defaultRetryMaxAttempts)
+	c.Retry.InitialBackoff = cmp.Or(c.Retry.InitialBackoff, Duration(defaultRetryInitialBackoff))
+	c.Retry.MaxBackoff = cmp.Or(c.Retry.MaxBackoff, Duration(defaultRetryMaxBackoff))
 
-	for name := range c.Backends {
-		b := c.Backends[name]
-		if b.ConnectTimeout == 0 {
-			b.ConnectTimeout = Duration(defaultConnectTimeout)
-		}
-		if b.HeaderTimeout == 0 {
-			b.HeaderTimeout = Duration(defaultHeaderTimeout)
-		}
-		if b.RequestTimeout == 0 {
-			b.RequestTimeout = Duration(defaultRequestTimeout)
-		}
-		if b.StreamIdleTimeout == 0 {
-			b.StreamIdleTimeout = Duration(defaultStreamIdleTimeout)
-		}
-		if b.MaxConcurrency == 0 {
-			b.MaxConcurrency = defaultMaxConcurrency
-		}
-		if b.QueueSize == 0 {
-			b.QueueSize = defaultBackendQueueSize
-		}
-		if b.QueueTimeout == 0 {
-			b.QueueTimeout = Duration(defaultQueueTimeout)
-		}
+	for name, b := range c.Backends {
+		b.ConnectTimeout = cmp.Or(b.ConnectTimeout, Duration(defaultConnectTimeout))
+		b.HeaderTimeout = cmp.Or(b.HeaderTimeout, Duration(defaultHeaderTimeout))
+		b.RequestTimeout = cmp.Or(b.RequestTimeout, Duration(defaultRequestTimeout))
+		b.StreamIdleTimeout = cmp.Or(b.StreamIdleTimeout, Duration(defaultStreamIdleTimeout))
+		b.MaxConcurrency = cmp.Or(b.MaxConcurrency, defaultMaxConcurrency)
+		b.QueueSize = cmp.Or(b.QueueSize, defaultBackendQueueSize)
+		b.QueueTimeout = cmp.Or(b.QueueTimeout, Duration(defaultQueueTimeout))
 		c.Backends[name] = b
 	}
 
-	for name := range c.Qualifiers {
-		q := c.Qualifiers[name]
-		if q.Timeout == 0 {
-			q.Timeout = Duration(defaultQualifierTimeout)
-		}
-		if q.MaxConcurrency == 0 {
-			q.MaxConcurrency = defaultQualifierConcurrency
-		}
-		if q.QueueSize == 0 {
-			q.QueueSize = defaultQualifierQueueSize
-		}
+	for name, q := range c.Qualifiers {
+		q.Timeout = cmp.Or(q.Timeout, Duration(defaultQualifierTimeout))
+		q.MaxConcurrency = cmp.Or(q.MaxConcurrency, defaultQualifierConcurrency)
+		q.QueueSize = cmp.Or(q.QueueSize, defaultQualifierQueueSize)
 		c.Qualifiers[name] = q
 	}
 
-	for name := range c.Models {
-		m := c.Models[name]
-		if m.Type == "" {
-			m.Type = "generation"
-		}
+	for name, m := range c.Models {
+		m.Type = cmp.Or(m.Type, "generation")
+		// Strategy is inferred from the replica count rather than being a
+		// fixed default, so it is not a cmp.Or case.
 		if m.Strategy == "" {
-			if len(m.Backends) <= 1 {
-				m.Strategy = "single"
-			} else {
+			m.Strategy = "single"
+			if len(m.Backends) > 1 {
 				m.Strategy = "least-inflight"
 			}
 		}
 		for i := range m.Backends {
-			if m.Backends[i].Weight == 0 {
-				m.Backends[i].Weight = 1
-			}
+			m.Backends[i].Weight = cmp.Or(m.Backends[i].Weight, 1)
 		}
 		c.Models[name] = m
 	}

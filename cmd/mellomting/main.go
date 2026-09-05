@@ -4,8 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -561,11 +562,7 @@ func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile
 // more models fail, listing at most 20 model names plus the omitted count.
 // It never infers "*".
 func inferSoleModel(cfg *config.Config) ([]string, error) {
-	names := make([]string, 0, len(cfg.Models))
-	for name := range cfg.Models {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(cfg.Models))
 	switch len(names) {
 	case 0:
 		return nil, fmt.Errorf("no models are configured; pass --models explicitly")

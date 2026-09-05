@@ -4,7 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -155,12 +156,7 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 // sortedModelKeys returns the public model names in UTF-8 bytewise sorted
 // order (D12 step: deterministic normalization order).
 func sortedModelKeys(models map[string]sourceModel) []string {
-	names := make([]string, 0, len(models))
-	for name := range models {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(models))
 }
 
 // effectiveServer is the operator-facing projection of one inference

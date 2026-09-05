@@ -10,10 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -53,7 +54,7 @@ func ParseModels(r io.Reader, maxBytes int64, maxModels int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(ids)
+	slices.Sort(ids)
 	return ids, nil
 }
 
@@ -515,7 +516,7 @@ func DerivePolicy(servers []Server) (config.BackendNetwork, error) {
 			cidrs = append(cidrs, cidr)
 		}
 	}
-	sort.Strings(cidrs)
+	slices.Sort(cidrs)
 	return config.BackendNetwork{Mode: "allowed-cidrs", CIDRs: cidrs}, nil
 }
 
@@ -567,12 +568,7 @@ type Result struct {
 // SortedModels returns the public model names in UTF-8 bytewise order for
 // rendering.
 func (r Result) SortedModels() []string {
-	names := make([]string, 0, len(r.Models))
-	for name := range r.Models {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(r.Models))
 }
 
 // Aggregate merges per-server discovery results into one deterministic

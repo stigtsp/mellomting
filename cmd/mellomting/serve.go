@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -593,7 +593,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			}
 		}
 		if len(uncounted) > 0 {
-			sort.Strings(uncounted)
+			slices.Sort(uncounted)
 			return nil, fmt.Errorf("a per-key token quota is configured in %s, but a request to model(s) %s whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, strings.Join(uncounted, ", "))
 		}
 	}

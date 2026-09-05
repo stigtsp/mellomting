@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -143,7 +142,7 @@ func New(cfg *config.Config, inflight func(string) int) (*Router, error) {
 		r.models[name] = modelEntry{typ: m.Type, strategy: m.Strategy, replicas: reps}
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	r.order = names
 	return r, nil
 }
