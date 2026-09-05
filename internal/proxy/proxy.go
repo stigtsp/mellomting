@@ -12,7 +12,6 @@ package proxy
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -213,6 +212,12 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 	fail := func(e apiError) {
 		out.status, out.class = e.status, e.class
+		// Every proxy 429 carries Retry-After (T-Q12). A caller that
+		// already set one — the terminal path forwarding the upstream's
+		// value — keeps it; otherwise the conservative default applies.
+		if e.status == http.StatusTooManyRequests && q.W.Header().Get("Retry-After") == "" {
+			q.W.Header().Set("Retry-After", apierr.DefaultRetryAfter)
+		}
 		apierr.Write(q.W, e.status, e.typ, e.code, e.msg)
 	}
 
@@ -223,205 +228,40 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 
 	// 2. Request body (bounded; PLAN §12.1). Authentication already
-	// happened before body acquisition (PLAN §10).
-	var body []byte
+	// happened before body acquisition (PLAN §10). The byte budget must
+	// stay reserved for as long as the body is in memory, so the release
+	// is deferred here rather than inside readBody.
 	var stream bool
 	var publicModel string
-
+	body, release, bodyErr := p.readBody(q, o)
+	defer release()
+	if bodyErr != nil {
+		fail(*bodyErr)
+		return
+	}
 	if o.method == "POST" {
-		enc := q.R.Header.Get("Content-Encoding")
-		if enc != "" && !strings.EqualFold(enc, "identity") {
-			fail(errUnsupported)
-			return
-		}
-		// Reserve the byte budget for the body BEFORE it is read and decoded
-		// (T-X12, PLAN §12.1): a body whose known size cannot fit the budget
-		// is rejected with a clean 503 before a single byte is allocated, and
-		// the reservation (budgetWeight × bytes) covers the shallow-parse /
-		// rewrite decode+re-encode peak, so the aggregate bound
-		// (MaxBufferedRequestBytes × MaxInflightRequests) actually holds.
-		// An unknown-size (chunked) body reserves the worst case
-		// (max_body_bytes) up front and releases the unused remainder after
-		// the read, so the concurrent budget is never over-subscribed while a
-		// large body is being read (FIX-15).
-		var reserve int64
-		defer func() {
-			if reserve > 0 {
-				p.budget.Release(reserve)
-			}
-		}()
-		maxBody := int64(p.cfg.Server.MaxBodyBytes)
-		if cl := q.R.ContentLength; cl > 0 && cl <= maxBody {
-			if !p.budget.Acquire(cl) {
-				fail(errOverloaded)
-				return
-			}
-			reserve = cl
-		} else if cl < 0 {
-			if !p.budget.Acquire(maxBody) {
-				fail(errOverloaded)
-				return
-			}
-			reserve = maxBody
-		}
-		var rerr error
-		body, rerr = readBodyLimited(q.R, p.cfg.Server.MaxBodyBytes)
-		if errors.Is(rerr, errBodyTooLarge) {
-			fail(errBodyTooBig)
-			return
-		}
-		if rerr != nil {
-			fail(errBodyUnread)
-			return
-		}
-		if n := int64(len(body)); n < reserve {
-			// Body smaller than the reservation (an unknown-size request
-			// reserved the worst case): release the excess now.
-			p.budget.Release(reserve - n)
-			reserve = n
-		}
 		out.bytesIn = len(body)
 	}
 
-	// 3. Shallow parse, model resolution, ACL (PLAN §12, §13, §31).
-	fixedBackend := ""
-	if o.route == routeByModel {
-		var perr error
-		body, publicModel, stream, perr = shallowParse(body)
-		out.model = publicModel
-		switch {
-		case errors.Is(perr, errJSON):
-			fail(errBadJSON)
-			return
-		case errors.Is(perr, errMissingModel):
-			fail(errNoModel)
-			return
-		case errors.Is(perr, errModelNotString):
-			fail(errModelType)
-			return
-		}
-		// OpenAI never streams non-generative endpoints (FIX-03/N3):
-		// accepting "stream": true here would otherwise let a
-		// misrouted SSE response charge zero tokens. Fail closed with a
-		// 4xx before any accounting or forwarding happens.
-		if stream && !o.generative() {
-			fail(errNoStream)
-			return
-		}
-		// Do not reveal whether the model exists (PLAN §31): unknown
-		// and not-allowed read identically.
-		if !q.Key.Allows(publicModel) || !p.router.Has(publicModel) {
-			fail(errModelDenied)
-			return
-		}
-		// Endpoint/model-type agreement (N12): an embedding model is not
-		// servable on a generative endpoint, and a generation model is
-		// not servable on the embeddings endpoint. The model is known to
-		// exist here (checked above), so this is a 400, not a 404.
-		switch p.router.TypeOf(publicModel) {
-		case "embedding":
-			if o.generative() {
-				fail(errNotGenerate)
-				return
-			}
-		case "generation":
-			if o.endpoint == "embeddings" {
-				fail(errNotEmbed)
-				return
-			}
-		}
-		if o.capture {
-			if prev, ok := stringField(body, "previous_response_id"); ok {
-				b, m, ok := p.affinity.Get(q.Key.ID, prev)
-				// The owning backend is authoritative (PLAN §21.3) and
-				// pinning it skips routing, so the continuation must
-				// name the model the ACL and output cap were checked
-				// against. A mismatch reads as a miss (PLAN §31).
-				if !ok || m != publicModel {
-					fail(errPrevNotFound)
-					return
-				}
-				fixedBackend = b
-			}
-		}
-	} else if o.route == routeByResponseID {
-		// Responses retrieve/cancel (PLAN §21.1, §21.3): route only to
-		// the backend that owns the response for THIS key. A different
-		// key must not be able to retrieve or cancel another key's
-		// response even if it knows the ID, so on an affinity miss we
-		// fail closed rather than forward on backend reachability.
-		// Entries outlive a reload, so the ACL is re-checked against the
-		// model the response was created under.
-		b, m, ok := p.affinity.Get(q.Key.ID, q.ResponseID)
-		if !ok || !q.Key.Allows(m) {
-			fail(errRespNotFound)
-			return
-		}
-		fixedBackend = b
+	// 3. Resolve where the request goes and under which policy
+	// (PLAN §12, §13, §31), then 3.5 apply the output cap, stream-usage
+	// injection, and quota admission (PLAN §36, §38, §39).
+	t, targetErr := p.resolveTarget(q, o, body)
+	if targetErr != nil {
+		out.model = t.model
+		fail(*targetErr)
+		return
 	}
+	body, publicModel, stream = t.body, t.model, t.stream
+	fixedBackend, outPath := t.backend, t.path
+	out.model = publicModel
 
-	// outPath is the backend path for this request. The response-ID
-	// operations append the client's ID, which is why it is a local:
-	// operation is an immutable table entry, and the deferred logger
-	// reads o.path as the route's identity. Mutating it there put the
-	// client's response ID into the log's endpoint field, making a fixed
-	// enum high-cardinality client input.
-	outPath := o.path
-	if o.route == routeByResponseID {
-		// The ID is restricted to a safe charset here as defense in
-		// depth (the route layer also validates it) so it can never
-		// inject a path or host into the backend URL.
-		if !isValidResponseID(q.ResponseID) {
-			fail(errRespBadID)
-			return
-		}
-		outPath = "/v1/responses/" + q.ResponseID
-		if o.method == http.MethodPost {
-			outPath += "/cancel"
-		}
+	ob, prepErr := p.prepare(q, o, t)
+	if prepErr != nil {
+		fail(*prepErr)
+		return
 	}
-
-	// 3.5. Generative output cap (PLAN §36), stream-usage injection
-	// (PLAN §38), and token-quota admission (PLAN §39). These are
-	// client-facing and deterministic, so they run once before the retry
-	// budget. The model field is rewritten per-attempt later.
-	var (
-		prepared      []byte = body
-		reservation   int64
-		injectedUsage bool
-	)
-	if o.route == routeByModel {
-		cap := 0
-		if m, ok := p.cfg.Models[publicModel]; ok {
-			cap = m.Policy.MaxOutputTokens
-		}
-		var perr error
-		prepared, reservation, injectedUsage, perr = prepareOutbound(body, o, cap, stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
-		switch {
-		case errors.Is(perr, errCapExceeded):
-			fail(errOutputCapExceeded)
-			return
-		case errors.Is(perr, errCapInvalid):
-			fail(errOutputLimitInvalid)
-			return
-		case errors.Is(perr, errNotJSONObject):
-			fail(errBadJSON)
-			return
-		case perr != nil:
-			fail(errNotNormal)
-			return
-		}
-		if p.quota != nil {
-			ok, _ := p.quota.Admit(q.Key.ID, windowLimits(q.Key.Limits), reservation, time.Now())
-			if !ok {
-				// Every proxy 429 carries Retry-After (T-Q12). No window
-				// reset is computed here, so use a conservative default.
-				q.W.Header().Set("Retry-After", apierr.DefaultRetryAfter)
-				fail(errQuota)
-				return
-			}
-		}
-	}
+	prepared, reservation, injectedUsage := ob.body, ob.reservation, ob.injectedUsage
 
 	// 4. Forward under the bounded pre-stream retry/fallback budget
 	// (PLAN §22, §23, §93). The request may make at most retry.max_attempts
@@ -575,37 +415,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		q.W.Header().Set("Content-Type", ct)
 		q.W.WriteHeader(res.Status)
-		// Bound client write-idle on the non-streaming path too (X9).
-		// A client that reads the headers then stops reading must not
-		// hold the inflight slot forever. stream_write_timeout is the
-		// same bound the streaming pump applies per event (PLAN §9.1);
-		// where unusable (e.g. HTTP/2, unsupported here in v1) the
-		// client context remains the disconnect signal. The deadline is
-		// reset around each chunk (FIX-19/N5) so a large response is an
-		// idle bound — a slow-but-steady client is never cut off for
-		// reading too long, while a fully stalled client still is.
-		ctrl := http.NewResponseController(q.W)
-		clientIdle := p.cfg.Server.StreamWriteTimeout.Duration()
-		deadlineOK := ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
-		const writeChunk = 32 << 10
-		var werr error
-		for off := 0; off < len(res.BodyBytes) && werr == nil; off += writeChunk {
-			if deadlineOK {
-				deadlineOK = ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
-			}
-			end := min(off+writeChunk, len(res.BodyBytes))
-			_, werr = q.W.Write(res.BodyBytes[off:end])
-		}
-		// Clear the deadline only when the write completed, so it cannot
-		// leak into the next keep-alive request on this connection. When
-		// the write errored (stalled reader, deadline fired) the deadline
-		// is left expired: net/http's finishRequest flush then fails fast
-		// and the connection is closed instead of blocking forever on the
-		// full socket buffer, which would leak a goroutine and fd per
-		// stalled client (X9).
-		if deadlineOK && werr == nil {
-			_ = ctrl.SetWriteDeadline(time.Time{})
-		}
+		p.writeBuffered(q.W, res.BodyBytes)
 		if o.capture {
 			if id := topLevelID(res.BodyBytes); isValidResponseID(id) {
 				p.affinity.Put(q.Key.ID, id, backendName, publicModel)
@@ -620,13 +430,252 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	// one fail now make structural.
 	if lastErr != nil {
 		f := classifyBackendError(lastErr)
-		if f.resp == errUpstreamRateLimited {
-			// Forward the upstream's Retry-After when it sent one, else a
-			// conservative default (T-Q12).
-			q.W.Header().Set("Retry-After", cmp.Or(lastRetryAfter, apierr.DefaultRetryAfter))
+		if f.resp == errUpstreamRateLimited && lastRetryAfter != "" {
+			// Forward the upstream's own Retry-After; fail supplies the
+			// conservative default when it sent none (T-Q12).
+			q.W.Header().Set("Retry-After", lastRetryAfter)
 		}
 		fail(f.resp)
 	}
+}
+
+// writeBuffered relays a buffered response body under a client
+// write-idle bound (X9) — the non-streaming twin of pump.
+//
+// A client that reads the headers then stops reading must not hold the
+// inflight slot forever. stream_write_timeout is the same bound the
+// streaming pump applies per event (PLAN §9.1); where unusable (e.g.
+// HTTP/2, unsupported here in v1) the client context remains the
+// disconnect signal. The deadline is reset around each chunk
+// (FIX-19/N5), so a large response is bounded by idleness rather than
+// total time: a slow-but-steady client is never cut off for reading too
+// long, while a fully stalled one still is.
+func (p *Proxy) writeBuffered(w http.ResponseWriter, body []byte) {
+	const writeChunk = 32 << 10
+	ctrl := http.NewResponseController(w)
+	clientIdle := p.cfg.Server.StreamWriteTimeout.Duration()
+	deadlineOK := ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
+
+	var werr error
+	for off := 0; off < len(body) && werr == nil; off += writeChunk {
+		if deadlineOK {
+			deadlineOK = ctrl.SetWriteDeadline(time.Now().Add(clientIdle)) == nil
+		}
+		_, werr = w.Write(body[off:min(off+writeChunk, len(body))])
+	}
+	// Clear the deadline only when the write completed, so it cannot leak
+	// into the next keep-alive request on this connection. When the write
+	// errored (stalled reader, deadline fired) the deadline is left
+	// expired: net/http's finishRequest flush then fails fast and the
+	// connection is closed instead of blocking forever on a full socket
+	// buffer, which would leak a goroutine and fd per stalled client (X9).
+	if deadlineOK && werr == nil {
+		_ = ctrl.SetWriteDeadline(time.Time{})
+	}
+}
+
+// target is what phase 3 resolves: which model's policy governs the
+// request, and where it goes.
+type target struct {
+	model   string // public model name; empty for response-ID routes
+	stream  bool
+	backend string // pinned backend; empty lets the router choose
+	path    string // backend path for this request
+	body    []byte // body as re-encoded by the shallow parse
+}
+
+// resolveTarget performs the shallow parse, the ACL and model-type
+// checks, and the affinity lookup (PLAN §12, §13, §21, §31). It returns
+// a sanitized error for the caller to emit; it writes nothing itself.
+//
+// On failure the returned target still carries whatever model was
+// parsed, so the request log and usage record can name it.
+func (p *Proxy) resolveTarget(q *Req, o operation, body []byte) (target, *apiError) {
+	t := target{body: body, path: o.path}
+
+	if o.route == routeByModel {
+		parsed, publicModel, stream, err := shallowParse(body)
+		t.body, t.model, t.stream = parsed, publicModel, stream
+		switch {
+		case errors.Is(err, errJSON):
+			return t, &errBadJSON
+		case errors.Is(err, errMissingModel):
+			return t, &errNoModel
+		case errors.Is(err, errModelNotString):
+			return t, &errModelType
+		}
+		// OpenAI never streams non-generative endpoints (FIX-03/N3):
+		// accepting "stream": true here would otherwise let a misrouted
+		// SSE response charge zero tokens. Fail closed with a 4xx before
+		// any accounting or forwarding happens.
+		if stream && !o.generative() {
+			return t, &errNoStream
+		}
+		// Do not reveal whether the model exists (PLAN §31): unknown and
+		// not-allowed read identically.
+		if !q.Key.Allows(publicModel) || !p.router.Has(publicModel) {
+			return t, &errModelDenied
+		}
+		// Endpoint/model-type agreement (N12): an embedding model is not
+		// servable on a generative endpoint, and a generation model is
+		// not servable on the embeddings endpoint. The model is known to
+		// exist here, so this is a 400, not a 404.
+		switch p.router.TypeOf(publicModel) {
+		case "embedding":
+			if o.generative() {
+				return t, &errNotGenerate
+			}
+		case "generation":
+			if o.endpoint == "embeddings" {
+				return t, &errNotEmbed
+			}
+		}
+		if o.capture {
+			if prev, ok := stringField(t.body, "previous_response_id"); ok {
+				b, m, ok := p.affinity.Get(q.Key.ID, prev)
+				// The owning backend is authoritative (PLAN §21.3) and
+				// pinning it skips routing, so the continuation must
+				// name the model the ACL and output cap were checked
+				// against. A mismatch reads as a miss (PLAN §31).
+				if !ok || m != publicModel {
+					return t, &errPrevNotFound
+				}
+				t.backend = b
+			}
+		}
+		return t, nil
+	}
+
+	// Responses retrieve/cancel (PLAN §21.1, §21.3): route only to the
+	// backend that owns the response for THIS key. A different key must
+	// not be able to retrieve or cancel another key's response even if
+	// it knows the ID, so on an affinity miss we fail closed rather than
+	// forward on backend reachability. Entries outlive a reload, so the
+	// ACL is re-checked against the model the response was created under.
+	b, m, ok := p.affinity.Get(q.Key.ID, q.ResponseID)
+	if !ok || !q.Key.Allows(m) {
+		return t, &errRespNotFound
+	}
+	t.backend = b
+
+	// The ID is restricted to a safe charset here as defense in depth
+	// (the route layer also validates it) so it can never inject a path
+	// or host into the backend URL. The path is built here rather than
+	// by mutating the operation, which is an immutable table entry the
+	// request log reads as the route's identity.
+	if !isValidResponseID(q.ResponseID) {
+		return t, &errRespBadID
+	}
+	t.path = "/v1/responses/" + q.ResponseID
+	if o.method == http.MethodPost {
+		t.path += "/cancel"
+	}
+	return t, nil
+}
+
+// outbound is the body as it will be sent, plus what accounting needs to
+// know about it.
+type outbound struct {
+	body          []byte
+	reservation   int64
+	injectedUsage bool
+}
+
+// prepare applies the generative output cap (PLAN §36) and stream-usage
+// injection (PLAN §38), then admits the request against the token quota
+// (PLAN §39). These are client-facing and deterministic, so they run once
+// before the retry budget; the model field is rewritten per attempt
+// later.
+func (p *Proxy) prepare(q *Req, o operation, t target) (outbound, *apiError) {
+	ob := outbound{body: t.body}
+	if o.route != routeByModel {
+		return ob, nil
+	}
+
+	cap := 0
+	if m, ok := p.cfg.Models[t.model]; ok {
+		cap = m.Policy.MaxOutputTokens
+	}
+	prepared, reservation, injected, err := prepareOutbound(
+		t.body, o, cap, t.stream, p.ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
+	switch {
+	case errors.Is(err, errCapExceeded):
+		return ob, &errOutputCapExceeded
+	case errors.Is(err, errCapInvalid):
+		return ob, &errOutputLimitInvalid
+	case errors.Is(err, errNotJSONObject):
+		return ob, &errBadJSON
+	case err != nil:
+		return ob, &errNotNormal
+	}
+	ob = outbound{body: prepared, reservation: reservation, injectedUsage: injected}
+
+	if p.quota != nil {
+		if ok, _ := p.quota.Admit(q.Key.ID, windowLimits(q.Key.Limits), reservation, time.Now()); !ok {
+			return ob, &errQuota
+		}
+	}
+	return ob, nil
+}
+
+// readBody acquires the byte budget and reads the bounded request body
+// (T-X12, PLAN §12.1).
+//
+// The budget is reserved BEFORE the body is read and decoded: a body
+// whose known size cannot fit is rejected with a clean 503 before a
+// single byte is allocated, and the reservation covers the shallow-parse
+// and rewrite decode/re-encode peak, so the aggregate bound
+// (MaxBufferedRequestBytes × MaxInflightRequests) actually holds. An
+// unknown-size (chunked) body reserves the worst case up front and
+// releases the unused remainder after the read, so the concurrent budget
+// is never over-subscribed while a large body is being read (FIX-15).
+//
+// The returned release must be deferred by the caller for the lifetime
+// of the request; it is never nil.
+func (p *Proxy) readBody(q *Req, o operation) ([]byte, func(), *apiError) {
+	var reserve int64
+	release := func() {
+		if reserve > 0 {
+			p.budget.Release(reserve)
+			reserve = 0
+		}
+	}
+	if o.method != "POST" {
+		return nil, release, nil
+	}
+
+	enc := q.R.Header.Get("Content-Encoding")
+	if enc != "" && !strings.EqualFold(enc, "identity") {
+		return nil, release, &errUnsupported
+	}
+
+	maxBody := int64(p.cfg.Server.MaxBodyBytes)
+	if cl := q.R.ContentLength; cl > 0 && cl <= maxBody {
+		if !p.budget.Acquire(cl) {
+			return nil, release, &errOverloaded
+		}
+		reserve = cl
+	} else if cl < 0 {
+		if !p.budget.Acquire(maxBody) {
+			return nil, release, &errOverloaded
+		}
+		reserve = maxBody
+	}
+
+	body, err := readBodyLimited(q.R, p.cfg.Server.MaxBodyBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		return nil, release, &errBodyTooBig
+	}
+	if err != nil {
+		return nil, release, &errBodyUnread
+	}
+	if n := int64(len(body)); n < reserve {
+		// Body smaller than the reservation (an unknown-size request
+		// reserved the worst case): release the excess now.
+		p.budget.Release(reserve - n)
+		reserve = n
+	}
+	return body, release, nil
 }
 
 // sleepBackoff sleeps the retry backoff for attempt n (1-based retries)
