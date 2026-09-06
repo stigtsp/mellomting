@@ -2098,21 +2098,20 @@ writable, the backend TCP ports connectable, the ingress listener still
 accepting, everything else denied. A backend enforces it with whatever the
 host provides:
 
-| Platform | Mechanism | Section | Default mode |
-| --- | --- | --- | --- |
-| Linux | Landlock (§54-§63) | `security.landlock` | `required` |
-| macOS | Seatbelt | `security.seatbelt` | `disabled` |
+| Platform | Mechanism | Section |
+| --- | --- | --- |
+| Linux | Landlock (§54-§63) | `security.landlock` |
+| macOS | Seatbelt | `security.seatbelt` |
 
-Only the backend for the running platform is consulted, so one
-configuration may carry both sections and be served on either. A platform
-with no backend at all reports the sandbox as unavailable, and the
-configured mode decides whether that is fatal (§55) — never a silent
-downgrade to no confinement.
+Both default to `required`. Only the backend for the running platform is
+consulted, so one configuration may carry both sections and be served on
+either. A platform with no backend at all reports the sandbox as
+unavailable, and the configured mode decides whether that is fatal (§55) —
+never a silent downgrade to no confinement.
 
-Seatbelt defaults to `disabled` where Landlock defaults to `required`:
-macOS is a development platform for this daemon rather than a deployment
-target, and its confinement has not been proven across macOS releases the
-way Landlock has across kernels. It is enabled deliberately, per host.
+A macOS host already running the daemon inside another sandbox may not
+apply a second profile, and under `required` does not start it. That is
+the same fail-closed answer an old kernel gets on Linux.
 
 ## 53.2 Seatbelt
 
@@ -2129,6 +2128,15 @@ The entry points are Apple SPI and carry no compatibility promise, so they
 MUST be resolved at run time rather than linked. A macOS release that drops
 them leaves a daemon reporting an unavailable sandbox — the same fail-closed
 path as an old kernel on Linux — and never a binary that cannot launch.
+
+Seatbelt matches the literal pathname the kernel evaluates, and the macOS
+root is a field of symlinks: `/etc`, `/var` and `/tmp` are links into
+`/private`, which is where the default users file and accounting log live.
+A rule MUST therefore name both the configured pathname and the one
+symlinks resolve it to, or the daemon is denied files its own policy
+grants. A network address in a profile takes only `*` or `localhost` as
+its host, so backend rules filter by destination port exactly as Landlock
+does; restricting the address stays the backend network mode's job (§16).
 
 ---
 

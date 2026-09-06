@@ -89,7 +89,7 @@ func initCmd(args []string) int {
 	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
 	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
 	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
-	fs.StringVar(&sandboxMode, "sandbox", initSandboxDefault(), "sandbox `MODE` for this platform: required, best-effort, disabled")
+	fs.StringVar(&sandboxMode, "sandbox", sandbox.ModeRequired, "sandbox `MODE` for this platform: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
@@ -237,7 +237,7 @@ func parseInitArguments(configPath, listen, sandboxMode string, sandboxSet, dryR
 		return initArguments{}, err
 	}
 	if !sandboxSet {
-		sandboxMode = initSandboxDefault()
+		sandboxMode = sandbox.ModeRequired
 	}
 	switch sandboxMode {
 	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
@@ -432,15 +432,11 @@ func resolveInitAuthPaths(configRaw string) (configPath, usersPath, pepperPath s
 	return abs, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "auth.pepper"), nil
 }
 
-// initSandbox describes the sandbox of the platform init is writing a
-// configuration for: the section that governs it, and the mode used
-// when --sandbox is absent. That default matches what the configuration
-// itself would default to, so a generated file and an omitted section
-// agree; macOS defaults to disabled because its backend is off by
-// default (PLAN §53.1).
+// initSandbox is the sandbox of the platform init is writing a
+// configuration for: the section that governs it (PLAN §53.1). Both
+// platforms default to required, so only the section varies.
 type initSandbox struct {
-	section     string
-	defaultMode string
+	section string
 }
 
 const (
@@ -450,12 +446,10 @@ const (
 
 func initSandboxFor(goos string) initSandbox {
 	if goos == "darwin" {
-		return initSandbox{section: seatbeltSection, defaultMode: sandbox.ModeDisabled}
+		return initSandbox{section: seatbeltSection}
 	}
-	return initSandbox{section: landlockSection, defaultMode: sandbox.ModeRequired}
+	return initSandbox{section: landlockSection}
 }
-
-func initSandboxDefault() string { return initSandboxFor(runtime.GOOS).defaultMode }
 
 // doc renders the sandbox section of the generated configuration. Only
 // Landlock has a version floor to pin.
@@ -482,9 +476,9 @@ func (s initSandbox) preflight(mode string, explicit bool, check func() sandbox.
 		}
 		return nil
 	}
-	// Nothing to opt out of where the sandbox is off by default, or
-	// unavailable in the first place.
-	if !explicit && s.defaultMode == sandbox.ModeRequired && report.Supported {
+	// Nothing to opt out of where the platform has no sandbox to begin
+	// with.
+	if !explicit && report.Supported {
 		return fmt.Errorf("--sandbox %s must be supplied explicitly", mode)
 	}
 	return nil

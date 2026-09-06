@@ -477,7 +477,7 @@ func withInitPepper(t *testing.T, pepper []byte) {
 // platform, indented into the security block of the fixture.
 func wantSandboxSection() string {
 	if initSandboxFor(runtime.GOOS).section == "seatbelt" {
-		return "    seatbelt:\n        mode: disabled\n"
+		return "    seatbelt:\n        mode: required\n"
 	}
 	return fmt.Sprintf("    landlock:\n        minimum_abi: %d\n        mode: required\n", landlock.DefaultMinimumABI)
 }

@@ -178,7 +178,7 @@ startup FDs are settled and before the listener accepts (PLAN §57);
 continues (never a partial policy). `internal/sandbox` holds the
 platform-neutral policy both backends enforce; on macOS `internal/seatbelt`
 renders it as an SBPL profile governed by `security.seatbelt.mode`
-(PLAN §53.1-53.2), which defaults to disabled. MPTCP is explicitly disabled on every
+(PLAN §53.1-53.2). Both default to required. MPTCP is explicitly disabled on every
 listener/dialer it owns (PLAN §61). `deploy/mellomting.service` ships the
 hardened systemd unit (PLAN §64). `mellomting install --systemd` (via
 `internal/systemd`, assets embedded byte-identical to `deploy/`) provisions

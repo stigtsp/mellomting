@@ -195,12 +195,8 @@ type Landlock struct {
 // Seatbelt is the sandbox policy on macOS (PLAN §55), the counterpart
 // of Landlock on Linux. Only the one for the running platform is
 // consulted, so a configuration can carry both and be served anywhere.
-//
-// It defaults to disabled where Landlock defaults to required: macOS is
-// a development platform for this daemon, not a deployment target, and
-// its confinement has not been proven on the range of macOS releases
-// that Landlock has on Linux kernels. Enable it deliberately, after
-// `mellomting sandbox check` reports it available on that host.
+// It defaults to required, as Landlock does: a host that cannot enforce
+// the policy is a host this daemon does not start on.
 type Seatbelt struct {
 	Mode string `yaml:"mode"` // "required", "best-effort", or "disabled"
 }

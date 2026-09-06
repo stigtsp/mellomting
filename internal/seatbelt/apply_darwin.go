@@ -5,6 +5,7 @@ package seatbelt
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"syscall"
@@ -49,6 +50,7 @@ type symbols struct {
 	apply         uintptr
 	freeProfile   uintptr
 	freeError     uintptr
+	check         uintptr
 	err           error
 }
 
@@ -66,6 +68,7 @@ var loadSymbols = sync.OnceValue(func() symbols {
 		{"sandbox_apply", &s.apply},
 		{"sandbox_free_profile", &s.freeProfile},
 		{"sandbox_free_error", &s.freeError},
+		{"sandbox_check", &s.check},
 	} {
 		addr, err := dlsym(h, sym.name)
 		if err != nil {
@@ -143,13 +146,30 @@ func (c *compiled) free() {
 func (c *compiled) apply() error {
 	defer c.free()
 	r1, _, errno := syscall_syscall(c.syms.apply, c.handle, 0, 0)
-	if int32(r1) != 0 {
-		if errno != 0 {
-			return fmt.Errorf("sandbox_apply: %w", errno)
-		}
+	if int32(r1) == 0 {
+		return nil
+	}
+	if errno == 0 {
 		return errors.New("sandbox_apply failed")
 	}
-	return nil
+	// A process that is already confined may be refused a second
+	// profile, depending on what the outer one permits. Saying so turns
+	// a bare EPERM into something the operator can act on.
+	if errors.Is(errno, syscall.EPERM) && alreadyConfined(c.syms) {
+		return fmt.Errorf("sandbox_apply: %w (this process is already confined by another sandbox, which may not permit a second profile)", errno)
+	}
+	return fmt.Errorf("sandbox_apply: %w", errno)
+}
+
+// alreadyConfined reports whether some sandbox already applies to this
+// process. It is used only to explain a refusal: nesting does not
+// always prevent a second profile, so it is not a capability answer.
+func alreadyConfined(syms symbols) bool {
+	if syms.check == 0 {
+		return false
+	}
+	r1, _, _ := syscall_syscall(syms.check, uintptr(os.Getpid()), 0, 0)
+	return int32(r1) == 1
 }
 
 // takeError renders and frees a libsandbox error string.

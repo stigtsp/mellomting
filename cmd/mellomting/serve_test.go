@@ -197,6 +197,8 @@ auth:
 security:
   landlock:
     mode: %s
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -587,6 +589,28 @@ func platformSandboxSection() (name string, available bool) {
 	return "landlock", r.Supported && r.KernelABI >= landlock.DefaultMinimumABI
 }
 
+// skipIfSandboxRefused skips when the daemon exited because the host
+// would not apply the policy, rather than because anything is wrong.
+// MELLOMTING_LANDLOCK_STRICT or MELLOMTING_SEATBELT_STRICT turn that
+// skip into a failure, so a run meant to prove enforcement cannot pass
+// by skipping.
+func skipIfSandboxRefused(t *testing.T, cmd *exec.Cmd, logB *syncBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logB.String(), "cannot be enforced") {
+			if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" || os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
+				t.Fatalf("strict sandbox run: the host refused to apply the policy: %s", logB.String())
+			}
+			t.Skipf("this host would not apply the policy: %s", logB.String())
+		}
+		if cmd.ProcessState != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // configListenUnix builds a unix listen config for listener tests.
 func configListenUnix(address, mode string) config.Listen {
 	return config.Listen{Network: "unix", Address: address, Mode: mode}
@@ -657,6 +681,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:
@@ -781,6 +807,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:
@@ -931,6 +959,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -1029,6 +1059,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:
@@ -1256,6 +1288,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -1409,6 +1443,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 accounting:
@@ -1596,6 +1632,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 shutdown:
@@ -1797,6 +1835,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -1911,6 +1951,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -1979,12 +2021,15 @@ models:
 // has been applied to all threads, and it must operate normally
 // afterwards (the policy allows the backend port).
 func TestServeSandboxRequiredApplies(t *testing.T) {
-	report := landlock.Check()
-	if !report.Supported || report.KernelABI < landlock.DefaultMinimumABI {
-		if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" {
-			t.Fatalf("strict landlock run: required-mode enforcement cannot be tested here (supported=%v kernel_abi=%d)", report.Supported, report.KernelABI)
+	// Whichever backend this host has, this is the end-to-end proof of
+	// required mode: the daemon serves a real request under the policy
+	// it applied to itself, and reloads its key store afterwards.
+	section, available := platformSandboxSection()
+	if !available {
+		if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" || os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
+			t.Fatalf("strict sandbox run: %s cannot enforce a policy here", section)
 		}
-		t.Skipf("landlock unavailable or kernel ABI %d < default minimum %d; required-mode enforcement cannot be tested here", report.KernelABI, landlock.DefaultMinimumABI)
+		t.Skipf("%s cannot enforce a policy on this host; required-mode enforcement cannot be tested here", section)
 	}
 
 	bin := buildCLI(t)
@@ -2028,7 +2073,7 @@ auth:
   pepper_file: %s
 
 security:
-  landlock:
+  %s:
     mode: required
 
 servers:
@@ -2042,12 +2087,17 @@ models:
     upstream_model: Qwen/Qwen3-Coder
     servers:
       - local-a
-`, sock, usersPath, pepperPath, backend.URL)
+`, sock, usersPath, pepperPath, section, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd, logB := startServeWithLog(t, bin, cfgPath)
+	// The sandbox may be available to compile a profile and still be
+	// refused when applied — a host already running this process inside
+	// another sandbox is the usual reason. That is not a failure of the
+	// daemon, so it is a skip unless the run demands enforcement.
+	skipIfSandboxRefused(t, cmd, logB)
 	client := waitReady(t, sock) // ready only after the sandbox is applied (PLAN §57 step 19)
 
 	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
@@ -2167,6 +2217,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 accounting:
   enabled: false
@@ -2284,6 +2336,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 accounting:
   enabled: false
@@ -2393,6 +2447,8 @@ auth:
 security:
   landlock:
     mode: disabled
+  seatbelt:
+    mode: disabled
 
 servers:
   local-a:
@@ -2489,6 +2545,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:
@@ -2591,6 +2649,8 @@ security:
   backend_network:
     mode: any
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:
@@ -2747,6 +2807,8 @@ auth:
 
 security:
   landlock:
+    mode: disabled
+  seatbelt:
     mode: disabled
 
 servers:

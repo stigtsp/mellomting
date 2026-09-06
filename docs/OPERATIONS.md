@@ -11,23 +11,24 @@ The daemon confines itself after startup, once every secret is loaded and
 its file descriptors are closed. Which mechanism enforces that depends on
 the host, and only the one for the running platform is consulted:
 
-| Platform | Mechanism | Configured by | Default |
-| --- | --- | --- | --- |
-| Linux | Landlock | `security.landlock.mode` | `required` |
-| macOS | Seatbelt | `security.seatbelt.mode` | `disabled` |
+| Platform | Mechanism | Configured by |
+| --- | --- | --- |
+| Linux | Landlock | `security.landlock.mode` |
+| macOS | Seatbelt | `security.seatbelt.mode` |
 
-Both take `required` (refuse to start unless the policy is enforced),
-`best-effort` (warn and continue) or `disabled`. A configuration may
-carry both sections and be served on either platform.
+Both default to `required` and take `best-effort` (warn and continue) or
+`disabled` instead. A configuration may carry both sections and be
+served on either platform.
 
 ```sh
 mellomting sandbox check
 ```
 
 reports the backend for this host, whether it is available, and what the
-configured mode would do. Seatbelt defaults to `disabled` because macOS
-is a development platform for this daemon rather than a deployment
-target; enable it once `sandbox check` reports it available there.
+configured mode would do. Under `required` a host that cannot enforce
+the policy does not start the daemon — including a macOS host that is
+already running it inside another sandbox, which may not apply a second
+profile.
 
 ## API keys
 
