@@ -3,6 +3,7 @@
 package seatbelt
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -122,35 +123,87 @@ func TestApplyEnforces(t *testing.T) {
 	go acceptAll(grantedLn)
 	go acceptAll(withheldLn)
 
-	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$")
-	cmd.Env = append(os.Environ(),
-		"MELLOMTING_SEATBELT_CHILD=1",
-		"SB_GRANTED_DIR="+granted,
-		"SB_WITHHELD_FILE="+withheld,
-		"SB_GRANTED_PORT="+portOf(t, grantedLn),
-		"SB_WITHHELD_PORT="+portOf(t, withheldLn),
-	)
-	out, err := cmd.CombinedOutput()
-	got := string(out)
-	if strings.Contains(got, "APPLY-REFUSED") {
-		if os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
-			t.Fatalf("strict seatbelt run: enforcement could not be tested: %s", got)
-		}
-		t.Skipf("this process is already sandboxed, so it may not apply another profile: %s", got)
-	}
-	if err != nil {
-		t.Fatalf("confined child failed: %v\n%s", err, got)
-	}
-	for _, want := range []string{
-		"RUNTIME-ALIVE",
-		"GRANTED-READ ok",
-		"WITHHELD-READ denied",
-		"GRANTED-CONNECT ok",
-		"WITHHELD-CONNECT denied",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in confined child output:\n%s", want, got)
-		}
+	// The daemon binds its listener before confining itself and must
+	// keep accepting afterwards, so the child is driven for both
+	// listener kinds the configuration offers.
+	for _, kind := range []string{"unix", "tcp"} {
+		t.Run(kind+" listener", func(t *testing.T) {
+			// A unix socket path is capped near 104 bytes, which a
+			// macOS temporary directory alone can exceed.
+			short, err := os.MkdirTemp("/tmp", "sb")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(short)
+
+			cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$")
+			cmd.Env = append(os.Environ(),
+				"MELLOMTING_SEATBELT_CHILD=1",
+				"SB_LISTEN_KIND="+kind,
+				"SB_LISTEN_UNIX="+filepath.Join(short, "s.sock"),
+				"SB_GRANTED_DIR="+granted,
+				"SB_WITHHELD_FILE="+withheld,
+				"SB_GRANTED_PORT="+portOf(t, grantedLn),
+				"SB_WITHHELD_PORT="+portOf(t, withheldLn),
+			)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Stderr = os.Stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer cmd.Wait()
+
+			var got strings.Builder
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				got.WriteString(line + "\n")
+				addr, ok := strings.CutPrefix(line, "LISTENING ")
+				if !ok {
+					continue
+				}
+				// The confined child is now waiting to accept. If the
+				// sandbox filtered the accept, this connection hangs
+				// until the child's own deadline and it reports so.
+				network := "unix"
+				if kind == "tcp" {
+					network = "tcp"
+				}
+				c, err := net.DialTimeout(network, addr, 5*time.Second)
+				if err != nil {
+					t.Fatalf("dialling the confined listener: %v", err)
+				}
+				buf := make([]byte, 16)
+				_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+				n, err := c.Read(buf)
+				c.Close()
+				if err != nil || string(buf[:n]) != "served" {
+					t.Fatalf("confined listener did not serve the connection: %q %v", buf[:n], err)
+				}
+			}
+			out := got.String()
+			if strings.Contains(out, "APPLY-REFUSED") {
+				if os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
+					t.Fatalf("strict seatbelt run: enforcement could not be tested: %s", out)
+				}
+				t.Skipf("this process is already sandboxed, so it may not apply another profile: %s", out)
+			}
+			for _, want := range []string{
+				"RUNTIME-ALIVE",
+				"ACCEPTED",
+				"GRANTED-READ ok",
+				"WITHHELD-READ denied",
+				"GRANTED-CONNECT ok",
+				"WITHHELD-CONNECT denied",
+			} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("missing %q in confined child output:\n%s", want, out)
+				}
+			}
+		})
 	}
 }
 
@@ -169,12 +222,49 @@ func confinedChild() {
 	withheldFile := os.Getenv("SB_WITHHELD_FILE")
 	grantedPort, withheldPort := port("SB_GRANTED_PORT"), port("SB_WITHHELD_PORT")
 
+	// Bind before confining, exactly as the daemon does: the policy
+	// names a listener that already exists (PLAN §57).
+	var ln net.Listener
+	var err error
+	listen := sandbox.Listener{}
+	if os.Getenv("SB_LISTEN_KIND") == "unix" {
+		path := os.Getenv("SB_LISTEN_UNIX")
+		if ln, err = net.Listen("unix", path); err != nil {
+			fmt.Println("LISTEN-FAILED", err)
+			os.Exit(1)
+		}
+		listen.UnixPath = path
+	} else {
+		if ln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			fmt.Println("LISTEN-FAILED", err)
+			os.Exit(1)
+		}
+		listen.TCPPort = uint16(ln.Addr().(*net.TCPAddr).Port)
+	}
+
 	if err := Apply(sandbox.Policy{
 		ReadPaths:  []string{grantedDir},
 		ConnectTCP: []uint16{grantedPort},
+		Listen:     listen,
 	}); err != nil {
 		fmt.Println("APPLY-REFUSED", err)
 		os.Exit(0)
+	}
+
+	// Accepting is the daemon's whole job, and Seatbelt filters accepts
+	// as well as binds: a policy that named no listener would confine it
+	// into answering nothing.
+	fmt.Println("LISTENING", ln.Addr().String())
+	if l, ok := ln.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = l.SetDeadline(time.Now().Add(10 * time.Second))
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		fmt.Println("ACCEPT-FAILED", err)
+	} else {
+		_, _ = conn.Write([]byte("served"))
+		conn.Close()
+		fmt.Println("ACCEPTED")
 	}
 
 	// The runtime has to survive the confinement: a sandbox that kills
