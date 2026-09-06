@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2015,14 +2016,14 @@ models:
 	// applied to all threads, and it served a request under the
 	// confines of the policy.
 
-	// N2 (FIX_REVIEW_2026-08-22): under landlock.mode: required the
-	// users file is pinned to its startup inode, so a key rotation that
-	// atomically renames the file cannot take effect on SIGHUP. Rewrite
-	// the file with the key disabled (the same atomic rename `key
-	// revoke` performs) and reload: the daemon must fail closed —
-	// keeping the previous store, so the key still works — and must log
-	// the ERROR naming the sandbox and the restart requirement instead
-	// of silently no-opping.
+	// Under landlock.mode: required a key rotation must still take
+	// effect on SIGHUP. Every mutation publishes the users file by
+	// renaming a new inode over it, and a policy naming the file alone
+	// stopped matching at that moment: the reload was denied and a
+	// revoked key kept working until the daemon was restarted. The
+	// policy grants the directory holding the file, so the rename is
+	// invisible to it. Rewrite the file with the key disabled (the same
+	// atomic rename `key revoke` performs) and reload.
 	if err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
 		for i := range uf.Keys {
 			if uf.Keys[i].ID == id {
@@ -2037,19 +2038,18 @@ models:
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(logB.String(), "users reload failed; keeping previous store (under landlock.mode: required") {
+	for !strings.Contains(logB.String(), "users reloaded") {
 		if time.Now().After(deadline) {
-			t.Fatalf("daemon did not log the sandbox-restart ERROR after SIGHUP; log=%s", logB.String())
+			t.Fatalf("sandboxed daemon did not reload the users file after SIGHUP; log=%s", logB.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	// The previous (enabled) store must still be in effect: the key
-	// keeps working until a restart (PLAN §30 fail closed).
-	resp, body = postJSON(t, client, "http://mellomting/v1/chat/completions", key,
-		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`)
-	if resp.StatusCode != 200 {
-		t.Fatalf("key must keep working after failed sandboxed reload (fail closed): %d %s", resp.StatusCode, body)
+	if strings.Contains(logB.String(), "users reload failed") {
+		t.Fatalf("the sandbox denied the reload; log=%s", logB.String())
 	}
+	// The disabled key must be rejected live, with no restart.
+	waitStatus(t, client, http.MethodPost, "http://mellomting/v1/chat/completions", key,
+		`{"model":"qwen-coder","messages":[{"role":"user","content":"hi"}]}`, 401)
 
 	err = cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
@@ -2742,5 +2742,40 @@ models:
 	}
 	if !strings.Contains(out, "would count zero tokens against it") {
 		t.Fatalf("reload rejection message missing: %q", out)
+	}
+}
+
+// The sandbox must grant the directory holding the users file, not only
+// the file. A Landlock rule binds to the inode behind the path when the
+// ruleset is built, and every key mutation publishes the users file by
+// renaming a new inode over it — so a rule naming the file alone stops
+// matching at the first `key create`, the SIGHUP reload is denied, and
+// a revoked key keeps working until the daemon is restarted. Asserted
+// here so the wiring is covered on hosts whose kernel cannot enforce
+// Landlock at all; TestServeSandboxRequiredApplies proves the effect on
+// one that can.
+func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
+	dir := shortTempDir(t)
+	usersPath := filepath.Join(dir, "auth", "users.yaml")
+	cfg := &config.Config{
+		Auth:     config.Auth{UsersFile: usersPath},
+		Backends: map[string]config.Backend{"b1": {BaseURL: "http://127.0.0.1:8001"}},
+	}
+
+	pol, err := sandboxPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(pol.ReadFiles, usersPath) {
+		t.Fatalf("ReadFiles = %v, want the users file", pol.ReadFiles)
+	}
+	wantDir := filepath.Join(dir, "auth")
+	if !slices.Contains(pol.ReadDirs, wantDir) {
+		t.Fatalf("ReadDirs = %v, want %q; without it a key rotation cannot be reloaded", pol.ReadDirs, wantDir)
+	}
+	// The grant stays read-only: nothing in the config directory becomes
+	// writable just because the reload needs to re-open it.
+	if len(pol.WriteFiles) != 0 {
+		t.Fatalf("WriteFiles = %v, want none with accounting disabled", pol.WriteFiles)
 	}
 }

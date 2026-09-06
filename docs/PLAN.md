@@ -1408,14 +1408,23 @@ the key set — such as whether a token quota is in effect, which decides
 stream-usage injection (§38) — MUST be read from the live key record rather
 than sampled once at startup.
 
-Under `security.landlock.mode: required` the users file is pinned to its
-startup inode (the only file read the post-startup policy grants, §58).
-Offline `key create/disable/revoke` atomically renames the file to a new
-inode, so a `SIGHUP` reload of those changes is denied by the sandbox and
-fails closed (the previous store is retained). Key rotation and revocation
-therefore require a process restart under `mode: required`; the daemon logs
-an ERROR naming the sandbox and the restart requirement so the operator
-sees the cause rather than a silent no-op (FIX-02/N2).
+A `SIGHUP` reload MUST apply under every `security.landlock.mode`. Offline
+`key create/disable/revoke` publishes the users file by atomically renaming a
+new file over it, and a Landlock rule binds to the inode behind the path when
+the ruleset is built — so a policy naming the users file alone stops matching
+at the first mutation, the reload is denied, and a revoked key keeps working
+until the process is restarted. The post-startup policy therefore grants
+read on the DIRECTORY holding the users file (§58), which the rename does not
+change. Key rotation and revocation apply on reload, with no restart, in every
+mode.
+
+That grant is read-only and covers one directory, but the directory normally
+also holds the pepper and the configuration, so a confined daemon can re-open
+those too. Both are already read at startup and the pepper is held in memory
+for the process lifetime, so the grant widens what a compromised daemon can
+re-read rather than what it can reach for the first time. An operator who
+wants the narrower blast radius can place the users file in a directory of
+its own and point `auth.users_file` at it.
 
 Revocation applies to new requests. Existing inference streams are not forcibly terminated in v1.
 
@@ -2192,6 +2201,10 @@ Example policy:
 ```text
 READ:
     /etc/mellomting/users.yaml       only because SIGHUP reload needs it
+    /etc/mellomting/                 files in it, because every key mutation
+                                     renames a new users.yaml over the old
+                                     one and a rule bound to the replaced
+                                     inode would deny the reload (§30)
 
 WRITE:
     accounting destination only if opened/reopened by pathname

@@ -496,16 +496,13 @@ func keyList(c *keyFlags) int {
 }
 
 // keyApplyInstruction is the one apply instruction printed after a key
-// mutation (D16: one completion line plus one restart/reload action). Under
-// landlock.mode=required the users file is pinned to its startup inode and
-// a reload of the change is denied by the sandbox (PLAN §30, §58; FIX-02), so
-// a restart is the only way a running server picks up the change — the
-// instruction never recommends a reload. Other modes keep the short form.
-func keyApplyInstruction(cfg *config.Config) string {
-	if cfg.Security.Landlock.Mode == landlock.ModeRequired {
-		return "Restart Mellomting to apply it; running servers do not see the change until a restart (landlock.mode=required)."
-	}
-	return "Restart Mellomting to apply it."
+// mutation (D16: one completion line plus one reload action). A reload
+// applies the change in every mode: the sandbox grants the directory
+// holding the users file, not the single inode a mutation renames away
+// (PLAN §30, §58), so landlock.mode=required no longer forces a restart
+// for key rotation or revocation.
+func keyApplyInstruction(*config.Config) string {
+	return "Reload Mellomting to apply it: systemctl reload mellomting (or send SIGHUP)."
 }
 
 func keyRevoke(c *keyFlags) int {

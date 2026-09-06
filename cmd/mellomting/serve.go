@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -232,6 +233,30 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 // users file (SIGHUP reload, PLAN §30), write the accounting log, and
 // connect to the configured backend TCP ports. Secrets are preloaded
 // and their FDs closed before this runs (PLAN §59).
+// sandboxPolicy builds the post-startup Landlock policy from validated
+// configuration (PLAN §58, §60, §62). It is separate from applySandbox
+// so what the daemon confines itself to can be asserted on any host,
+// not only one whose kernel can enforce it.
+func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
+	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
+	if err != nil {
+		return landlock.Policy{}, fmt.Errorf("landlock: %w", err)
+	}
+	pol := landlock.Policy{
+		ReadFiles: []string{cfg.Auth.UsersFile},
+		// The directory, not just the file: every key mutation renames a
+		// new users file over the old one, and a rule bound to the
+		// replaced inode would deny the SIGHUP reload that is supposed
+		// to apply it (PLAN §30, §58).
+		ReadDirs:   []string{filepath.Dir(cfg.Auth.UsersFile)},
+		ConnectTCP: ports,
+	}
+	if cfg.Accounting.Enabled {
+		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
+	}
+	return pol, nil
+}
+
 func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	l := cfg.Security.Landlock
 	if l.Mode == landlock.ModeDisabled {
@@ -240,17 +265,9 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	}
 	required := l.Mode == landlock.ModeRequired
 
-	// Build the policy (PLAN §58, §60, §62).
-	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
+	pol, err := sandboxPolicy(cfg)
 	if err != nil {
-		return fmt.Errorf("landlock: %w", err)
-	}
-	pol := landlock.Policy{
-		ReadFiles:  []string{cfg.Auth.UsersFile},
-		ConnectTCP: ports,
-	}
-	if cfg.Accounting.Enabled {
-		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
+		return err
 	}
 
 	failClosed := func(reason, detail string) error {
@@ -636,17 +653,16 @@ func (d *daemon) reloadUsers() {
 }
 
 // logReloadFailed reports a failed SIGHUP reload (PLAN §30). Fail closed:
-// the previous store stays in effect. Under landlock.mode: required the
-// users file is pinned to its startup inode (PLAN §58), and key
-// create/disable/revoke atomically rename it to a new inode the sandbox
-// denies, so the ERROR names the sandbox and the restart requirement —
-// the operator sees the cause instead of a silent no-op (FIX-02/N2 of
-// FIX_REVIEW_2026-08-22).
+// the previous store stays in effect.
+//
+// The sandbox no longer explains a failure here. It used to: the policy
+// granted the users file by pathname, every key mutation renamed a new
+// inode over it, and the reload was denied — so the ERROR named the
+// sandbox and told the operator to restart. The policy now grants the
+// directory (PLAN §58), so a denial is no longer the expected outcome
+// and the error carries whatever actually went wrong: a malformed edit,
+// a file moved out of the granted directory, or a permission the
+// service account does not have.
 func (d *daemon) logReloadFailed(err error) {
-	if d.cfg.Security.Landlock.Mode == landlock.ModeRequired {
-		d.log.Error("users reload failed; keeping previous store (under landlock.mode: required the users file is pinned to its startup inode, so key rotation or revocation requires a restart)",
-			"error_class", "configuration", "error", err)
-		return
-	}
 	d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
 }

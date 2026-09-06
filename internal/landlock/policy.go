@@ -19,6 +19,22 @@ type Policy struct {
 	// confinement. This is the users file: a SIGHUP reload (PLAN §30)
 	// re-reads it by pathname.
 	ReadFiles []string
+	// ReadDirs are directories whose files the daemon may open
+	// read-only after confinement. A Landlock rule binds to the inode
+	// behind the path at the time the ruleset is built, and every key
+	// mutation publishes the users file by renaming a new file over it,
+	// so a rule naming the file alone stops matching the moment a key
+	// is created, disabled, or revoked — the reload is denied and the
+	// change waits for a restart. Granting the directory keeps the
+	// reload working across that rename (PLAN §30, §58).
+	//
+	// The grant is read-only and covers only the directory holding the
+	// users file, but that directory normally also holds the pepper and
+	// the configuration, so a confined daemon can re-open those too.
+	// Both are already read at startup and the pepper stays in memory
+	// for the life of the process, so this widens what a compromised
+	// daemon can re-read, not what it can reach for the first time.
+	ReadDirs []string
 	// WriteFiles are pathnames the daemon may open for writing after
 	// confinement. This is the accounting log only if it is (re-)opened
 	// by pathname (PLAN §58).
@@ -33,9 +49,12 @@ type Policy struct {
 // Summarize renders the policy for operational logs (PLAN §43): the
 // summary carries no secret.
 func (p Policy) Summarize() []string {
-	out := make([]string, 0, len(p.ReadFiles)+len(p.WriteFiles)+len(p.ConnectTCP))
+	out := make([]string, 0, len(p.ReadFiles)+len(p.ReadDirs)+len(p.WriteFiles)+len(p.ConnectTCP))
 	for _, f := range p.ReadFiles {
 		out = append(out, "read "+f)
+	}
+	for _, d := range p.ReadDirs {
+		out = append(out, "read files in "+d)
 	}
 	for _, f := range p.WriteFiles {
 		out = append(out, "write "+f)

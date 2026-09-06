@@ -227,19 +227,19 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	}
 }
 
-// FIX-02 (eval residual): mutating a key under landlock.mode: required
-// must warn that a live server applies the change only after a restart —
-// under that mode a SIGHUP reload of the change is denied by the
-// sandbox (the users file is pinned to its startup inode), so the
-// warning must not recommend one. A silent success would be a false
-// sense of security. Other modes stay silent.
-func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
+// A key mutation prints one apply instruction, and it is the same in
+// every sandbox mode. It used to depend on landlock.mode: under
+// "required" the policy granted the users file by pathname, every
+// mutation renamed a new inode over it, and the reload was denied — so
+// the instruction said "restart" and was forbidden from mentioning
+// SIGHUP. The policy now grants the directory, so a reload applies key
+// rotation and revocation under every mode.
+func TestKeyMutationApplyInstruction(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
 	// D14: create is script-safe — stdout is the raw key and a trailing
-	// newline only; the apply instruction goes to stderr and must never
-	// recommend a SIGHUP reload (denied by the sandbox under mode=required).
+	// newline only; the apply instruction goes to stderr.
 	code, out, errOut := runCLI(t, bin, dir,
 		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
 	if code != 0 {
@@ -248,11 +248,11 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
 		t.Fatalf("stdout must be the raw key and newline only: %q", out)
 	}
-	if !strings.Contains(errOut, "Restart Mellomting to apply it") {
+	if !strings.Contains(errOut, "Reload Mellomting to apply it") {
 		t.Fatalf("no apply instruction on create: stderr=%q", errOut)
 	}
-	if strings.Contains(errOut, "SIGHUP") {
-		t.Fatalf("create output must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
+	if !strings.Contains(errOut, "systemctl reload") {
+		t.Fatalf("the apply instruction must name the reload command: stderr=%q", errOut)
 	}
 	id := keyRe.FindString(out)
 	if id == "" {
@@ -260,16 +260,13 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	}
 	id = strings.Split(id, "-")[2]
 
-	// The same warning must appear on a successful revoke.
+	// The same instruction appears on a successful revoke, and stays
+	// concise (D16): no design rationale or mechanism inventory.
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
 		t.Fatalf("revoke exit = %d stderr=%q", code, errOut)
-	} else if !strings.Contains(errOut, "landlock") || !strings.Contains(errOut, "restart") {
-		t.Fatalf("no reload warning for landlock.mode=required: stderr=%q", errOut)
-	} else if strings.Contains(errOut, "SIGHUP") {
-		t.Fatalf("revoke warning must not recommend SIGHUP (denied by the sandbox under mode=required): stderr=%q", errOut)
+	} else if !strings.Contains(errOut, "Reload Mellomting to apply it") {
+		t.Fatalf("no apply instruction on revoke: stderr=%q", errOut)
 	} else {
-		// D16: the apply instruction stays concise — no design rationale or
-		// mechanism inventory (pinned inodes, atomic rename, …).
 		for _, banned := range []string{"inode", "pinned", "atomic", "rename", "MPTCP"} {
 			if strings.Contains(errOut, banned) {
 				t.Fatalf("revoke output contains banned detail %q: stderr=%q", banned, errOut)
@@ -277,8 +274,9 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 		}
 	}
 
-	// Control: best-effort mode must stay silent. Write a second config
-	// with an explicit security section and repeat.
+	// The instruction no longer varies with the sandbox mode: a
+	// best-effort config gets the same one, and neither mentions
+	// landlock.
 	base, err := os.ReadFile(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -292,8 +290,12 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 		"key", "create", "-config", bePath, "-name", "warn2", "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create (best-effort) exit = %d", code)
-	} else if strings.Contains(errOut, "landlock") {
-		t.Fatalf("unexpected reload warning on create for best-effort: stderr=%q", errOut)
+	}
+	if !strings.Contains(errOut, "Reload Mellomting to apply it") {
+		t.Fatalf("apply instruction differs by sandbox mode: stderr=%q", errOut)
+	}
+	if strings.Contains(errOut, "landlock") {
+		t.Fatalf("the apply instruction must not mention landlock: stderr=%q", errOut)
 	}
 	id = keyRe.FindString(out)
 	if id == "" {
@@ -303,7 +305,7 @@ func TestKeyRevokeWarnsLandlockRequiredReload(t *testing.T) {
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", bePath, "-id", id); code != 0 {
 		t.Fatalf("revoke (best-effort) exit = %d stderr=%q", code, errOut)
 	} else if strings.Contains(errOut, "landlock") {
-		t.Fatalf("unexpected reload warning for best-effort: stderr=%q", errOut)
+		t.Fatalf("the apply instruction must not mention landlock: stderr=%q", errOut)
 	}
 }
 
