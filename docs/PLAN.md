@@ -1162,7 +1162,7 @@ sk-codex-4f92c16a0b7de831-0123456789abcdef0123456789abcdef0123456789abcdef012345
 
 Properties:
 
-- `username` is `^[a-z][a-z0-9]{0,31}$` and equals `key create --name`;
+- `username` is `^[a-z][a-z0-9_]{0,31}$` and equals `key create --name`;
 - `keyid` is 8 random bytes as 16 lowercase hex characters;
 - `secret` is 32 random bytes (256 bits) as 64 lowercase hex characters;
 - ID and secret generated independently with `crypto/rand`;
@@ -1237,7 +1237,7 @@ sk-<username>-<keyid>-<secret>
 
 The grammar is strict:
 
-- `username` matches `^[a-z][a-z0-9]{0,31}$` and equals `key create --name`;
+- `username` matches `^[a-z][a-z0-9_]{0,31}$` and equals `key create --name`;
 - `keyid` is 8 random bytes encoded as exactly 16 lowercase hexadecimal
   characters;
 - `secret` is 32 random bytes (256 bits) encoded as exactly 64 lowercase
@@ -3016,7 +3016,7 @@ public model named `*` or containing a comma.
 
 Every generated and accepted client API key MUST have exactly the form
 `sk-<username>-<keyid>-<secret>` with `username` matching
-`^[a-z][a-z0-9]{0,31}$`, `keyid` 8 random bytes as 16 lowercase hex characters,
+`^[a-z][a-z0-9_]{0,31}$`, `keyid` 8 random bytes as 16 lowercase hex characters,
 `secret` 32 random bytes (256 bits) as 64 lowercase hex characters, no empty
 segment, and no additional separator or suffix. Only this grammar is accepted;
 oversized inputs are rejected before segment parsing. The username equals

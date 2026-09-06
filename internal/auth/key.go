@@ -14,7 +14,7 @@ import (
 //
 //	sk-<username>-<keyid>-<secret>
 //
-// where <username> matches ^[a-z][a-z0-9]{0,31}$, <keyid> is 8 random bytes
+// where <username> matches ^[a-z][a-z0-9_]{0,31}$, <keyid> is 8 random bytes
 // encoded as exactly 16 lowercase hex characters, and <secret> is 32 random
 // bytes (256 bits) encoded as exactly 64 lowercase hex characters. The grammar
 // is deliberately strict: no segment is empty and no additional separator or
@@ -36,13 +36,13 @@ const (
 
 // usernamePattern is the D18 username grammar. It equals `key create --name`
 // and is stored as the key's human-visible name.
-var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,31}$`)
+var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
 // ValidateUsername reports whether username satisfies the D18 grammar. It is
 // the operator-facing check used before entropy use or filesystem mutation.
 func ValidateUsername(username string) error {
 	if !usernamePattern.MatchString(username) {
-		return fmt.Errorf("invalid --name: must match ^[a-z][a-z0-9]{0,31}$")
+		return fmt.Errorf("invalid --name: must match ^[a-z][a-z0-9_]{0,31}$")
 	}
 	return nil
 }

@@ -71,7 +71,7 @@ func TestParseRejectsMalformedKeys(t *testing.T) {
 		"sk-abc-" + id16 + "-" + strings.Repeat("0", 63) + "A",        // uppercase secret
 		"sk-abc-" + id16 + "-" + strings.Repeat("0", 31) + "!",        // bad secret char
 		"sk-" + strings.Repeat("a", 33) + "-" + id16 + "-" + secret64, // username 33 chars
-		"sk-abc_def-" + id16 + "-" + secret64,                         // underscore in username
+		"sk-_abc-" + id16 + "-" + secret64,                            // username starts with underscore
 		"sk-abc-def-" + id16 + "-" + secret64,                         // hyphen splits username
 		"mtk_7R3F2V_secretsecretsecretsecretsecret",                   // legacy format
 	}
@@ -80,6 +80,23 @@ func TestParseRejectsMalformedKeys(t *testing.T) {
 			t.Fatalf("Parse(%q) succeeded", raw)
 		}
 	}
+	// An underscore is legal inside the username (D18): operators name
+	// keys after services and hosts, which conventionally carry one.
+	withUnderscore := "sk-abc_def-" + id16 + "-" + secret64
+	parsedUnderscore, err := Parse(withUnderscore)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", withUnderscore, err)
+	}
+	if parsedUnderscore.Username != "abc_def" {
+		t.Fatalf("username = %q, want abc_def", parsedUnderscore.Username)
+	}
+	if err := ValidateUsername("abc_def"); err != nil {
+		t.Fatalf("ValidateUsername(abc_def): %v", err)
+	}
+	if err := ValidateUsername("_abc"); err == nil {
+		t.Fatal("ValidateUsername accepted a leading underscore")
+	}
+
 	// A well-formed key parses and recovers the fixed-format fields.
 	good := "sk-abc-" + id16 + "-" + secret64
 	parsed, err := Parse(good)

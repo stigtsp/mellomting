@@ -14,7 +14,7 @@ import (
 	"mellomting/internal/config"
 )
 
-var keyRe = regexp.MustCompile(`sk-[a-z][a-z0-9]{0,31}-[0-9a-f]{16}-[0-9a-f]{64}`)
+var keyRe = regexp.MustCompile(`sk-[a-z][a-z0-9_]{0,31}-[0-9a-f]{16}-[0-9a-f]{64}`)
 
 func buildCLI(t *testing.T) string {
 	t.Helper()
@@ -492,7 +492,9 @@ func TestMultipleKeysShareUsername(t *testing.T) {
 func TestKeyCreateRejectsBadUsername(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
-	for _, name := range []string{"Bad", "1abc", "a_b", strings.Repeat("a", 33), ""} {
+	// "_a" pins that the underscore is legal only after the first
+	// character, which must still be a letter.
+	for _, name := range []string{"Bad", "1abc", "_a", "a-b", strings.Repeat("a", 33), ""} {
 		code, _, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-name", name, "-models", "qwen-coder")
 		if code != 2 {
 			t.Fatalf("--name %q: exit = %d, want 2 (stderr=%q)", name, code, errOut)
