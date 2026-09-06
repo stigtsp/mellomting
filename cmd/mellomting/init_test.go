@@ -20,11 +20,11 @@ import (
 	"mellomting/internal/sandbox"
 )
 
-func withInitLandlock(t *testing.T, report sandbox.Report) {
+func withInitSandbox(t *testing.T, report sandbox.Report) {
 	t.Helper()
-	old := initLandlockCheck
-	initLandlockCheck = func() sandbox.Report { return report }
-	t.Cleanup(func() { initLandlockCheck = old })
+	old := initSandboxCheck
+	initSandboxCheck = func() sandbox.Report { return report }
+	t.Cleanup(func() { initSandboxCheck = old })
 }
 
 func supportedLandlockReport() sandbox.Report {
@@ -237,11 +237,11 @@ func TestParseInitArguments(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid landlock", func(t *testing.T) {
+	t.Run("invalid sandbox mode", func(t *testing.T) {
 		t.Parallel()
 		_, err := parseInitArguments("", defaultInitListen, "off", true, false, []string{"http://127.0.0.1:8000"})
-		if err == nil || !strings.Contains(err.Error(), "--landlock must be") {
-			t.Fatalf("err = %v, want landlock", err)
+		if err == nil || !strings.Contains(err.Error(), "--sandbox must be") {
+			t.Fatalf("err = %v, want a --sandbox complaint", err)
 		}
 	})
 
@@ -257,49 +257,49 @@ func TestParseInitArguments(t *testing.T) {
 	})
 }
 
-func TestInitPreflightLandlock(t *testing.T) {
+func TestInitPreflightSandbox(t *testing.T) {
 	t.Parallel()
 
 	t.Run("supported required", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("required", false, func() sandbox.Report { return supportedLandlockReport() }); err != nil {
+		if err := initSandboxFor("linux").preflight("required", false, func() sandbox.Report { return supportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("too-old required", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("required", false, func() sandbox.Report { return tooOldLandlockReport() })
-		if err == nil || !strings.Contains(err.Error(), "--landlock best-effort") {
+		err := initSandboxFor("linux").preflight("required", false, func() sandbox.Report { return tooOldLandlockReport() })
+		if err == nil || !strings.Contains(err.Error(), "--sandbox best-effort") {
 			t.Fatalf("err = %v, want best-effort alternative", err)
 		}
 	})
 
 	t.Run("unsupported required", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("required", false, func() sandbox.Report { return unsupportedLandlockReport() })
-		if err == nil || !strings.Contains(err.Error(), "--landlock best-effort") {
+		err := initSandboxFor("linux").preflight("required", false, func() sandbox.Report { return unsupportedLandlockReport() })
+		if err == nil || !strings.Contains(err.Error(), "--sandbox best-effort") {
 			t.Fatalf("err = %v, want best-effort alternative", err)
 		}
 	})
 
 	t.Run("explicit best-effort unsupported", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("best-effort", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
+		if err := initSandboxFor("linux").preflight("best-effort", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("explicit disabled unsupported", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("disabled", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
+		if err := initSandboxFor("linux").preflight("disabled", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("implicit best-effort rejected", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("best-effort", false, func() sandbox.Report { return supportedLandlockReport() })
+		err := initSandboxFor("linux").preflight("best-effort", false, func() sandbox.Report { return supportedLandlockReport() })
 		if err == nil || !strings.Contains(err.Error(), "explicitly") {
 			t.Fatalf("err = %v, want explicit", err)
 		}
@@ -310,7 +310,7 @@ func TestInitCmd(t *testing.T) {
 	validServer := "http://127.0.0.1:8000"
 
 	t.Run("help is side-effect-free", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		code, stdout, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"-h"})
 		})
@@ -323,7 +323,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("bare init usage", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd(nil)
 		})
@@ -336,7 +336,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("unknown flags rejected", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		for _, flag := range []string{"--backend", "--model", "--tls-cert", "--yes", "--allow-partial"} {
 			code, _, _ := captureOutput(t, func() int {
 				return initCmd([]string{validServer, flag})
@@ -348,7 +348,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("dry-run succeeds without files", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
@@ -368,16 +368,16 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("unsupported required fails without files", func(t *testing.T) {
-		withInitLandlock(t, unsupportedLandlockReport())
+		withInitSandbox(t, unsupportedLandlockReport())
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", validServer, "--config", cfg})
+			return initCmd([]string{"--server", validServer, "--config", cfg, "--sandbox", "required"})
 		})
 		if code != 1 {
 			t.Fatalf("code = %d", code)
 		}
-		if !strings.Contains(stderr, "--landlock best-effort") {
+		if !strings.Contains(stderr, "--sandbox best-effort") {
 			t.Fatalf("stderr = %q", stderr)
 		}
 		entries, err := os.ReadDir(dir)
@@ -390,12 +390,12 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("explicit best-effort unsupported dry-run succeeds", func(t *testing.T) {
-		withInitLandlock(t, unsupportedLandlockReport())
+		withInitSandbox(t, unsupportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--landlock", "best-effort", "--dry-run"})
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--sandbox", "best-effort", "--dry-run"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
@@ -410,12 +410,12 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("duplicate last flag wins", func(t *testing.T) {
-		withInitLandlock(t, unsupportedLandlockReport())
+		withInitSandbox(t, unsupportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
 		code, _, stderr := captureOutput(t, func() int {
-			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--landlock", "required", "--landlock", "disabled", "--dry-run"})
+			return initCmd([]string{"--server", ts.URL, "--config", cfg, "--sandbox", "required", "--sandbox", "disabled", "--dry-run"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
@@ -423,7 +423,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("invalid listener rejected", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--listen", "example.com:8080"})
 		})
@@ -436,7 +436,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("duplicate canonical destination rejected", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--server", "http://[::ffff:127.0.0.1]:8000"})
 		})
@@ -449,7 +449,7 @@ func TestInitCmd(t *testing.T) {
 	})
 
 	t.Run("over maximum server count is a usage error", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		args := []string{}
 		for i := 0; i <= discovery.MaxServers; i++ {
 			args = append(args, "--server", fmt.Sprintf("s%d=http://127.0.0.1:%d", i, 9000+i))
@@ -471,6 +471,15 @@ func withInitPepper(t *testing.T, pepper []byte) {
 	old := initPepperRand
 	initPepperRand = func(int) ([]byte, error) { return pepper, nil }
 	t.Cleanup(func() { initPepperRand = old })
+}
+
+// wantSandboxSection renders the sandbox section init writes on this
+// platform, indented into the security block of the fixture.
+func wantSandboxSection() string {
+	if initSandboxFor(runtime.GOOS).section == "seatbelt" {
+		return "    seatbelt:\n        mode: disabled\n"
+	}
+	return fmt.Sprintf("    landlock:\n        minimum_abi: %d\n        mode: required\n", landlock.DefaultMinimumABI)
 }
 
 func TestRenderInitArtifacts(t *testing.T) {
@@ -504,10 +513,7 @@ models:
 security:
     backend_network:
         mode: loopback-only
-    landlock:
-        minimum_abi: %d
-        mode: required
-server:
+%sserver:
     listen:
         address: 127.0.0.1:8080
         network: tcp
@@ -515,7 +521,7 @@ servers:
     local:
         url: http://127.0.0.1:8000
 version: 1
-`, args.PepperPath, args.UsersPath, landlock.DefaultMinimumABI)
+`, args.PepperPath, args.UsersPath, wantSandboxSection())
 		if string(got.Config) != wantConfig {
 			t.Fatalf("config =\n%s\nwant\n%s", got.Config, wantConfig)
 		}
@@ -642,7 +648,7 @@ version: 1
 		}
 	})
 
-	t.Run("selected landlock mode is rendered", func(t *testing.T) {
+	t.Run("selected sandbox mode is rendered", func(t *testing.T) {
 		withInitPepper(t, deterministicPepper)
 		dir := newCommitDir(t)
 		cfgPath := filepath.Join(dir, "config.yaml")
@@ -655,8 +661,12 @@ version: 1
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Normalized.Security.Landlock.Mode != sandbox.ModeBestEffort {
-			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
+		mode := got.Normalized.Security.Landlock.Mode
+		if args.Sandbox.section == "seatbelt" {
+			mode = got.Normalized.Security.Seatbelt.Mode
+		}
+		if mode != sandbox.ModeBestEffort {
+			t.Fatalf("%s mode = %q", args.Sandbox.section, mode)
 		}
 		if !strings.Contains(string(got.Config), "mode: best-effort") {
 			t.Fatalf("config =\n%s", got.Config)
@@ -1349,7 +1359,7 @@ func TestInitEndToEnd(t *testing.T) {
 	}
 
 	t.Run("two overlapping servers", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		ts1 := testsupport.FakeModelsServer(t, "alpha", "beta")
 		ts2 := testsupport.FakeModelsServer(t, "beta", "gamma")
 		dir := newCommitDir(t)
@@ -1395,7 +1405,7 @@ func TestInitEndToEnd(t *testing.T) {
 	})
 
 	t.Run("dry-run emits config only and no files", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
@@ -1418,7 +1428,7 @@ func TestInitEndToEnd(t *testing.T) {
 	})
 
 	t.Run("broken stdout before publication writes nothing", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
 		cfg := filepath.Join(dir, "config.yaml")
@@ -1439,7 +1449,7 @@ func TestInitEndToEnd(t *testing.T) {
 	})
 
 	t.Run("summary is bounded to 20 rows", func(t *testing.T) {
-		withInitLandlock(t, supportedLandlockReport())
+		withInitSandbox(t, supportedLandlockReport())
 		ids := make([]string, 25)
 		for i := range ids {
 			ids[i] = fmt.Sprintf("model-%02d", i)

@@ -2955,16 +2955,19 @@ retains `0640 root:mellomting` for those files.
 
 ## 77a.3 Local sandbox behavior (D2)
 
-`init` defaults to `security.landlock.mode: required` with the default minimum
-ABI. Before writing, it runs the equivalent of the Landlock capability check:
+`init` writes the sandbox section of the platform it runs on (§53.1), with
+`--sandbox MODE` defaulting to what the configuration itself would default to
+there: `required` for Landlock on Linux, `disabled` for Seatbelt on macOS.
+Before writing, it runs that platform's capability check:
 
-- supported Linux host meeting the minimum: continue;
-- unsupported/too-old host: fail without writing and show the explicit
-  `--landlock best-effort` alternative;
-- `--landlock best-effort` or `--landlock disabled`: accepted only when the
-  operator supplied it explicitly, and written into config.
+- a host that can enforce the required mode: continue;
+- unsupported/too-old host in required mode: fail without writing and show the
+  explicit `--sandbox best-effort` alternative;
+- a weaker mode than the platform's default: accepted only when the operator
+  supplied it explicitly, and written into config.
 
-There is no platform-dependent silent downgrade.
+There is no platform-dependent silent downgrade: where the default is already
+weaker, `init` writes it explicitly so the file states what is enforced.
 
 ## 77a.4 Discovery scope, limits, and response (D6, D7, D8, D9, D10)
 

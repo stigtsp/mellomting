@@ -7,10 +7,10 @@ binary, without a database or telemetry.
 ## Quick start
 
 You need Linux, Go, and a running inference server. This example uses a server
-at `127.0.0.1:8000`. Mellomting requires Landlock support by default. On a Linux
-kernel without it, explicitly add `--landlock best-effort` to `init`; serving
-without the sandbox produces a warning. Local file creation by `init` is
-currently Linux-only.
+at `127.0.0.1:8000`. On Linux, Mellomting requires Landlock support by default;
+on a kernel without it, explicitly add `--sandbox best-effort` to `init`, and
+serving without the sandbox produces a warning. Local file creation by `init` is
+currently Linux-only; `--dry-run` prints the configuration on any platform.
 
 Build and generate a local configuration:
 

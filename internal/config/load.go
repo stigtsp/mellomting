@@ -2,8 +2,10 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -15,13 +17,24 @@ import (
 func Load(path string) (*Config, error) {
 	data, err := readBounded(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, withPath(path, err)
 	}
 	cfg, err := Parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, withPath(path, err)
 	}
 	return cfg, nil
+}
+
+// withPath names the file an error is about, unless the error already
+// does. os returns "open /etc/x.yaml: no such file or directory", and
+// prefixing that again reads as two different files.
+func withPath(path string, err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", path, err)
 }
 
 func readBounded(path string) ([]byte, error) {
@@ -83,7 +96,7 @@ func ParseEffective(data []byte) (*Config, []byte, error) {
 func LoadEffective(path string) (*Config, []byte, error) {
 	data, err := readBounded(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, withPath(path, err)
 	}
 	cfg, out, err := ParseEffective(data)
 	if err != nil {

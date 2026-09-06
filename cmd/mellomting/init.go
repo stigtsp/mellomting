@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,12 +24,19 @@ import (
 	"mellomting/internal/discovery"
 	"mellomting/internal/landlock"
 	"mellomting/internal/sandbox"
+	"mellomting/internal/seatbelt"
 )
 
-// initLandlockCheck is the production Landlock capability probe. Tests
+// initSandboxCheck is the production capability probe for this
+// platform's sandbox. Tests
 // replace it so supported, too-old, and unsupported-host behavior is
 // deterministic on every CI platform.
-var initLandlockCheck = landlock.Check
+var initSandboxCheck = func() sandbox.Report {
+	if runtime.GOOS == "darwin" {
+		return seatbelt.Check()
+	}
+	return landlock.Check()
+}
 
 const defaultInitListen = "127.0.0.1:8080"
 
@@ -60,27 +68,28 @@ type initListener struct {
 // initArguments is the fully parsed, preflight-validated form of
 // `mellomting init`.
 type initArguments struct {
-	ConfigPath   string
-	UsersPath    string
-	PepperPath   string
-	Listener     initListener
-	LandlockMode string
-	DryRun       bool
-	Servers      []discovery.Server
+	ConfigPath  string
+	UsersPath   string
+	PepperPath  string
+	Listener    initListener
+	Sandbox     initSandbox
+	SandboxMode string
+	DryRun      bool
+	Servers     []discovery.Server
 }
 
 // initCmd runs `mellomting init`.
 //
 // Exit codes: 0 ok, 1 platform/preflight failure, 2 usage error.
 func initCmd(args []string) int {
-	fs := commandFlags("init", "Create configuration and auth files from inference servers (Linux).\nExisting files are never overwritten.")
+	fs := commandFlags("init", "Create configuration and auth files from inference servers.\nExisting files are never overwritten. Writing them is Linux-only;\n--dry-run prints the configuration on any platform.")
 	var servers serverList
-	var configPath, listen, landlockMode string
+	var configPath, listen, sandboxMode string
 	var dryRun bool
 	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
 	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
 	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
-	fs.StringVar(&landlockMode, "landlock", sandbox.ModeRequired, "sandbox `MODE`: required, best-effort, disabled")
+	fs.StringVar(&sandboxMode, "sandbox", initSandboxDefault(), "sandbox `MODE` for this platform: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
@@ -89,20 +98,24 @@ func initCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: unexpected arguments %q\n", fs.Args())
 		return 2
 	}
-	landlockSet := false
+	sandboxSet := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "landlock" {
-			landlockSet = true
+		if f.Name == "sandbox" {
+			sandboxSet = true
 		}
 	})
 
-	parsed, err := parseInitArguments(configPath, listen, landlockMode, landlockSet, dryRun, []string(servers))
+	parsed, err := parseInitArguments(configPath, listen, sandboxMode, sandboxSet, dryRun, []string(servers))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 2
 	}
-	if err := initPreflightLandlock(parsed.LandlockMode, landlockSet, initLandlockCheck); err != nil {
+	if err := parsed.Sandbox.preflight(parsed.SandboxMode, sandboxSet, initSandboxCheck); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
+		return 1
+	}
+	if !parsed.DryRun && !initCommitSupported {
+		fmt.Fprintf(os.Stderr, "mellomting: init: writing files is Linux-only on this build; rerun with --dry-run to print the configuration\n")
 		return 1
 	}
 	return runInit(parsed)
@@ -140,11 +153,9 @@ func runInit(args initArguments) int {
 			fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
 			return 1
 		}
-		for name, ids := range results {
-			if _, err := fmt.Fprintf(os.Stderr, "mellomting: init: server %q: %d model(s)\n", name, len(ids)); err != nil {
-				fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
-				return 1
-			}
+		if err := printInitSummary(os.Stderr, aggregate); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
+			return 1
 		}
 		return 0
 	}
@@ -185,7 +196,7 @@ func discoverInitServers(ctx context.Context, servers []discovery.Server, policy
 func printInitSummary(w io.Writer, aggregate discovery.Result) error {
 	models := aggregate.SortedModels()
 	const limit = 20
-	if _, err := fmt.Fprintf(w, "discovered %d model(s):\n", len(models)); err != nil {
+	if _, err := fmt.Fprintf(w, "discovered %s:\n", plural(len(models), "model")); err != nil {
 		return err
 	}
 	for i, name := range models {
@@ -210,7 +221,7 @@ func printInitCompletion(w io.Writer, args initArguments) error {
 	return err
 }
 
-func parseInitArguments(configPath, listen, landlockMode string, landlockSet, dryRun bool, rawServers []string) (initArguments, error) {
+func parseInitArguments(configPath, listen, sandboxMode string, sandboxSet, dryRun bool, rawServers []string) (initArguments, error) {
 	if len(rawServers) == 0 {
 		return initArguments{}, fmt.Errorf("at least one --server is required\nexample: mellomting init --server http://127.0.0.1:8000")
 	}
@@ -225,27 +236,27 @@ func parseInitArguments(configPath, listen, landlockMode string, landlockSet, dr
 	if err != nil {
 		return initArguments{}, err
 	}
-	if !landlockSet {
-		// D2: the default is required; the operator has not opted out.
-		landlockMode = sandbox.ModeRequired
+	if !sandboxSet {
+		sandboxMode = initSandboxDefault()
 	}
-	switch landlockMode {
+	switch sandboxMode {
 	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
 	default:
-		return initArguments{}, fmt.Errorf("--landlock must be required, best-effort, or disabled")
+		return initArguments{}, fmt.Errorf("--sandbox must be required, best-effort, or disabled")
 	}
 	cfgPath, usersPath, pepperPath, err := resolveInitAuthPaths(configPath)
 	if err != nil {
 		return initArguments{}, err
 	}
 	return initArguments{
-		ConfigPath:   cfgPath,
-		UsersPath:    usersPath,
-		PepperPath:   pepperPath,
-		Listener:     listener,
-		LandlockMode: landlockMode,
-		DryRun:       dryRun,
-		Servers:      servers,
+		ConfigPath:  cfgPath,
+		UsersPath:   usersPath,
+		PepperPath:  pepperPath,
+		Listener:    listener,
+		Sandbox:     initSandboxFor(runtime.GOOS),
+		SandboxMode: sandboxMode,
+		DryRun:      dryRun,
+		Servers:     servers,
 	}, nil
 }
 
@@ -421,20 +432,60 @@ func resolveInitAuthPaths(configRaw string) (configPath, usersPath, pepperPath s
 	return abs, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "auth.pepper"), nil
 }
 
-func initPreflightLandlock(mode string, explicit bool, check func() sandbox.Report) error {
+// initSandbox describes the sandbox of the platform init is writing a
+// configuration for: the section that governs it, and the mode used
+// when --sandbox is absent. That default matches what the configuration
+// itself would default to, so a generated file and an omitted section
+// agree; macOS defaults to disabled because its backend is off by
+// default (PLAN §53.1).
+type initSandbox struct {
+	section     string
+	defaultMode string
+}
+
+const (
+	landlockSection = "landlock"
+	seatbeltSection = "seatbelt"
+)
+
+func initSandboxFor(goos string) initSandbox {
+	if goos == "darwin" {
+		return initSandbox{section: seatbeltSection, defaultMode: sandbox.ModeDisabled}
+	}
+	return initSandbox{section: landlockSection, defaultMode: sandbox.ModeRequired}
+}
+
+func initSandboxDefault() string { return initSandboxFor(runtime.GOOS).defaultMode }
+
+// doc renders the sandbox section of the generated configuration. Only
+// Landlock has a version floor to pin.
+func (s initSandbox) doc(mode string) map[string]any {
+	doc := map[string]any{"mode": mode}
+	if s.section == landlockSection {
+		doc["minimum_abi"] = landlock.DefaultMinimumABI
+	}
+	return doc
+}
+
+// preflight refuses to write a configuration this host could not then
+// serve: a required sandbox the platform cannot enforce would make the
+// very next command fail closed. Opting out of a sandbox the platform
+// does have must be deliberate.
+func (s initSandbox) preflight(mode string, explicit bool, check func() sandbox.Report) error {
 	report := check()
 	if mode == sandbox.ModeRequired {
 		if !report.Supported {
-			return fmt.Errorf("landlock required but unavailable: %s; rerun with --landlock best-effort to continue without the sandbox", report.Reason)
+			return fmt.Errorf("%s required but unavailable: %s; rerun with --sandbox best-effort to continue without a sandbox", s.section, report.Reason)
 		}
-		if report.KernelABI < landlock.DefaultMinimumABI {
-			return fmt.Errorf("landlock kernel ABI %d below required minimum %d; rerun with --landlock best-effort to continue without the sandbox", report.KernelABI, landlock.DefaultMinimumABI)
+		if s.section == landlockSection && report.KernelABI < landlock.DefaultMinimumABI {
+			return fmt.Errorf("landlock kernel ABI %d is below the required minimum %d; rerun with --sandbox best-effort to continue without a sandbox", report.KernelABI, landlock.DefaultMinimumABI)
 		}
+		return nil
 	}
-	if mode == sandbox.ModeBestEffort || mode == sandbox.ModeDisabled {
-		if !explicit {
-			return fmt.Errorf("--landlock %s must be supplied explicitly", mode)
-		}
+	// Nothing to opt out of where the sandbox is off by default, or
+	// unavailable in the first place.
+	if !explicit && s.defaultMode == sandbox.ModeRequired && report.Supported {
+		return fmt.Errorf("--sandbox %s must be supplied explicitly", mode)
 	}
 	return nil
 }
@@ -552,11 +603,8 @@ func renderInitConfig(args initArguments, discovered discovery.Result, policy co
 			"users_file":  args.UsersPath,
 		},
 		"security": map[string]any{
-			"backend_network": networkDoc,
-			"landlock": map[string]any{
-				"mode":        args.LandlockMode,
-				"minimum_abi": landlock.DefaultMinimumABI,
-			},
+			"backend_network":    networkDoc,
+			args.Sandbox.section: args.Sandbox.doc(args.SandboxMode),
 		},
 		"servers": servers,
 		"models":  models,

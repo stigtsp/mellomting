@@ -128,3 +128,8 @@ func (productionCommitOps) fsyncDir(fd int) error {
 	}
 	return nil
 }
+
+// initCommitSupported reports whether this platform implements the D4
+// publication contract, so `init` can say it cannot write files before
+// it queries any server rather than after.
+const initCommitSupported = true

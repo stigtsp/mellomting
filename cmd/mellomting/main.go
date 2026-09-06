@@ -123,7 +123,7 @@ func configCmd(args []string) int {
 // With -config the configured security.landlock policy is enforced in the
 // result: mode required plus an unsupported or too-old kernel exits 1.
 func sandboxCmd(args []string) int {
-	if groupHelp(args, "sandbox", "  check  Check Landlock support and configured policy") {
+	if groupHelp(args, "sandbox", "  check  Report the sandbox this host would enforce") {
 		return 0
 	}
 	sub, rest := subcommand(args, "check")
@@ -132,7 +132,7 @@ func sandboxCmd(args []string) int {
 		return 2
 	}
 
-	fs := commandFlags("sandbox check", "Check Landlock support and configured policy. Without a readable default config, report capability only.")
+	fs := commandFlags("sandbox check", "Report the sandbox this host would enforce, and whether it is available.\nWithout a readable configuration, report the capability only.")
 	var configPath string
 	fs.StringVar(&configPath, "config", "", configFlagHelp)
 	if err := parseCommandFlags(fs, rest); err != nil {
@@ -604,7 +604,7 @@ func usage(w io.Writer) {
   key        Manage API keys
   usage      Report token usage
   config     Check or inspect configuration
-  sandbox    Check Landlock support
+  sandbox    Check sandbox support
   install    Install the binary or systemd service
   version    Show version
   help       Show this help

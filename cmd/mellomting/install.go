@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mellomting/internal/securefile"
 	"os"
 	"path/filepath"
@@ -92,7 +93,7 @@ func performInstall(src, prefix string) (dest string, code int) {
 			return dest, 0
 		}
 		fmt.Fprintf(os.Stderr, "mellomting: install: %v\n", err)
-		if os.IsPermission(err) {
+		if errors.Is(err, fs.ErrPermission) {
 			fmt.Fprintln(os.Stderr, "mellomting: the destination is not writable by this user; run with write access (e.g. root) or choose another --prefix")
 		}
 		return dest, 1

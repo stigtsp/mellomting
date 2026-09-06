@@ -56,7 +56,7 @@ type daemon struct {
 // Exit codes: 0 clean shutdown, 1 startup or shutdown failure,
 // 2 usage error.
 func serveCmd(args []string) int {
-	fs := commandFlags("serve", "Run the proxy until interrupted. Restart to apply configuration changes.")
+	fs := commandFlags("serve", "Run the proxy until interrupted. Configuration changes need a restart;\nkey changes apply on reload (systemctl reload, or SIGHUP).")
 	var configPath string
 	fs.StringVar(&configPath, "config", "", configFlagHelp)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -117,7 +117,7 @@ func serveCmd(args []string) int {
 		log.Warn("backend_network.mode is \"any\": outbound connections to inference backends are not restricted to loopback or allow-listed CIDRs")
 	}
 
-	// Landlock confinement (PLAN §55-63, §95). This is the last step
+	// Sandbox confinement (PLAN §53-63, §95). This is the last step
 	// before the listener accepts (PLAN §57 step 19): the policy is
 	// applied to every runtime thread and verified before any client
 	// request may be processed. No config/secret file descriptors are
@@ -278,8 +278,8 @@ func enforceSandbox(b sandboxBackend, cfg *config.Config, log *slog.Logger) erro
 	if err := b.apply(report, pol); err != nil {
 		return failClosed("sandbox application failed", err.Error())
 	}
-	log.Info("sandbox enforced", append([]any{"backend", b.name, "mode", b.mode}, b.applied(report)...)...)
-	log.Debug("sandbox policy", "rules", pol.Summarize())
+	fields := append([]any{"backend", b.name, "mode", b.mode}, b.applied(report)...)
+	log.Info("sandbox enforced", append(fields, "rules", pol.Summarize())...)
 	return nil
 }
 
@@ -381,7 +381,7 @@ func checkQuotaEnforceable(cfg *config.Config, users *auth.UsersFile) error {
 		return nil
 	}
 	slices.Sort(uncounted)
-	return fmt.Errorf("a per-key token quota is configured in %s, but a request to model(s) %s whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, strings.Join(uncounted, ", "))
+	return fmt.Errorf("a per-key token quota is configured in %s, but a request to %s (%s) whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, plural(len(uncounted), "model"), strings.Join(uncounted, ", "))
 }
 
 // quotaKeysConfigured reports whether any key carries a token budget, so
@@ -528,7 +528,7 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 func sandboxPolicy(cfg *config.Config) (sandbox.Policy, error) {
 	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
 	if err != nil {
-		return sandbox.Policy{}, fmt.Errorf("landlock: %w", err)
+		return sandbox.Policy{}, fmt.Errorf("sandbox: %w", err)
 	}
 	pol := sandbox.Policy{
 		// The users file's directory rather than the file: a Landlock

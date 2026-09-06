@@ -8,6 +8,15 @@ import (
 	"os"
 )
 
+// plural renders a count with its noun, so output reads "1 model" and
+// "2 models" rather than "1 model(s)".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 const configFlagHelp = "configuration `PATH` (default /etc/mellomting/config.yaml)"
 
 // commandFlags keeps command help consistent with the documented long flags.

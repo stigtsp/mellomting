@@ -54,3 +54,8 @@ func (unsupportedCommitOps) unlinkInDir(int, string) error {
 func (unsupportedCommitOps) fsyncDir(int) error {
 	return errors.New("local init commit is Linux-only")
 }
+
+// initCommitSupported reports whether this platform implements the D4
+// publication contract. It does not: the directory-FD/linkat contract is
+// written against the reviewed Linux x/sys primitives.
+const initCommitSupported = false
