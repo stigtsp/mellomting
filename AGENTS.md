@@ -203,5 +203,5 @@ runtime check to keep in step with it.
 
 Remaining deferred work (later phases): optional stickiness (PLAN §20);
 defence-in-depth review (PLAN §98). (The §30 SIGHUP users-file reload is
-implemented; under `landlock.mode: required` offline key changes are
-pinned-inode-denied and require a restart, FIX-02/N2.)
+implemented, and applies under every sandbox mode: the policy grants the
+users file's directory, not the inode a key mutation renames away.)
