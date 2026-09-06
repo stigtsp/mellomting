@@ -15,6 +15,7 @@ package seatbelt
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"mellomting/internal/sandbox"
@@ -47,12 +48,16 @@ func Profile(pol sandbox.Policy) string {
 	// old one, so the grant covers the directory rather than an inode
 	// that stops existing at the first `key create` (PLAN §58).
 	for _, p := range pol.ReadPaths {
-		b.WriteString("(allow file-read* (subpath " + quote(p) + "))\n")
+		for _, path := range pathForms(p) {
+			b.WriteString("(allow file-read* (subpath " + quote(path) + "))\n")
+		}
 	}
 	// The accounting log is opened once and appended to; the write
 	// grant is per-file, never per-directory.
 	for _, p := range pol.WriteFiles {
-		b.WriteString("(allow file-write-data file-write-flags (literal " + quote(p) + "))\n")
+		for _, path := range pathForms(p) {
+			b.WriteString("(allow file-write-data file-write-flags (literal " + quote(path) + "))\n")
+		}
 	}
 
 	// The listener is already bound and listening, but Seatbelt filters
@@ -60,20 +65,48 @@ func Profile(pol sandbox.Policy) string {
 	// confine the daemon into answering nothing.
 	switch {
 	case pol.Listen.UnixPath != "":
-		path := quote(pol.Listen.UnixPath)
-		b.WriteString("(allow network-inbound (local unix-socket (path-literal " + path + ")))\n")
-		// Closing the listener unlinks the socket (PLAN §74).
-		b.WriteString("(allow file-write-unlink (literal " + path + "))\n")
+		for _, path := range pathForms(pol.Listen.UnixPath) {
+			b.WriteString("(allow network-inbound (local unix-socket (path-literal " + quote(path) + ")))\n")
+			// Closing the listener unlinks the socket (PLAN §74).
+			b.WriteString("(allow file-write-unlink (literal " + quote(path) + "))\n")
+		}
 	case pol.Listen.TCPPort != 0:
 		b.WriteString(fmt.Sprintf("(allow network-inbound (local ip \"*:%d\"))\n", pol.Listen.TCPPort))
 	}
 
-	// Backend connections are filtered by destination port only; the
-	// address is the backend network mode's job (PLAN §16, §60).
+	// Backend connections are filtered by destination port only. That
+	// is not a shortcut: SBPL accepts just "*" or "localhost" as the
+	// host of a network address, so the destination cannot be narrowed
+	// further here — restricting the address is the backend network
+	// mode's job either way (PLAN §16, §60), exactly as under Landlock.
 	for _, port := range pol.ConnectTCP {
 		b.WriteString(fmt.Sprintf("(allow network-outbound (remote tcp \"*:%d\"))\n", port))
 	}
 	return b.String()
+}
+
+// pathForms returns the pathnames a rule must name to match: the one
+// configured, and the one symlinks resolve it to when they differ.
+//
+// Seatbelt matches the literal path the kernel evaluates, not the one
+// the operator wrote, and the macOS root is a field of symlinks that
+// make those differ: /etc, /var and /tmp are all links into /private.
+// The default configuration puts the users file under /etc/mellomting
+// and the accounting log under /var/log/mellomting, so a policy naming
+// only what the operator wrote would leave the daemon unable to reload
+// its own key store or record usage — after compiling and applying
+// without complaint. Both forms are granted, because the traversal
+// itself begins at the configured name.
+//
+// A path that cannot be resolved — it does not exist yet, or something
+// above it is unreadable — is granted as written: that is the pathname
+// the daemon will use.
+func pathForms(path string) []string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved == path {
+		return []string{path}
+	}
+	return []string{path, resolved}
 }
 
 // quote renders s as an SBPL string literal. SBPL strings are Scheme

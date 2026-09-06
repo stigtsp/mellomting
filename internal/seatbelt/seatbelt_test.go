@@ -1,6 +1,8 @@
 package seatbelt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,5 +84,44 @@ func TestProfileEmptyPolicyGrantsNothing(t *testing.T) {
 	p := Profile(sandbox.Policy{})
 	if strings.Contains(p, "(allow ") {
 		t.Fatalf("empty policy granted something:\n%s", p)
+	}
+}
+
+// macOS resolves /etc, /var and /tmp into /private, and Seatbelt matches
+// the path the kernel evaluates rather than the one the operator wrote.
+// A policy naming only the configured form would compile, apply, and
+// then deny the daemon its own users file.
+func TestProfileGrantsBothPathForms(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// On macOS even a temporary directory sits under /var, which is
+	// itself a link into /private, so the resolved form is what the
+	// kernel will evaluate.
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Profile(sandbox.Policy{ReadPaths: []string{link}})
+	for _, want := range []string{link, resolved} {
+		if !strings.Contains(p, `(subpath "`+want+`")`) {
+			t.Fatalf("profile does not grant %q:\n%s", want, p)
+		}
+	}
+}
+
+// A path that does not resolve is granted as written: that is the name
+// the daemon will open.
+func TestProfileGrantsUnresolvablePathAsWritten(t *testing.T) {
+	p := Profile(sandbox.Policy{ReadPaths: []string{"/no/such/directory/here"}})
+	if !strings.Contains(p, `(subpath "/no/such/directory/here")`) {
+		t.Fatalf("profile dropped an unresolvable path:\n%s", p)
 	}
 }

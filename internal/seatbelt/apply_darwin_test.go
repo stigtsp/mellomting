@@ -233,3 +233,22 @@ func portOf(t *testing.T, ln net.Listener) string {
 	}
 	return p
 }
+
+// SBPL accepts only "*" or "localhost" as the host of a network
+// address, so a backend rule cannot name the destination IP. This pins
+// that constraint against the real compiler: without it, narrowing the
+// rule to the backend's address looks like an obvious improvement and
+// produces a profile that no longer compiles.
+func TestCompileRejectsANamedRemoteHost(t *testing.T) {
+	requireSeatbelt(t)
+	_, err := compile(`(version 1)
+(deny default)
+(allow network-outbound (remote ip "127.0.0.1:8001"))
+`)
+	if err == nil {
+		t.Fatal("a literal remote host was accepted; the port-only rule could be narrowed after all")
+	}
+	if !strings.Contains(err.Error(), "host must be") {
+		t.Fatalf("err = %v, want the grammar's complaint about the host", err)
+	}
+}
