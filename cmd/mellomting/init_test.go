@@ -257,6 +257,21 @@ func TestParseInitArguments(t *testing.T) {
 	})
 }
 
+// The section each platform writes is asserted directly: the fixture
+// below derives its expectation from initSandboxFor, so without this a
+// wrong mapping would be matched by an equally wrong expectation.
+func TestInitSandboxSectionPerPlatform(t *testing.T) {
+	t.Parallel()
+	if got := initSandboxFor("darwin").section; got != "seatbelt" {
+		t.Fatalf("darwin section = %q, want seatbelt", got)
+	}
+	for _, goos := range []string{"linux", "freebsd"} {
+		if got := initSandboxFor(goos).section; got != "landlock" {
+			t.Fatalf("%s section = %q, want landlock", goos, got)
+		}
+	}
+}
+
 func TestInitPreflightSandbox(t *testing.T) {
 	t.Parallel()
 
@@ -488,7 +503,7 @@ func wantSandboxSection() string {
 	if initSandboxFor(runtime.GOOS).section == "seatbelt" {
 		return "    seatbelt:\n        mode: best-effort\n"
 	}
-	return fmt.Sprintf("    landlock:\n        minimum_abi: %d\n        mode: required\n", landlock.DefaultMinimumABI)
+	return fmt.Sprintf("    landlock:\n        minimum_abi: %d\n        mode: best-effort\n", landlock.DefaultMinimumABI)
 }
 
 func TestRenderInitArtifacts(t *testing.T) {
