@@ -1143,6 +1143,10 @@ func sandboxTestConfig(t *testing.T) *config.Config {
 // a value no kernel can reach, so the gate rejects required mode and
 // accepts best-effort on every platform. The real enforcement path is
 // covered by TestAllThreadsEnforced (Linux) and the e2e tests.
+// testListenAddr stands in for the bound listener the daemon confines
+// itself around.
+var testListenAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+
 func TestEnforceSandboxModes(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -1162,13 +1166,13 @@ func TestEnforceSandboxModes(t *testing.T) {
 		}
 	}
 
-	if err := enforceSandbox(unavailable(sandbox.ModeDisabled), cfg, log); err != nil {
+	if err := enforceSandbox(unavailable(sandbox.ModeDisabled), cfg, testListenAddr, log); err != nil {
 		t.Fatalf("disabled: %v", err)
 	}
-	if err := enforceSandbox(unavailable(sandbox.ModeBestEffort), cfg, log); err != nil {
+	if err := enforceSandbox(unavailable(sandbox.ModeBestEffort), cfg, testListenAddr, log); err != nil {
 		t.Fatalf("best-effort must continue without a sandbox, got %v", err)
 	}
-	err := enforceSandbox(unavailable(sandbox.ModeRequired), cfg, log)
+	err := enforceSandbox(unavailable(sandbox.ModeRequired), cfg, testListenAddr, log)
 	if err == nil {
 		t.Fatal("required mode must fail closed when the sandbox cannot be enforced")
 	}
@@ -1182,7 +1186,7 @@ func TestEnforceSandboxModes(t *testing.T) {
 	gated := unavailable(sandbox.ModeRequired)
 	gated.check = func() sandbox.Report { return sandbox.Report{Supported: true} }
 	gated.ready = func(sandbox.Report) (string, string) { return "below the configured minimum", "stub" }
-	if err := enforceSandbox(gated, cfg, log); err == nil {
+	if err := enforceSandbox(gated, cfg, testListenAddr, log); err == nil {
 		t.Fatal("required mode must fail closed when the readiness gate refuses")
 	}
 
@@ -1190,7 +1194,7 @@ func TestEnforceSandboxModes(t *testing.T) {
 	okBackend := unavailable(sandbox.ModeRequired)
 	okBackend.check = func() sandbox.Report { return sandbox.Report{Supported: true} }
 	okBackend.apply = func(sandbox.Report, sandbox.Policy) error { return nil }
-	if err := enforceSandbox(okBackend, cfg, log); err != nil {
+	if err := enforceSandbox(okBackend, cfg, testListenAddr, log); err != nil {
 		t.Fatalf("an enforceable sandbox must apply: %v", err)
 	}
 }
@@ -2872,9 +2876,21 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 		Backends: map[string]config.Backend{"b1": {BaseURL: "http://127.0.0.1:8001"}},
 	}
 
-	pol, err := sandboxPolicy(cfg)
+	pol, err := sandboxPolicy(cfg, &net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The listener comes from the bound socket, not the configuration,
+	// so an address the kernel chose is the one that gets granted.
+	if pol.Listen.UnixPath != "/run/mellomting/x.sock" {
+		t.Fatalf("listener = %+v, want the bound socket", pol.Listen)
+	}
+	ephemeral, err := sandboxPolicy(cfg, &net.TCPAddr{Port: 51234})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ephemeral.Listen.TCPPort != 51234 {
+		t.Fatalf("listener = %+v, want the port the kernel chose", ephemeral.Listen)
 	}
 	wantDir := filepath.Join(dir, "auth")
 	if !slices.Contains(pol.ReadPaths, wantDir) {

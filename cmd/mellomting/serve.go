@@ -123,7 +123,7 @@ func serveCmd(args []string) int {
 	// request may be processed. No config/secret file descriptors are
 	// open here (auth.LoadUsers/LoadPepper and securefile.Read close
 	// their own FDs), so the open-file caveat (PLAN §59) is satisfied.
-	if err := applySandbox(cfg, log); err != nil {
+	if err := applySandbox(cfg, ln.Addr(), log); err != nil {
 		log.Error("sandbox enforcement failed", "error_class", "sandbox")
 		_ = ln.Close()
 		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
@@ -236,8 +236,8 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 // users file (SIGHUP reload, PLAN §30), write the accounting log, and
 // connect to the configured backend TCP ports. Secrets are preloaded
 // and their FDs closed before this runs (PLAN §59).
-func applySandbox(cfg *config.Config, log *slog.Logger) error {
-	return enforceSandbox(platformSandbox(cfg), cfg, log)
+func applySandbox(cfg *config.Config, listener net.Addr, log *slog.Logger) error {
+	return enforceSandbox(platformSandbox(cfg), cfg, listener, log)
 }
 
 // enforceSandbox applies one backend's policy under the configured mode.
@@ -245,13 +245,13 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 // refuses to start — are the same whichever backend enforces them, so
 // they live here and are exercised against a stub rather than by
 // confining the test process irreversibly.
-func enforceSandbox(b sandboxBackend, cfg *config.Config, log *slog.Logger) error {
+func enforceSandbox(b sandboxBackend, cfg *config.Config, listener net.Addr, log *slog.Logger) error {
 	if b.mode == sandbox.ModeDisabled {
 		log.Info("sandbox disabled by configuration", "backend", b.name)
 		return nil
 	}
 
-	pol, err := sandboxPolicy(cfg)
+	pol, err := sandboxPolicy(cfg, listener)
 	if err != nil {
 		return err
 	}
@@ -525,7 +525,7 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 // configuration (PLAN §58, §60, §62). It is separate from applySandbox
 // so what the daemon confines itself to can be asserted on any host,
 // not only one whose kernel can enforce it.
-func sandboxPolicy(cfg *config.Config) (sandbox.Policy, error) {
+func sandboxPolicy(cfg *config.Config, listener net.Addr) (sandbox.Policy, error) {
 	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
 	if err != nil {
 		return sandbox.Policy{}, fmt.Errorf("sandbox: %w", err)
@@ -546,17 +546,17 @@ func sandboxPolicy(cfg *config.Config) (sandbox.Policy, error) {
 	if cfg.Accounting.Enabled {
 		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
 	}
-	// The listener is already bound and listening; a backend that
-	// filters accepts still has to be told to keep it open.
-	switch l := cfg.Server.Listen; l.Network {
-	case "unix":
-		pol.Listen.UnixPath = l.Address
-	case "tcp":
-		if _, port, err := net.SplitHostPort(l.Address); err == nil {
-			if n, err := strconv.ParseUint(port, 10, 16); err == nil {
-				pol.Listen.TCPPort = uint16(n)
-			}
-		}
+	// The listener is already bound; a backend that filters accepts has
+	// to be told to keep it open. It is read from the listener itself
+	// rather than the configuration, because the two differ whenever
+	// the operator asked the kernel to choose: an address ending in :0
+	// is a real port by now, and naming the configured 0 would grant
+	// nothing and leave the daemon unable to answer.
+	switch addr := listener.(type) {
+	case *net.UnixAddr:
+		pol.Listen.UnixPath = addr.Name
+	case *net.TCPAddr:
+		pol.Listen.TCPPort = uint16(addr.Port)
 	}
 	return pol, nil
 }
