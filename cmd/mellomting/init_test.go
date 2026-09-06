@@ -297,9 +297,18 @@ func TestInitPreflightSandbox(t *testing.T) {
 		}
 	})
 
-	t.Run("implicit best-effort rejected", func(t *testing.T) {
+	t.Run("implicit best-effort accepted", func(t *testing.T) {
 		t.Parallel()
-		err := initSandboxFor("linux").preflight("best-effort", false, func() sandbox.Report { return supportedLandlockReport() })
+		// best-effort is the default: it still applies a sandbox
+		// wherever the host allows one, so it needs no ceremony.
+		if err := initSandboxFor("linux").preflight("best-effort", false, func() sandbox.Report { return supportedLandlockReport() }); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("implicit disabled rejected", func(t *testing.T) {
+		t.Parallel()
+		err := initSandboxFor("linux").preflight("disabled", false, func() sandbox.Report { return supportedLandlockReport() })
 		if err == nil || !strings.Contains(err.Error(), "explicitly") {
 			t.Fatalf("err = %v, want explicit", err)
 		}
@@ -477,7 +486,7 @@ func withInitPepper(t *testing.T, pepper []byte) {
 // platform, indented into the security block of the fixture.
 func wantSandboxSection() string {
 	if initSandboxFor(runtime.GOOS).section == "seatbelt" {
-		return "    seatbelt:\n        mode: required\n"
+		return "    seatbelt:\n        mode: best-effort\n"
 	}
 	return fmt.Sprintf("    landlock:\n        minimum_abi: %d\n        mode: required\n", landlock.DefaultMinimumABI)
 }
@@ -535,7 +544,7 @@ version: 1
 		if got.Normalized.Auth.UsersFile != args.UsersPath || got.Normalized.Auth.PepperFile != args.PepperPath {
 			t.Fatalf("normalized auth = %+v", got.Normalized.Auth)
 		}
-		if got.Normalized.Security.Landlock.Mode != sandbox.ModeRequired {
+		if got.Normalized.Security.Landlock.Mode != sandbox.ModeBestEffort {
 			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
 		}
 		if got.Normalized.Security.BackendNetwork.Mode != "loopback-only" {

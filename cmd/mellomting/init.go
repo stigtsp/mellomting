@@ -89,7 +89,7 @@ func initCmd(args []string) int {
 	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
 	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
 	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
-	fs.StringVar(&sandboxMode, "sandbox", sandbox.ModeRequired, "sandbox `MODE` for this platform: required, best-effort, disabled")
+	fs.StringVar(&sandboxMode, "sandbox", sandbox.ModeBestEffort, "sandbox `MODE` for this platform: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
@@ -237,7 +237,7 @@ func parseInitArguments(configPath, listen, sandboxMode string, sandboxSet, dryR
 		return initArguments{}, err
 	}
 	if !sandboxSet {
-		sandboxMode = sandbox.ModeRequired
+		sandboxMode = sandbox.ModeBestEffort
 	}
 	switch sandboxMode {
 	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
@@ -463,23 +463,24 @@ func (s initSandbox) doc(mode string) map[string]any {
 
 // preflight refuses to write a configuration this host could not then
 // serve: a required sandbox the platform cannot enforce would make the
-// very next command fail closed. Opting out of a sandbox the platform
-// does have must be deliberate.
+// very next command fail closed. Turning the sandbox off entirely stays
+// deliberate — best-effort still applies one wherever it can.
 func (s initSandbox) preflight(mode string, explicit bool, check func() sandbox.Report) error {
-	report := check()
-	if mode == sandbox.ModeRequired {
-		if !report.Supported {
-			return fmt.Errorf("%s required but unavailable: %s; rerun with --sandbox best-effort to continue without a sandbox", s.section, report.Reason)
-		}
-		if s.section == landlockSection && report.KernelABI < landlock.DefaultMinimumABI {
-			return fmt.Errorf("landlock kernel ABI %d is below the required minimum %d; rerun with --sandbox best-effort to continue without a sandbox", report.KernelABI, landlock.DefaultMinimumABI)
+	if mode == sandbox.ModeDisabled {
+		if !explicit {
+			return fmt.Errorf("--sandbox %s must be supplied explicitly", mode)
 		}
 		return nil
 	}
-	// Nothing to opt out of where the platform has no sandbox to begin
-	// with.
-	if !explicit && report.Supported {
-		return fmt.Errorf("--sandbox %s must be supplied explicitly", mode)
+	if mode != sandbox.ModeRequired {
+		return nil
+	}
+	report := check()
+	if !report.Supported {
+		return fmt.Errorf("%s required but unavailable: %s; rerun with --sandbox best-effort to apply one wherever the host allows", s.section, report.Reason)
+	}
+	if s.section == landlockSection && report.KernelABI < landlock.DefaultMinimumABI {
+		return fmt.Errorf("landlock kernel ABI %d is below the required minimum %d; rerun with --sandbox best-effort to apply one wherever the host allows", report.KernelABI, landlock.DefaultMinimumABI)
 	}
 	return nil
 }

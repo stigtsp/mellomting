@@ -186,7 +186,11 @@ type BackendNetwork struct {
 	CIDRs []string `yaml:"cidrs,omitempty"`
 }
 
-// Landlock is the sandbox policy (PLAN §55).
+// Landlock is the sandbox policy on Linux (PLAN §55). It defaults to
+// best-effort: the sandbox is containment for a process that is already
+// compromised, not the boundary keeping an attacker out, so a host that
+// cannot enforce it is served with a warning rather than not served at
+// all. A deployment that wants the guarantee sets required.
 type Landlock struct {
 	Mode       string `yaml:"mode"` // "required", "best-effort", or "disabled"
 	MinimumABI int    `yaml:"minimum_abi"`
@@ -195,8 +199,7 @@ type Landlock struct {
 // Seatbelt is the sandbox policy on macOS (PLAN §55), the counterpart
 // of Landlock on Linux. Only the one for the running platform is
 // consulted, so a configuration can carry both and be served anywhere.
-// It defaults to required, as Landlock does: a host that cannot enforce
-// the policy is a host this daemon does not start on.
+// It defaults to best-effort for the same reason Landlock does.
 type Seatbelt struct {
 	Mode string `yaml:"mode"` // "required", "best-effort", or "disabled"
 }

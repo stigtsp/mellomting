@@ -95,8 +95,8 @@ func applyDefaults(c *Config) {
 
 	sec := &c.Security
 	sec.BackendNetwork.Mode = cmp.Or(sec.BackendNetwork.Mode, "loopback-only")
-	sec.Landlock.Mode = cmp.Or(sec.Landlock.Mode, sandbox.ModeRequired)
-	sec.Seatbelt.Mode = cmp.Or(sec.Seatbelt.Mode, sandbox.ModeRequired)
+	sec.Landlock.Mode = cmp.Or(sec.Landlock.Mode, sandbox.ModeBestEffort)
+	sec.Seatbelt.Mode = cmp.Or(sec.Seatbelt.Mode, sandbox.ModeBestEffort)
 	sec.Landlock.MinimumABI = cmp.Or(sec.Landlock.MinimumABI, landlock.DefaultMinimumABI)
 
 	c.Logging.Format = cmp.Or(c.Logging.Format, "json")

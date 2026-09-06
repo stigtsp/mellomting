@@ -2103,15 +2103,22 @@ host provides:
 | Linux | Landlock (§54-§63) | `security.landlock` |
 | macOS | Seatbelt | `security.seatbelt` |
 
-Both default to `required`. Only the backend for the running platform is
-consulted, so one configuration may carry both sections and be served on
-either. A platform with no backend at all reports the sandbox as
-unavailable, and the configured mode decides whether that is fatal (§55) —
-never a silent downgrade to no confinement.
+Both default to `best-effort`. The sandbox is containment for a process
+that is already compromised (§53), not the boundary that keeps an attacker
+out: authentication, the per-key model ACL, the limits and the backend
+network mode are that boundary, and they do not depend on it. A host that
+cannot enforce the policy is therefore served with a warning rather than
+not served at all — the availability of the proxy does not hinge on a
+defence-in-depth layer. A deployment that wants the guarantee sets
+`required`, which refuses to start unless the policy is enforced.
 
-A macOS host already running the daemon inside another sandbox may not
-apply a second profile, and under `required` does not start it. That is
-the same fail-closed answer an old kernel gets on Linux.
+The downgrade is never silent: a sandbox that is not applied is a WARN
+naming the backend, the reason and the detail, on every start.
+
+Only the backend for the running platform is consulted, so one
+configuration may carry both sections and be served on either. A platform
+with no backend at all reports the sandbox as unavailable, and the
+configured mode decides what that means (§55).
 
 ## 53.2 Seatbelt
 

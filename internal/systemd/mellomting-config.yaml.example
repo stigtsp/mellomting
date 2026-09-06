@@ -34,10 +34,13 @@ auth:
 security:
   backend_network:
     mode: loopback-only
-# On macOS the sandbox is Seatbelt rather than Landlock; it is required
-# there too, and only the section for the running platform is read.
+# The daemon confines itself after startup wherever the host can enforce
+# it, and warns when it cannot. Set mode: required to refuse to start
+# instead. minimum_abi defaults to 6, which needs Linux 6.12; raising it
+# on an older kernel means no sandbox at all rather than a lesser one.
+# On macOS the sandbox is Seatbelt; only the section for the running
+# platform is read.
 #  seatbelt:
-#    mode: required
+#    mode: best-effort
   landlock:
-    mode: required
-    minimum_abi: 8
+    mode: best-effort

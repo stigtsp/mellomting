@@ -11,6 +11,7 @@ import (
 
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
+	"mellomting/internal/landlock"
 )
 
 // TestSyncEmbeddedMatchesDeploy proves the embedded unit (rendered with the
@@ -390,7 +391,7 @@ func TestScaffoldCompletedExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("completed scaffold: %v", err)
 	}
-	if cfg.Security.Landlock.Mode != "required" || cfg.Security.Landlock.MinimumABI != 8 ||
+	if cfg.Security.Landlock.Mode != "best-effort" || cfg.Security.Landlock.MinimumABI != landlock.DefaultMinimumABI ||
 		cfg.Security.BackendNetwork.Mode != "loopback-only" {
 		t.Fatalf("scaffold security settings changed: %+v", cfg.Security)
 	}

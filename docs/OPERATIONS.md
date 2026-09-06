@@ -16,8 +16,12 @@ the host, and only the one for the running platform is consulted:
 | Linux | Landlock | `security.landlock.mode` |
 | macOS | Seatbelt | `security.seatbelt.mode` |
 
-Both default to `required` and take `best-effort` (warn and continue) or
-`disabled` instead. A configuration may carry both sections and be
+Both default to `best-effort`: the sandbox is applied wherever the host
+can enforce it, and a host that cannot is served with a warning. It is
+containment for a process that is already compromised, not the control
+that keeps an attacker out, so it does not decide whether the proxy runs.
+Set `required` to refuse to start unless the policy is enforced, or
+`disabled` to skip it. A configuration may carry both sections and be
 served on either platform.
 
 ```sh
@@ -25,10 +29,14 @@ mellomting sandbox check
 ```
 
 reports the backend for this host, whether it is available, and what the
-configured mode would do. Under `required` a host that cannot enforce
-the policy does not start the daemon — including a macOS host that is
-already running it inside another sandbox, which may not apply a second
-profile.
+configured mode would do. Under `required` a host that cannot enforce the
+policy does not start the daemon — including a macOS host that is already
+running it inside another sandbox, which may not apply a second profile.
+
+Landlock's `minimum_abi` defaults to 6, which needs Linux 6.12 or newer.
+On an older kernel the sandbox is not applied at all rather than applied
+at a lower ABI, so a host that reports a lower ABI under `best-effort`
+runs unconfined and says so at every start.
 
 ## API keys
 
