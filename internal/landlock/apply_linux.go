@@ -7,6 +7,8 @@ import (
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
+	"mellomting/internal/sandbox"
 )
 
 // abiPresets maps an ABI version to the go-landlock configuration that
@@ -38,7 +40,7 @@ var abiPresets = map[int]ll.Config{
 // thread atomically, and threads the Go runtime spawns afterwards
 // inherit the confined domain at clone time. Below ABI 8 go-landlock
 // falls back to its all-thread prctl/restrict sequence.
-func Apply(abi int, pol Policy) error {
+func Apply(abi int, pol sandbox.Policy) error {
 	cfg, ok := abiPresets[abi]
 	if !ok {
 		return fmt.Errorf("unsupported Landlock ABI %d (pinned library covers 1..%d)", abi, MaxABI)

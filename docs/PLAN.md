@@ -2080,15 +2080,55 @@ A later streaming-guard implementation must explicitly document:
 
 ---
 
-# 53. Landlock purpose
+# 53. Sandbox purpose
 
-Landlock is a **post-start zero-day containment mechanism**.
+The sandbox is a **post-start zero-day containment mechanism**.
 
 The intention is:
 
 > If an attacker obtains arbitrary code execution inside Mellomting after startup, the compromised process should have dramatically fewer filesystem, network, and IPC capabilities than the service account would normally possess.
 
 It is not just a file-permission helper.
+
+## 53.1 Backends
+
+The capability set the daemon keeps after startup is one platform-neutral
+policy: the directory holding the users file readable, the accounting log
+writable, the backend TCP ports connectable, the ingress listener still
+accepting, everything else denied. A backend enforces it with whatever the
+host provides:
+
+| Platform | Mechanism | Section | Default mode |
+| --- | --- | --- | --- |
+| Linux | Landlock (§54-§63) | `security.landlock` | `required` |
+| macOS | Seatbelt | `security.seatbelt` | `disabled` |
+
+Only the backend for the running platform is consulted, so one
+configuration may carry both sections and be served on either. A platform
+with no backend at all reports the sandbox as unavailable, and the
+configured mode decides whether that is fatal (§55) — never a silent
+downgrade to no confinement.
+
+Seatbelt defaults to `disabled` where Landlock defaults to `required`:
+macOS is a development platform for this daemon rather than a deployment
+target, and its confinement has not been proven across macOS releases the
+way Landlock has across kernels. It is enabled deliberately, per host.
+
+## 53.2 Seatbelt
+
+The policy is rendered as a Sandbox Profile Language profile that denies
+by default, imports Apple's own `bsd.sb` baseline so the daemon keeps the
+reads any running process needs, and grants back exactly the policy. A
+profile MUST be compiled before it is applied: a profile the host cannot
+express is then a startup error rather than a partially confined process.
+
+Seatbelt confines the whole process, so unlike Landlock (§56) there is no
+per-thread step. It cannot be undone once applied.
+
+The entry points are Apple SPI and carry no compatibility promise, so they
+MUST be resolved at run time rather than linked. A macOS release that drops
+them leaves a daemon reporting an unavailable sandbox — the same fail-closed
+path as an old kernel on Linux — and never a binary that cannot launch.
 
 ---
 

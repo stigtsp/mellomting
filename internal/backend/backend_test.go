@@ -20,13 +20,13 @@ import (
 	"time"
 
 	"mellomting/internal/config"
-	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 )
 
 // TestDialerPortAgreesWithLandlock (T-Q6): for an omitted-port base
 // URL, the port the dialer derives for a scheme must be exactly the
 // port the Landlock sandbox grants for that scheme. Both now read
-// landlock.DefaultPortForScheme, so a drift here is a regression in the
+// sandbox.DefaultPortForScheme, so a drift here is a regression in the
 // single source of truth.
 func TestDialerPortAgreesWithLandlock(t *testing.T) {
 	for _, tc := range []struct{ scheme, want string }{
@@ -41,7 +41,7 @@ func TestDialerPortAgreesWithLandlock(t *testing.T) {
 		if port != tc.want {
 			t.Fatalf("%s: dialer default port = %q, want %q", tc.scheme, port, tc.want)
 		}
-		granted, err := landlock.BackendPorts(tc.scheme + "://example.test")
+		granted, err := sandbox.BackendPorts(tc.scheme + "://example.test")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,6 +5,30 @@ For a local build, use `bin/mellomting` and append `--config ./config.yaml` to
 commands that read configuration. The configuration flag follows the command
 or subcommand; there is no automatic lookup in the working directory.
 
+## Sandbox
+
+The daemon confines itself after startup, once every secret is loaded and
+its file descriptors are closed. Which mechanism enforces that depends on
+the host, and only the one for the running platform is consulted:
+
+| Platform | Mechanism | Configured by | Default |
+| --- | --- | --- | --- |
+| Linux | Landlock | `security.landlock.mode` | `required` |
+| macOS | Seatbelt | `security.seatbelt.mode` | `disabled` |
+
+Both take `required` (refuse to start unless the policy is enforced),
+`best-effort` (warn and continue) or `disabled`. A configuration may
+carry both sections and be served on either platform.
+
+```sh
+mellomting sandbox check
+```
+
+reports the backend for this host, whether it is available, and what the
+configured mode would do. Seatbelt defaults to `disabled` because macOS
+is a development platform for this daemon rather than a deployment
+target; enable it once `sandbox check` reports it available there.
+
 ## API keys
 
 ```sh

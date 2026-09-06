@@ -28,41 +28,8 @@ const MaxABI = 9
 // go-landlock's all-thread prctl/restrict-self fallback.
 const DefaultMinimumABI = 6
 
-// DefaultPortForScheme returns the default TCP port for a URL scheme
-// (PLAN §60), or ok=false for an unsupported scheme. It is the single
-// source of truth for the backend dialer and the sandbox alike, so a
-// scheme-to-port drift cannot let the dialer use a port the sandbox
-// denies (T-Q6).
-func DefaultPortForScheme(scheme string) (port string, ok bool) {
-	switch scheme {
-	case "http":
-		return "80", true
-	case "https":
-		return "443", true
-	}
-	return "", false
-}
-
-// Sandbox modes (PLAN §55).
-const (
-	ModeRequired   = "required"
-	ModeBestEffort = "best-effort"
-	ModeDisabled   = "disabled"
-)
-
-// Report is the result of a read-only capability probe. It applies no
-// policy.
-type Report struct {
-	// Platform is runtime.GOOS.
-	Platform string
-	// Supported is true when the kernel accepts Landlock.
-	Supported bool
-	// KernelABI is the highest Landlock ABI the kernel supports; 0 when
-	// unsupported.
-	KernelABI int
-	// Reason explains why Landlock is unavailable when !Supported.
-	Reason string
-}
+// Backend is the name this enforcement mechanism reports itself under.
+const Backend = "landlock"
 
 // Check probes the kernel for Landlock support without applying any
 // restriction. It is platform-specific (see the _linux/_other files).

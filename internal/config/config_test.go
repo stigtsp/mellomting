@@ -1578,6 +1578,25 @@ models:
 			wantErr: "retry.max_backoff",
 		},
 		{
+			name: "seatbelt mode invalid",
+			yaml: `
+version: 1
+` + minimalServer + `
+security:
+  seatbelt:
+    mode: sometimes
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "security.seatbelt.mode",
+		},
+		{
 			// PLAN §18.1: an entry that cannot match is a silent no-op
 			// that leaves the operator believing a forwarded client
 			// address is honoured when it is not.

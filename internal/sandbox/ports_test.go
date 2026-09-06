@@ -1,4 +1,4 @@
-package landlock
+package sandbox
 
 import "testing"
 

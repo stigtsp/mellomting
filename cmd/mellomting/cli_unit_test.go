@@ -236,10 +236,10 @@ func TestSandboxCheckReportOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sandbox check report-only exit = %d", code)
 	}
-	// Only lines that print on every platform may be asserted: "kernel
-	// ABI:" prints only when Landlock is supported, so this test must
-	// also pass on macOS or on a Linux host without Landlock.
-	for _, want := range []string{"platform:", "library max ABI:", "result:"} {
+	// Only lines that print on every platform may be asserted: the ABI
+	// lines belong to Landlock, so this test must pass on macOS and on
+	// a Linux host without Landlock alike.
+	for _, want := range []string{"platform:", "backend:", "result:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("sandbox check missing %q:\n%s", want, out)
 		}

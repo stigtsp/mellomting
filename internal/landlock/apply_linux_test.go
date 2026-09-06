@@ -23,6 +23,7 @@ import (
 
 	"github.com/landlock-lsm/go-landlock/landlock/lltest"
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 )
 
 // TestAllThreadsEnforced is the PLAN §56 acceptance test, plus the
@@ -99,7 +100,7 @@ func TestAllThreadsEnforced(t *testing.T) {
 		allowedAddr := allowedLn.Addr().String()
 		deniedAddr := deniedLn.Addr().String()
 
-		pol := landlock.Policy{
+		pol := sandbox.Policy{
 			ReadPaths:  []string{users},
 			WriteFiles: []string{allowed},
 			ConnectTCP: []uint16{uint16(portOf(t, allowedLn))},
@@ -493,7 +494,7 @@ func TestScopedAbstractSocket(t *testing.T) {
 			t.Fatalf("control: pre-sandbox connect to %q expected, got %v", sock, err)
 		}
 
-		if err := landlock.Apply(abi, landlock.Policy{}); err != nil {
+		if err := landlock.Apply(abi, sandbox.Policy{}); err != nil {
 			t.Fatalf("apply: %v", err)
 		}
 

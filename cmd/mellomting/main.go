@@ -12,6 +12,7 @@ import (
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 	"mellomting/internal/version"
 )
 
@@ -144,63 +145,70 @@ func sandboxCmd(args []string) int {
 
 	resolved := ResolveConfigPath(configPath)
 
-	report := landlock.Check()
-	mode := landlock.ModeRequired
-	minABI := landlock.DefaultMinimumABI
-	enforce := false
-	if cfg, loadErr := config.Load(resolved); loadErr == nil {
-		mode = cfg.Security.Landlock.Mode
-		minABI = cfg.Security.Landlock.MinimumABI
-		enforce = true
-	} else if configPath != "" {
-		// An explicit --config must be loadable; report the failure rather
-		// than silently running report-only. An absent or unreadable system
-		// default (/etc) is allowed to fall back to report-only so the check
-		// works without a configuration.
-		fmt.Fprintf(os.Stderr, "mellomting: sandbox check failed: %v\n", loadErr)
-		return 1
+	// Report the backend for this platform, and the mode that governs
+	// it, so the answer is about the sandbox this host would actually
+	// enforce rather than the one another host would. An unreadable
+	// system default is a capability-only report (no mode); an explicit
+	// --config that cannot be loaded is an error.
+	mode, minABI := "", landlock.DefaultMinimumABI
+	cfg, loadErr := config.Load(resolved)
+	if loadErr != nil {
+		if configPath != "" {
+			fmt.Fprintf(os.Stderr, "mellomting: sandbox check failed: %v\n", loadErr)
+			return 1
+		}
+		cfg = &config.Config{}
+		cfg.Security.Landlock.MinimumABI = minABI
 	}
+	b := platformSandbox(cfg)
+	if loadErr == nil {
+		mode, minABI = b.mode, cfg.Security.Landlock.MinimumABI
+	}
+	report := b.check()
+	isLandlock := report.Backend == landlock.Backend
 
 	fmt.Println("mellomting: sandbox check")
 	fmt.Printf("  platform:          %s\n", report.Platform)
-	fmt.Printf("  library max ABI:   %d\n", landlock.MaxABI)
+	fmt.Printf("  backend:           %s\n", report.Backend)
+	if isLandlock {
+		fmt.Printf("  library max ABI:   %d\n", landlock.MaxABI)
+	}
 
-	ok := false
-	if report.Supported {
+	ok := report.Supported
+	switch {
+	case !report.Supported:
+		fmt.Printf("  sandbox:           unavailable (%s)\n", report.Reason)
+	case isLandlock:
 		fmt.Printf("  kernel ABI:        %d\n", report.KernelABI)
 		ok = report.KernelABI >= minABI
-	} else {
-		fmt.Printf("  landlock:          unavailable (%s)\n", report.Reason)
+	default:
+		fmt.Println("  sandbox:           available")
 	}
-	fmt.Printf("  mode:              %s\n", mode)
-	fmt.Printf("  minimum required:  %d\n", minABI)
-
-	if ok {
-		abi := min(report.KernelABI, landlock.MaxABI)
-		fmt.Printf("  result:            ok (will enforce Landlock ABI %d)\n", abi)
-		return 0
+	if mode != "" {
+		fmt.Printf("  mode:              %s\n", mode)
+	}
+	if isLandlock {
+		fmt.Printf("  minimum required:  %d\n", minABI)
 	}
 
-	if !enforce {
-		capability := report.Reason
-		if report.Supported {
-			capability = fmt.Sprintf("kernel ABI %d below default minimum %d", report.KernelABI, minABI)
-		}
-		fmt.Printf("  result:            report only (Landlock: %s)\n", capability)
-		return 0
-	}
-
-	if mode != landlock.ModeRequired {
-		fmt.Printf("  result:            not enforced (mode %s)\n", mode)
-		return 0
-	}
-
+	reason := report.Reason
 	if report.Supported {
-		fmt.Printf("  result:            FAIL (kernel ABI %d below required minimum %d)\n", report.KernelABI, minABI)
-	} else {
-		fmt.Printf("  result:            FAIL (Landlock required but unavailable: %s)\n", report.Reason)
+		reason = fmt.Sprintf("kernel ABI %d below minimum %d", report.KernelABI, minABI)
 	}
-	return 1
+	switch {
+	case ok && isLandlock:
+		fmt.Printf("  result:            ok (will enforce Landlock ABI %d)\n", min(report.KernelABI, landlock.MaxABI))
+	case ok:
+		fmt.Println("  result:            ok (will enforce the Seatbelt profile)")
+	case mode == "":
+		fmt.Printf("  result:            report only (%s)\n", reason)
+	case mode != sandbox.ModeRequired:
+		fmt.Printf("  result:            not enforced (mode %s)\n", mode)
+	default:
+		fmt.Printf("  result:            FAIL (%s)\n", reason)
+		return 1
+	}
+	return 0
 }
 
 // keyCmd runs the offline key-management subcommands (PLAN §29). The daemon

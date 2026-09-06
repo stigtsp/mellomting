@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,8 @@ import (
 	"mellomting/internal/logging"
 	"mellomting/internal/proxy"
 	"mellomting/internal/routing"
+	"mellomting/internal/sandbox"
+	"mellomting/internal/seatbelt"
 	"mellomting/internal/tlsconfig"
 	"mellomting/internal/version"
 )
@@ -121,7 +124,7 @@ func serveCmd(args []string) int {
 	// open here (auth.LoadUsers/LoadPepper and securefile.Read close
 	// their own FDs), so the open-file caveat (PLAN §59) is satisfied.
 	if err := applySandbox(cfg, log); err != nil {
-		log.Error("sandbox enforcement failed", "error_class", "landlock")
+		log.Error("sandbox enforcement failed", "error_class", "sandbox")
 		_ = ln.Close()
 		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
 		return 1
@@ -234,12 +237,19 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 // connect to the configured backend TCP ports. Secrets are preloaded
 // and their FDs closed before this runs (PLAN §59).
 func applySandbox(cfg *config.Config, log *slog.Logger) error {
-	l := cfg.Security.Landlock
-	if l.Mode == landlock.ModeDisabled {
-		log.Info("landlock disabled by configuration")
+	return enforceSandbox(platformSandbox(cfg), cfg, log)
+}
+
+// enforceSandbox applies one backend's policy under the configured mode.
+// The mode semantics — disabled does nothing, best-effort warns, required
+// refuses to start — are the same whichever backend enforces them, so
+// they live here and are exercised against a stub rather than by
+// confining the test process irreversibly.
+func enforceSandbox(b sandboxBackend, cfg *config.Config, log *slog.Logger) error {
+	if b.mode == sandbox.ModeDisabled {
+		log.Info("sandbox disabled by configuration", "backend", b.name)
 		return nil
 	}
-	required := l.Mode == landlock.ModeRequired
 
 	pol, err := sandboxPolicy(cfg)
 	if err != nil {
@@ -247,43 +257,90 @@ func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	}
 
 	failClosed := func(reason, detail string) error {
-		if required {
+		if b.mode == sandbox.ModeRequired {
 			msg := reason
 			if detail != "" {
 				msg += ": " + detail
 			}
-			return fmt.Errorf("security.landlock.mode is %q but the sandbox cannot be enforced: %s", l.Mode, msg)
+			return fmt.Errorf("security.%s.mode is %q but the sandbox cannot be enforced: %s", b.name, b.mode, msg)
 		}
-		log.Warn("landlock: not applied (continuing without a sandbox)", "reason", reason, "detail", detail)
+		log.Warn("sandbox not applied (continuing without one)", "backend", b.name, "reason", reason, "detail", detail)
 		return nil
 	}
 
-	report := landlock.Check()
+	report := b.check()
 	if !report.Supported {
 		return failClosed("sandbox cannot be enforced", report.Reason)
 	}
-	if report.KernelABI < l.MinimumABI {
-		return failClosed(
-			"kernel Landlock ABI is below the configured minimum",
-			fmt.Sprintf("kernel ABI %d < minimum_abi %d", report.KernelABI, l.MinimumABI))
+	if reason, detail := b.ready(report); reason != "" {
+		return failClosed(reason, detail)
 	}
-	// Enforce at the highest ABI supported by both the kernel and the
-	// pinned library (PLAN §55 step 3).
-	abi := min(report.KernelABI, landlock.MaxABI)
-	// On non-Linux builds Apply always returns a non-nil error by design
-	// (PLAN §7 fail-closed), so the nil check is statically "always
-	// true" there; staticcheck reports SA4023 only under GOOS=darwin and
-	// is scoped to the linux build in the quality gate (see AGENTS.md).
-	if err := landlock.Apply(abi, pol); err != nil {
+	if err := b.apply(report, pol); err != nil {
 		return failClosed("sandbox application failed", err.Error())
 	}
-	log.Info("landlock enforced",
-		"mode", l.Mode,
-		"kernel_abi", report.KernelABI,
-		"applied_abi", abi,
-		"rules", pol.Summarize(),
-	)
+	log.Info("sandbox enforced", append([]any{"backend", b.name, "mode", b.mode}, b.applied(report)...)...)
+	log.Debug("sandbox policy", "rules", pol.Summarize())
 	return nil
+}
+
+// sandboxBackend is one platform's enforcement mechanism, bound to the
+// configuration section that governs it. Only the backend for the
+// running platform is ever consulted, so a configuration may carry both
+// and be served anywhere (PLAN §55).
+type sandboxBackend struct {
+	name  string
+	mode  string
+	check func() sandbox.Report
+	// ready reports why an available sandbox still must not be used,
+	// or "" when it is ready. It is where a backend puts the version
+	// floor its own mechanism has.
+	ready func(sandbox.Report) (reason, detail string)
+	apply func(sandbox.Report, sandbox.Policy) error
+	// applied names what was enforced, for the operational log.
+	applied func(sandbox.Report) []any
+}
+
+func platformSandbox(cfg *config.Config) sandboxBackend {
+	if runtime.GOOS == "darwin" {
+		return sandboxBackend{
+			name:    "seatbelt",
+			mode:    cfg.Security.Seatbelt.Mode,
+			check:   seatbelt.Check,
+			ready:   func(sandbox.Report) (string, string) { return "", "" },
+			apply:   func(_ sandbox.Report, p sandbox.Policy) error { return seatbelt.Apply(p) },
+			applied: func(sandbox.Report) []any { return nil },
+		}
+	}
+	// Landlock is the backend everywhere else, including platforms with
+	// no sandbox at all: Check reports it unavailable there and the mode
+	// decides whether that is fatal.
+	l := cfg.Security.Landlock
+	return sandboxBackend{
+		name:  "landlock",
+		mode:  l.Mode,
+		check: landlock.Check,
+		ready: func(r sandbox.Report) (string, string) {
+			if r.KernelABI < l.MinimumABI {
+				return "kernel Landlock ABI is below the configured minimum",
+					fmt.Sprintf("kernel ABI %d < minimum_abi %d", r.KernelABI, l.MinimumABI)
+			}
+			return "", ""
+		},
+		// Enforce at the highest ABI supported by both the kernel and
+		// the pinned library (PLAN §55 step 3).
+		//
+		// On non-Linux builds Apply always returns a non-nil error by
+		// design (PLAN §7 fail-closed), so the nil check is statically
+		// "always true" there; staticcheck reports SA4023 only under
+		// GOOS=darwin and is scoped to the linux build in the quality
+		// gate (see AGENTS.md).
+		apply: func(r sandbox.Report, p sandbox.Policy) error {
+			return landlock.Apply(min(r.KernelABI, landlock.MaxABI), p)
+		},
+		applied: func(r sandbox.Report) []any {
+			return []any{"kernel_abi", r.KernelABI, "applied_abi", min(r.KernelABI, landlock.MaxABI)}
+		},
+	}
 }
 
 // checkQuotaEnforceable fails closed when the configuration would leave a
@@ -468,12 +525,12 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 // configuration (PLAN §58, §60, §62). It is separate from applySandbox
 // so what the daemon confines itself to can be asserted on any host,
 // not only one whose kernel can enforce it.
-func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
-	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
+func sandboxPolicy(cfg *config.Config) (sandbox.Policy, error) {
+	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
 	if err != nil {
-		return landlock.Policy{}, fmt.Errorf("landlock: %w", err)
+		return sandbox.Policy{}, fmt.Errorf("landlock: %w", err)
 	}
-	pol := landlock.Policy{
+	pol := sandbox.Policy{
 		// The users file's directory rather than the file: a Landlock
 		// rule binds to the inode behind the path, and every key
 		// mutation renames a new users file over the old one, so a rule
@@ -488,6 +545,18 @@ func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
 	}
 	if cfg.Accounting.Enabled {
 		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
+	}
+	// The listener is already bound and listening; a backend that
+	// filters accepts still has to be told to keep it open.
+	switch l := cfg.Server.Listen; l.Network {
+	case "unix":
+		pol.Listen.UnixPath = l.Address
+	case "tcp":
+		if _, port, err := net.SplitHostPort(l.Address); err == nil {
+			if n, err := strconv.ParseUint(port, 10, 16); err == nil {
+				pol.Listen.TCPPort = uint16(n)
+			}
+		}
 	}
 	return pol, nil
 }

@@ -176,6 +176,7 @@ type Auth struct {
 type Security struct {
 	BackendNetwork BackendNetwork `yaml:"backend_network"`
 	Landlock       Landlock       `yaml:"landlock"`
+	Seatbelt       Seatbelt       `yaml:"seatbelt,omitempty"`
 }
 
 // BackendNetwork restricts where backend connections may go (PLAN §16).
@@ -189,6 +190,19 @@ type BackendNetwork struct {
 type Landlock struct {
 	Mode       string `yaml:"mode"` // "required", "best-effort", or "disabled"
 	MinimumABI int    `yaml:"minimum_abi"`
+}
+
+// Seatbelt is the sandbox policy on macOS (PLAN §55), the counterpart
+// of Landlock on Linux. Only the one for the running platform is
+// consulted, so a configuration can carry both and be served anywhere.
+//
+// It defaults to disabled where Landlock defaults to required: macOS is
+// a development platform for this daemon, not a deployment target, and
+// its confinement has not been proven on the range of macOS releases
+// that Landlock has on Linux kernels. Enable it deliberately, after
+// `mellomting sandbox check` reports it available on that host.
+type Seatbelt struct {
+	Mode string `yaml:"mode"` // "required", "best-effort", or "disabled"
 }
 
 // Logging configures operational logs (PLAN §43).

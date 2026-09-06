@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +29,8 @@ import (
 	"mellomting/internal/config"
 	"mellomting/internal/httpapi"
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
+	"mellomting/internal/seatbelt"
 )
 
 func getURL(t *testing.T, client *http.Client, url, authValue string) (*http.Response, string) {
@@ -487,9 +491,9 @@ func TestMPTCPListenersDisabled(t *testing.T) {
 // minimum ABI, required mode succeeds instead; that path is covered by
 // TestServeSandboxRequiredApplies.
 func TestServeSandboxRequiredFails(t *testing.T) {
-	report := landlock.Check()
-	if report.Supported && report.KernelABI >= landlock.DefaultMinimumABI {
-		t.Skip("landlock is available at the default minimum ABI: required mode enforces the policy instead of failing; see TestServeSandboxRequiredApplies")
+	section, available := platformSandboxSection()
+	if available {
+		t.Skipf("%s can enforce the policy on this host, so required mode applies it instead of failing; see TestServeSandboxRequiredApplies", section)
 	}
 	bin := buildCLI(t)
 	dir := shortTempDir(t)
@@ -531,7 +535,7 @@ auth:
   pepper_file: %s
 
 security:
-  landlock:
+  %s:
     mode: required
 
 servers:
@@ -545,7 +549,7 @@ models:
     upstream_model: Up/Model
     servers:
       - local-a
-`, filepath.Join(dir, "s.sock"), filepath.Join(dir, "users.yaml"), filepath.Join(dir, "p"), backend.URL)
+`, filepath.Join(dir, "s.sock"), filepath.Join(dir, "users.yaml"), filepath.Join(dir, "p"), section, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -565,9 +569,22 @@ models:
 		t.Fatalf("exit = %d (want 1; required sandbox must fail closed)", exitCode)
 	}
 	combined := outB.String() + errB.String()
-	if !strings.Contains(combined, "landlock") {
-		t.Fatalf("no landlock mention in output: %q", combined)
+	if !strings.Contains(combined, section) {
+		t.Fatalf("no %s mention in output: %q", section, combined)
 	}
+}
+
+// platformSandboxSection is the configuration section that governs the
+// sandbox on this platform, and whether that backend can actually
+// enforce a policy here. Only one backend is ever consulted, so the
+// fail-closed path is only reachable on a host whose own backend is
+// unavailable.
+func platformSandboxSection() (name string, available bool) {
+	if runtime.GOOS == "darwin" {
+		return "seatbelt", seatbelt.Check().Supported
+	}
+	r := landlock.Check()
+	return "landlock", r.Supported && r.KernelABI >= landlock.DefaultMinimumABI
 }
 
 // configListenUnix builds a unix listen config for listener tests.
@@ -1084,7 +1101,7 @@ func sandboxTestConfig(t *testing.T) *config.Config {
 			"b1": {BaseURL: "http://127.0.0.1:8001", UpstreamModel: "m"},
 		},
 		Security: config.Security{
-			Landlock: config.Landlock{Mode: landlock.ModeRequired, MinimumABI: landlock.DefaultMinimumABI},
+			Landlock: config.Landlock{Mode: sandbox.ModeRequired, MinimumABI: landlock.DefaultMinimumABI},
 		},
 	}
 }
@@ -1098,20 +1115,51 @@ func TestEnforceSandboxModes(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := sandboxTestConfig(t)
-	cfg.Security.Landlock.Mode = landlock.ModeDisabled
-	if err := applySandbox(cfg, log); err != nil {
+
+	// A backend that cannot enforce anything here. Applying a real one
+	// would confine the test process itself, irreversibly, so the mode
+	// semantics are driven through a stub instead.
+	unavailable := func(mode string) sandboxBackend {
+		return sandboxBackend{
+			name:    "stub",
+			mode:    mode,
+			check:   func() sandbox.Report { return sandbox.Report{Reason: "stub is never available"} },
+			ready:   func(sandbox.Report) (string, string) { return "", "" },
+			apply:   func(sandbox.Report, sandbox.Policy) error { return errors.New("stub cannot apply") },
+			applied: func(sandbox.Report) []any { return nil },
+		}
+	}
+
+	if err := enforceSandbox(unavailable(sandbox.ModeDisabled), cfg, log); err != nil {
 		t.Fatalf("disabled: %v", err)
 	}
-
-	cfg.Security.Landlock.Mode = landlock.ModeBestEffort
-	cfg.Security.Landlock.MinimumABI = 255 // unreachable: force the gate
-	if err := applySandbox(cfg, log); err != nil {
+	if err := enforceSandbox(unavailable(sandbox.ModeBestEffort), cfg, log); err != nil {
 		t.Fatalf("best-effort must continue without a sandbox, got %v", err)
 	}
-
-	cfg.Security.Landlock.Mode = landlock.ModeRequired
-	if err := applySandbox(cfg, log); err == nil {
+	err := enforceSandbox(unavailable(sandbox.ModeRequired), cfg, log)
+	if err == nil {
 		t.Fatal("required mode must fail closed when the sandbox cannot be enforced")
+	}
+	// The error has to name the section the operator would edit.
+	if !strings.Contains(err.Error(), "security.stub.mode") {
+		t.Fatalf("err = %v, want it to name the configuration section", err)
+	}
+
+	// An available backend whose own readiness gate refuses — Landlock's
+	// ABI floor is one — must fail closed in required mode too.
+	gated := unavailable(sandbox.ModeRequired)
+	gated.check = func() sandbox.Report { return sandbox.Report{Supported: true} }
+	gated.ready = func(sandbox.Report) (string, string) { return "below the configured minimum", "stub" }
+	if err := enforceSandbox(gated, cfg, log); err == nil {
+		t.Fatal("required mode must fail closed when the readiness gate refuses")
+	}
+
+	// And one that applies cleanly reports success.
+	okBackend := unavailable(sandbox.ModeRequired)
+	okBackend.check = func() sandbox.Report { return sandbox.Report{Supported: true} }
+	okBackend.apply = func(sandbox.Report, sandbox.Policy) error { return nil }
+	if err := enforceSandbox(okBackend, cfg, log); err != nil {
+		t.Fatalf("an enforceable sandbox must apply: %v", err)
 	}
 }
 

@@ -17,25 +17,26 @@ import (
 	"mellomting/internal/config"
 	"mellomting/internal/discovery"
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 )
 
-func withInitLandlock(t *testing.T, report landlock.Report) {
+func withInitLandlock(t *testing.T, report sandbox.Report) {
 	t.Helper()
 	old := initLandlockCheck
-	initLandlockCheck = func() landlock.Report { return report }
+	initLandlockCheck = func() sandbox.Report { return report }
 	t.Cleanup(func() { initLandlockCheck = old })
 }
 
-func supportedLandlockReport() landlock.Report {
-	return landlock.Report{Platform: "linux", Supported: true, KernelABI: landlock.MaxABI}
+func supportedLandlockReport() sandbox.Report {
+	return sandbox.Report{Platform: "linux", Supported: true, KernelABI: landlock.MaxABI}
 }
 
-func unsupportedLandlockReport() landlock.Report {
-	return landlock.Report{Platform: "linux", Reason: "test-unsupported"}
+func unsupportedLandlockReport() sandbox.Report {
+	return sandbox.Report{Platform: "linux", Reason: "test-unsupported"}
 }
 
-func tooOldLandlockReport() landlock.Report {
-	return landlock.Report{Platform: "linux", Supported: true, KernelABI: landlock.DefaultMinimumABI - 1}
+func tooOldLandlockReport() sandbox.Report {
+	return sandbox.Report{Platform: "linux", Supported: true, KernelABI: landlock.DefaultMinimumABI - 1}
 }
 
 func TestParseInitServers(t *testing.T) {
@@ -261,14 +262,14 @@ func TestInitPreflightLandlock(t *testing.T) {
 
 	t.Run("supported required", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("required", false, func() landlock.Report { return supportedLandlockReport() }); err != nil {
+		if err := initPreflightLandlock("required", false, func() sandbox.Report { return supportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("too-old required", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("required", false, func() landlock.Report { return tooOldLandlockReport() })
+		err := initPreflightLandlock("required", false, func() sandbox.Report { return tooOldLandlockReport() })
 		if err == nil || !strings.Contains(err.Error(), "--landlock best-effort") {
 			t.Fatalf("err = %v, want best-effort alternative", err)
 		}
@@ -276,7 +277,7 @@ func TestInitPreflightLandlock(t *testing.T) {
 
 	t.Run("unsupported required", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("required", false, func() landlock.Report { return unsupportedLandlockReport() })
+		err := initPreflightLandlock("required", false, func() sandbox.Report { return unsupportedLandlockReport() })
 		if err == nil || !strings.Contains(err.Error(), "--landlock best-effort") {
 			t.Fatalf("err = %v, want best-effort alternative", err)
 		}
@@ -284,21 +285,21 @@ func TestInitPreflightLandlock(t *testing.T) {
 
 	t.Run("explicit best-effort unsupported", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("best-effort", true, func() landlock.Report { return unsupportedLandlockReport() }); err != nil {
+		if err := initPreflightLandlock("best-effort", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("explicit disabled unsupported", func(t *testing.T) {
 		t.Parallel()
-		if err := initPreflightLandlock("disabled", true, func() landlock.Report { return unsupportedLandlockReport() }); err != nil {
+		if err := initPreflightLandlock("disabled", true, func() sandbox.Report { return unsupportedLandlockReport() }); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("implicit best-effort rejected", func(t *testing.T) {
 		t.Parallel()
-		err := initPreflightLandlock("best-effort", false, func() landlock.Report { return supportedLandlockReport() })
+		err := initPreflightLandlock("best-effort", false, func() sandbox.Report { return supportedLandlockReport() })
 		if err == nil || !strings.Contains(err.Error(), "explicitly") {
 			t.Fatalf("err = %v, want explicit", err)
 		}
@@ -528,7 +529,7 @@ version: 1
 		if got.Normalized.Auth.UsersFile != args.UsersPath || got.Normalized.Auth.PepperFile != args.PepperPath {
 			t.Fatalf("normalized auth = %+v", got.Normalized.Auth)
 		}
-		if got.Normalized.Security.Landlock.Mode != landlock.ModeRequired {
+		if got.Normalized.Security.Landlock.Mode != sandbox.ModeRequired {
 			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
 		}
 		if got.Normalized.Security.BackendNetwork.Mode != "loopback-only" {
@@ -654,7 +655,7 @@ version: 1
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Normalized.Security.Landlock.Mode != landlock.ModeBestEffort {
+		if got.Normalized.Security.Landlock.Mode != sandbox.ModeBestEffort {
 			t.Fatalf("landlock = %q", got.Normalized.Security.Landlock.Mode)
 		}
 		if !strings.Contains(string(got.Config), "mode: best-effort") {

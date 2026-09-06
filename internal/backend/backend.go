@@ -34,7 +34,7 @@ import (
 	"time"
 
 	"mellomting/internal/config"
-	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 	"mellomting/internal/securefile"
 )
 
@@ -331,7 +331,7 @@ func splitHostPort(u *url.URL) (string, string) {
 	if err != nil {
 		// Scheme default, shared with the Landlock sandbox so the two
 		// can never disagree about the granted port (T-Q6).
-		port, _ = landlock.DefaultPortForScheme(u.Scheme)
+		port, _ = sandbox.DefaultPortForScheme(u.Scheme)
 		return u.Hostname(), port
 	}
 	return host, port

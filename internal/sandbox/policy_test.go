@@ -1,7 +1,6 @@
-package landlock
+package sandbox
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -94,21 +93,5 @@ func TestPolicySummarize(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("summary missing %q: %s", want, joined)
 		}
-	}
-}
-
-func TestApplyNonLinuxFailsClosed(t *testing.T) {
-	// On every platform Apply must be callable and fail closed when the
-	// policy cannot be enforced (PLAN §55, §57). On Linux this only
-	// errors for an out-of-range ABI; the full enforcement path is
-	// covered by the Linux integration test.
-	if runtime.GOOS == "linux" {
-		if err := Apply(99, Policy{}); err == nil {
-			t.Fatal("out-of-range ABI must fail closed")
-		}
-		return
-	}
-	if err := Apply(9, Policy{}); err == nil {
-		t.Fatal("non-Linux platform must report Landlock as unavailable, not silently succeed")
 	}
 }

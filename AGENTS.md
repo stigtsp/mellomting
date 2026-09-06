@@ -82,8 +82,8 @@ docs/PLAN.md       design spec (working document)
 Internal packages (create files as phases land, in PLAN §78):
 `accounting`, `apierr`, `auth`, `backend`, `config`, `discovery`,
 `httpapi`, `landlock`, `limiter`, `logging`, `proxy`,
-`routing`, `securefile`, `systemd`, `testsupport`, `tlsconfig`,
-`version`.
+`routing`, `sandbox`, `seatbelt`, `securefile`, `systemd`, `testsupport`,
+`tlsconfig`, `version`.
 
 ## Build, test, quality gates
 
@@ -102,6 +102,14 @@ and govulncheck are run on the primary linux build (as in CI). SA4023 under
 `GOOS=darwin` at `serve.go` is a known non-issue: `landlock.Apply` must fail
 closed on non-Linux (PLAN §7), so its nil-check is intentionally always-true
 there.
+
+Seatbelt enforcement (`internal/seatbelt`) is only exercised on macOS, and
+only outside another sandbox — a process that is already confined may not
+apply a second profile. `TestApplyEnforces` skips there; run it with
+`MELLOMTING_SEATBELT_STRICT=1` to turn that skip into a failure. Profile
+*compilation* is pure userspace and runs anywhere macOS exposes the
+sandbox compiler, so `TestGeneratedProfileCompiles` covers the profile the
+daemon would really apply even where applying is refused.
 
 - Security-critical behaviour must have automated tests; fuzz the parser
   targets listed in PLAN §80 with arbitrary bytes.
@@ -167,7 +175,10 @@ write, backend TCP connect ports; everything else denied), enforces it
 strictly on all runtime threads (ABI 8+ TSYNC path) only after all
 startup FDs are settled and before the listener accepts (PLAN §57);
 `security.landlock.mode: required` fails closed, `best-effort` warns and
-continues (never a partial policy). MPTCP is explicitly disabled on every
+continues (never a partial policy). `internal/sandbox` holds the
+platform-neutral policy both backends enforce; on macOS `internal/seatbelt`
+renders it as an SBPL profile governed by `security.seatbelt.mode`
+(PLAN §53.1-53.2), which defaults to disabled. MPTCP is explicitly disabled on every
 listener/dialer it owns (PLAN §61). `deploy/mellomting.service` ships the
 hardened systemd unit (PLAN §64). `mellomting install --systemd` (via
 `internal/systemd`, assets embedded byte-identical to `deploy/`) provisions

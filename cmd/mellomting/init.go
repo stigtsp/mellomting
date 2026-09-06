@@ -22,6 +22,7 @@ import (
 	"mellomting/internal/config"
 	"mellomting/internal/discovery"
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 )
 
 // initLandlockCheck is the production Landlock capability probe. Tests
@@ -79,7 +80,7 @@ func initCmd(args []string) int {
 	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
 	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
 	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
-	fs.StringVar(&landlockMode, "landlock", landlock.ModeRequired, "sandbox `MODE`: required, best-effort, disabled")
+	fs.StringVar(&landlockMode, "landlock", sandbox.ModeRequired, "sandbox `MODE`: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
@@ -226,10 +227,10 @@ func parseInitArguments(configPath, listen, landlockMode string, landlockSet, dr
 	}
 	if !landlockSet {
 		// D2: the default is required; the operator has not opted out.
-		landlockMode = landlock.ModeRequired
+		landlockMode = sandbox.ModeRequired
 	}
 	switch landlockMode {
-	case landlock.ModeRequired, landlock.ModeBestEffort, landlock.ModeDisabled:
+	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
 	default:
 		return initArguments{}, fmt.Errorf("--landlock must be required, best-effort, or disabled")
 	}
@@ -420,9 +421,9 @@ func resolveInitAuthPaths(configRaw string) (configPath, usersPath, pepperPath s
 	return abs, filepath.Join(dir, "users.yaml"), filepath.Join(dir, "auth.pepper"), nil
 }
 
-func initPreflightLandlock(mode string, explicit bool, check func() landlock.Report) error {
+func initPreflightLandlock(mode string, explicit bool, check func() sandbox.Report) error {
 	report := check()
-	if mode == landlock.ModeRequired {
+	if mode == sandbox.ModeRequired {
 		if !report.Supported {
 			return fmt.Errorf("landlock required but unavailable: %s; rerun with --landlock best-effort to continue without the sandbox", report.Reason)
 		}
@@ -430,7 +431,7 @@ func initPreflightLandlock(mode string, explicit bool, check func() landlock.Rep
 			return fmt.Errorf("landlock kernel ABI %d below required minimum %d; rerun with --landlock best-effort to continue without the sandbox", report.KernelABI, landlock.DefaultMinimumABI)
 		}
 	}
-	if mode == landlock.ModeBestEffort || mode == landlock.ModeDisabled {
+	if mode == sandbox.ModeBestEffort || mode == sandbox.ModeDisabled {
 		if !explicit {
 			return fmt.Errorf("--landlock %s must be supplied explicitly", mode)
 		}

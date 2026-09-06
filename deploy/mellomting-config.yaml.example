@@ -34,6 +34,10 @@ auth:
 security:
   backend_network:
     mode: loopback-only
+# On macOS the sandbox is Seatbelt rather than Landlock, and it stays off
+# until enabled: run 'mellomting sandbox check' on that host first.
+#  seatbelt:
+#    mode: best-effort
   landlock:
     mode: required
     minimum_abi: 8

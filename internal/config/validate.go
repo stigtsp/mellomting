@@ -15,6 +15,7 @@ import (
 	"slices"
 
 	"mellomting/internal/landlock"
+	"mellomting/internal/sandbox"
 )
 
 // Defaults follow PLAN §76 and the per-section suggested defaults;
@@ -94,7 +95,8 @@ func applyDefaults(c *Config) {
 
 	sec := &c.Security
 	sec.BackendNetwork.Mode = cmp.Or(sec.BackendNetwork.Mode, "loopback-only")
-	sec.Landlock.Mode = cmp.Or(sec.Landlock.Mode, landlock.ModeRequired)
+	sec.Landlock.Mode = cmp.Or(sec.Landlock.Mode, sandbox.ModeRequired)
+	sec.Seatbelt.Mode = cmp.Or(sec.Seatbelt.Mode, sandbox.ModeDisabled)
 	sec.Landlock.MinimumABI = cmp.Or(sec.Landlock.MinimumABI, landlock.DefaultMinimumABI)
 
 	c.Logging.Format = cmp.Or(c.Logging.Format, "json")
@@ -341,12 +343,18 @@ func validateSecurity(s *Security) []string {
 
 	l := s.Landlock
 	switch l.Mode {
-	case landlock.ModeRequired, landlock.ModeBestEffort, landlock.ModeDisabled:
+	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
 	default:
 		errs = append(errs, fmt.Sprintf("security.landlock.mode: %q must be required, best-effort, or disabled", l.Mode))
 	}
 	if l.MinimumABI < 1 || l.MinimumABI > landlock.MaxABI {
 		errs = append(errs, fmt.Sprintf("security.landlock.minimum_abi: %d out of range 1..%d", l.MinimumABI, landlock.MaxABI))
+	}
+
+	switch s.Seatbelt.Mode {
+	case sandbox.ModeRequired, sandbox.ModeBestEffort, sandbox.ModeDisabled:
+	default:
+		errs = append(errs, fmt.Sprintf("security.seatbelt.mode: %q must be required, best-effort, or disabled", s.Seatbelt.Mode))
 	}
 
 	return errs
