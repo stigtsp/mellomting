@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -584,6 +585,15 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, err
 	}
 
+	// The trust store is read here, with the rest of the startup
+	// secrets and before the sandbox: crypto/x509 would otherwise read
+	// it on the first https handshake, which happens after confinement,
+	// and the policy grants no path to it (PLAN §57 step 9, §58).
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("load system trust store: %w", err)
+	}
+
 	// Static TLS (PLAN §57 step 9, §67): the certificate and key are
 	// loaded once, before the sandbox, and are reloaded only by a process
 	// restart in v1.
@@ -608,6 +618,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			Network:          policy,
 			MaxResponseBytes: cfg.Server.MaxResponseBytes,
 			Log:              log,
+			RootCAs:          roots,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, err)

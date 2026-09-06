@@ -22,6 +22,8 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -112,6 +114,13 @@ type Options struct {
 	// Resolver overrides the DNS resolver used for outbound dials.
 	// Defaults to net.DefaultResolver. Testing hook (T-M14).
 	Resolver Resolver
+	// RootCAs verifies https backends. It must be supplied by the
+	// caller, because crypto/x509 otherwise reads the system trust
+	// store on the first handshake — which happens after the sandbox is
+	// applied, and the policy grants no path to it (PLAN §58). The
+	// result would be an empty pool and every backend request failing
+	// verification against a certificate that is in fact trusted.
+	RootCAs *x509.CertPool
 }
 
 // Client owns one backend's connection and admission state.
@@ -215,6 +224,9 @@ func New(o Options) (*Client, error) {
 		// Bound response headers so a hostile backend cannot grow them
 		// unboundedly (T-L7).
 		MaxResponseHeaderBytes: maxBackendResponseHeaderBytes,
+	}
+	if o.RootCAs != nil {
+		t.TLSClientConfig = &tls.Config{RootCAs: o.RootCAs, MinVersion: tls.VersionTLS12}
 	}
 	// Streaming: the first stream byte is expected promptly, so the
 	// header wait is bounded by header_timeout (PLAN §15).

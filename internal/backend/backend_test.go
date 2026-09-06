@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1158,5 +1159,37 @@ func TestNonStreamRequestNeverGetsLiveBody(t *testing.T) {
 	}
 	if len(res.BodyBytes) == 0 {
 		t.Fatal("the response was not buffered")
+	}
+}
+
+// An https backend is verified against roots the caller loaded before
+// the sandbox was applied. Left to itself, crypto/x509 reads the system
+// trust store on the first handshake — which happens after confinement,
+// where the policy grants no path to it, so every request to a
+// perfectly trustworthy backend would fail verification.
+func TestBackendUsesSuppliedRoots(t *testing.T) {
+	roots := x509.NewCertPool()
+	c, err := New(Options{
+		Name:             "b1",
+		Cfg:              config.Backend{BaseURL: "https://127.0.0.1:8443", MaxConcurrency: 1, QueueSize: 1},
+		Network:          Policy{Mode: "loopback-only"},
+		MaxResponseBytes: 1 << 20,
+		Log:              testsupport.DiscardLogger(),
+		RootCAs:          roots,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, hc := range map[string]*http.Client{"stream": c.http, "plain": c.httpPlain} {
+		tr, ok := hc.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("%s client has no http.Transport", name)
+		}
+		if tr.TLSClientConfig == nil {
+			t.Fatalf("%s transport has no TLS configuration, so it would load system roots after confinement", name)
+		}
+		if tr.TLSClientConfig.RootCAs != roots {
+			t.Fatalf("%s transport does not use the preloaded roots", name)
+		}
 	}
 }
