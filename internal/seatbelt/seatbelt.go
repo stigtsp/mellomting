@@ -67,10 +67,14 @@ func Profile(pol sandbox.Policy) string {
 	// confine the daemon into answering nothing.
 	switch {
 	case pol.Listen.UnixPath != "":
+		// Accepting only. Closing the listener also unlinks the socket,
+		// but that error is discarded and the next start removes a
+		// stale one anyway (safeUnixListen), so the right to delete is
+		// not worth handing to a process this policy exists to contain
+		// — and Landlock, which would need it on the whole directory,
+		// does not grant it either.
 		for _, path := range pathForms(pol.Listen.UnixPath) {
 			b.WriteString("(allow network-inbound (local unix-socket (path-literal " + quote(path) + ")))\n")
-			// Closing the listener unlinks the socket (PLAN §74).
-			b.WriteString("(allow file-write-unlink (literal " + quote(path) + "))\n")
 		}
 	case pol.Listen.TCPPort != 0:
 		b.WriteString(fmt.Sprintf("(allow network-inbound (local ip \"*:%d\"))\n", pol.Listen.TCPPort))

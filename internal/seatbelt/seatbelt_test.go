@@ -44,7 +44,6 @@ func TestProfileGrantsThePolicy(t *testing.T) {
 		`(allow file-read* (subpath "/etc/mellomting"))`,
 		`(allow file-write-data (literal "/var/log/mellomting/usage.jsonl"))`,
 		`(allow network-inbound (local unix-socket (path-literal "/run/mellomting/mellomting.sock")))`,
-		`(allow file-write-unlink (literal "/run/mellomting/mellomting.sock"))`,
 		`(allow network-outbound (remote tcp "*:8001"))`,
 		`(allow network-outbound (remote tcp "*:8002"))`,
 	} {
@@ -56,6 +55,16 @@ func TestProfileGrantsThePolicy(t *testing.T) {
 
 // A TCP listener is granted by port; a unix listener by path. Naming
 // neither would leave the daemon unable to accept a connection.
+// The listener grant is accept-only: a policy whose point is to shrink
+// what a compromised process can do must not hand it the right to
+// delete files for a cleanup the next start performs anyway.
+func TestProfileDoesNotGrantSocketRemoval(t *testing.T) {
+	p := Profile(testPolicy())
+	if strings.Contains(p, "file-write-unlink") {
+		t.Fatalf("profile grants socket removal:\n%s", p)
+	}
+}
+
 func TestProfileGrantsTheTCPListener(t *testing.T) {
 	pol := testPolicy()
 	pol.Listen = sandbox.Listener{TCPPort: 8080}
