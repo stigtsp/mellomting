@@ -39,7 +39,7 @@ func newAccountingProxy(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writ
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestOutputCapRejectsExcess(t *testing.T) {
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","max_completion_tokens":200}`, testKey())
@@ -132,7 +132,7 @@ func TestOutputCapInjectWhenAbsent(t *testing.T) {
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -198,11 +198,10 @@ func TestStreamUsageInjectedAndSwallowed(t *testing.T) {
 	}
 }
 
-// FIX-04/N10: with accounting.enabled: false but a per-key token quota in
-// effect, streams must settle real usage, not the whole output cap. The
-// daemon drives ensureUsage from "a quota is configured" rather than from
-// accounting.enabled, so include_usage is injected even when the JSONL is
-// disabled and the quota is charged the exact captured usage.
+// FIX-04/N10: with accounting.enabled: false but a token quota on the
+// key, streams must settle real usage, not the whole output cap:
+// include_usage is injected even when the JSONL is disabled and the
+// quota is charged the exact captured usage.
 func TestAccountingOffWithQuotaSettlesExactStreamUsage(t *testing.T) {
 	f := newFakeVLLM(t, usageOnlyJSON)
 	quota := accounting.NewQuota()
@@ -227,14 +226,16 @@ func TestAccountingOffWithQuotaSettlesExactStreamUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// quotaConfigured=true: accounting is off but quotas are active.
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, true)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// Accounting is off, but this key carries a budget.
+	key := testKey()
+	key.Limits.TokensPerHour = 100000
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
-		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, key)
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
@@ -287,13 +288,15 @@ func TestQuotaOnlyDefaultsEnsureStreamUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, true)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	key := testKey()
+	key.Limits.TokensPerHour = 100000
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
-		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, testKey())
+		`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, key)
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
@@ -633,7 +636,7 @@ func TestStreamUnknownUsageChargesConfiguredReservation(t *testing.T) {
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -680,7 +683,7 @@ func TestStreamUnknownUsageChargesExplicitReservation(t *testing.T) {
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
-	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, false)
+	p, _ := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer)
 
 	w := run(t, p, http.MethodPost, "/v1/chat/completions",
 		`{"model":"gen-1","stream":true,"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, testKey())
@@ -771,7 +774,7 @@ func TestOutputCapCannotBeBypassed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+		p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -866,7 +869,7 @@ func TestFailedRequestRecordsRetryCount(t *testing.T) {
 	}
 	writer, path := tmpWriter(t)
 	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
-		testsupport.DiscardLogger(), accounting.NewQuota(), writer, false)
+		testsupport.DiscardLogger(), accounting.NewQuota(), writer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,13 +969,12 @@ func TestUsageOnlyChunkSwallowedRegardlessOfParsedTokens(t *testing.T) {
 	}
 }
 
-// A token budget can arrive on a key long after startup, through a
-// SIGHUP users-file reload. The proxy sampled "some key has a quota"
-// once at construction and froze stream-usage injection there, so a
-// budget added later was never charged for streaming requests: the
-// backend was not asked for usage, the settle fell back to a zero
-// reservation, and the window never advanced — an unlimited key that
-// the operator believed was capped.
+// The injection decision is made per request from the key record. A
+// budget can arrive on a key through a SIGHUP reload long after startup;
+// sampling "some key has a quota" once at construction left such a key
+// streaming without usage, settling a zero reservation, and never
+// advancing its window — unlimited while the operator believed it was
+// capped.
 func TestQuotaAddedAfterStartupSettlesStreamUsage(t *testing.T) {
 	f := newFakeVLLM(t, usageOnlyJSON)
 	quota := accounting.NewQuota()
@@ -994,9 +996,7 @@ func TestQuotaAddedAfterStartupSettlesStreamUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// quotaConfigured=false: no key carried a budget when the process
-	// started.
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

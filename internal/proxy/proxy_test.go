@@ -170,7 +170,7 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func newProxyCfg(t *testing.T, cfg *config.Config) *Proxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestModelLoggedTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestClientDisconnectClassified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, pLog, nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, pLog, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestEndpointModelTypeAgreement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, acc, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, acc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1172,7 +1172,7 @@ func TestStreamIdleUsesPerBackendBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, false)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1487,7 +1487,7 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, testsupport.DiscardLogger(), nil, nil, false)
+	p3, _ := New(cfg3, router3, map[string]*backend.Client{"b1": cl3}, testsupport.DiscardLogger(), nil, nil)
 	rec = run(t, p3, http.MethodPost, "/v1/chat/completions", big, testKey())
 	if rec.Code != 413 {
 		t.Fatalf("oversized body: status = %d", rec.Code)
@@ -1756,7 +1756,7 @@ func TestAffinityPinBoundToModel(t *testing.T) {
 		}
 		clients[name] = c
 	}
-	p, err := New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil, false)
+	p, err := New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1832,7 +1832,7 @@ func TestLogEndpointExcludesResponseID(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
-		slog.New(slog.NewJSONHandler(&buf, nil)), nil, nil, false)
+		slog.New(slog.NewJSONHandler(&buf, nil)), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

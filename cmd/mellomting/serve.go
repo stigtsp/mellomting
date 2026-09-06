@@ -233,30 +233,6 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 // users file (SIGHUP reload, PLAN §30), write the accounting log, and
 // connect to the configured backend TCP ports. Secrets are preloaded
 // and their FDs closed before this runs (PLAN §59).
-// sandboxPolicy builds the post-startup Landlock policy from validated
-// configuration (PLAN §58, §60, §62). It is separate from applySandbox
-// so what the daemon confines itself to can be asserted on any host,
-// not only one whose kernel can enforce it.
-func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
-	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
-	if err != nil {
-		return landlock.Policy{}, fmt.Errorf("landlock: %w", err)
-	}
-	pol := landlock.Policy{
-		ReadFiles: []string{cfg.Auth.UsersFile},
-		// The directory, not just the file: every key mutation renames a
-		// new users file over the old one, and a rule bound to the
-		// replaced inode would deny the SIGHUP reload that is supposed
-		// to apply it (PLAN §30, §58).
-		ReadDirs:   []string{filepath.Dir(cfg.Auth.UsersFile)},
-		ConnectTCP: ports,
-	}
-	if cfg.Accounting.Enabled {
-		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
-	}
-	return pol, nil
-}
-
 func applySandbox(cfg *config.Config, log *slog.Logger) error {
 	l := cfg.Security.Landlock
 	if l.Mode == landlock.ModeDisabled {
@@ -488,32 +464,47 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 	return srv
 }
 
+// sandboxPolicy builds the post-startup Landlock policy from validated
+// configuration (PLAN §58, §60, §62). It is separate from applySandbox
+// so what the daemon confines itself to can be asserted on any host,
+// not only one whose kernel can enforce it.
+func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
+	ports, err := landlock.BackendPorts(backendBaseURLs(cfg)...)
+	if err != nil {
+		return landlock.Policy{}, fmt.Errorf("landlock: %w", err)
+	}
+	pol := landlock.Policy{
+		ReadFiles: []string{cfg.Auth.UsersFile},
+		// The directory, not just the file: every key mutation renames a
+		// new users file over the old one, and a rule bound to the
+		// replaced inode would deny the SIGHUP reload that is supposed
+		// to apply it (PLAN §30, §58).
+		ReadDirs:   []string{filepath.Dir(cfg.Auth.UsersFile)},
+		ConnectTCP: ports,
+	}
+	if cfg.Accounting.Enabled {
+		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
+	}
+	return pol, nil
+}
+
 // buildDaemon wires the key store, router, backend clients, proxy, and
 // HTTP surface from validated configuration. It performs no I/O beyond
 // reading the key store, pepper, backend credentials, and the static TLS
 // certificate and key (PLAN §57 step 9); all of those FDs are closed
 // before the sandbox is applied.
 func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
-	users, err := auth.LoadUsers(cfg.Auth.UsersFile)
-	if err != nil {
-		return nil, fmt.Errorf("load users file: %w", err)
-	}
 	pepper, err := auth.LoadPepper(cfg.Auth.PepperFile)
 	if err != nil {
 		return nil, fmt.Errorf("load pepper: %w", err)
 	}
-	store, err := auth.NewStore(users, pepper)
+	// Before any client, router, or writer is constructed: a key set
+	// the daemon cannot serve should be reported without opening
+	// resources first.
+	store, users, err := loadStore(cfg, pepper)
 	if err != nil {
-		return nil, fmt.Errorf("key store: %w", err)
-	}
-
-	// Before any client, router, or writer is constructed: a
-	// configuration that cannot enforce its own quota should be reported
-	// without opening resources first.
-	if err := checkQuotaEnforceable(cfg, users); err != nil {
 		return nil, err
 	}
-	hasTokenQuota := quotaKeysConfigured(users.Keys)
 
 	policy, err := backend.PolicyFromConfig(cfg.Security.BackendNetwork)
 	if err != nil {
@@ -596,11 +587,11 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			"fsync", cfg.Accounting.FSync,
 			"queue_size", cfg.Accounting.QueueSize,
 		)
-	} else if hasTokenQuota {
+	} else if quotaKeysConfigured(users.Keys) {
 		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
 	}
 
-	prox, err := proxy.New(cfg, router, clients, log, quota, writer, hasTokenQuota)
+	prox, err := proxy.New(cfg, router, clients, log, quota, writer)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
@@ -618,31 +609,37 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, pepper: pepper, tlsConfig: tlsConfig}, nil
 }
 
+// loadStore reads the users file and builds the key store the daemon
+// will serve from. It is the one admission path for a key set, at
+// startup and on every SIGHUP reload alike, so a key set startup would
+// refuse — a token quota the configuration cannot charge, which would
+// be silently unlimited — cannot slip in through a reload either.
+func loadStore(cfg *config.Config, pepper []byte) (*auth.Store, *auth.UsersFile, error) {
+	users, err := auth.LoadUsers(cfg.Auth.UsersFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load users file: %w", err)
+	}
+	if err := checkQuotaEnforceable(cfg, users); err != nil {
+		return nil, nil, err
+	}
+	store, err := auth.NewStore(users, pepper)
+	if err != nil {
+		return nil, nil, fmt.Errorf("key store: %w", err)
+	}
+	return store, users, nil
+}
+
 // reloadUsers reloads the users file and atomically swaps the running key
 // store (SIGHUP, PLAN §30). Fail closed: on any error the previous store
 // stays in effect, so a malformed edit can never widen or empty access.
 // The pepper is reused from memory, so the reload needs no file access
-// beyond the users file — the only secret read the Landlock policy grants
-// after startup (PLAN §30, §58). In-flight requests are unaffected; they
-// keep serving against the store they looked up (PLAN §74).
-//
-// The reload runs the same admission gates startup runs. A key set that
-// startup would have refused to serve must not slip in through a SIGHUP:
-// a token quota the configuration cannot charge is silently unlimited,
-// which is the opposite of what the operator who just wrote it expects.
+// beyond the users file's directory, the only read the Landlock policy
+// grants after startup (PLAN §58). In-flight requests are unaffected;
+// they keep serving against the store they looked up (PLAN §74).
 func (d *daemon) reloadUsers() {
-	users, err := auth.LoadUsers(d.cfg.Auth.UsersFile)
+	store, users, err := loadStore(d.cfg, d.pepper)
 	if err != nil {
-		d.logReloadFailed(err)
-		return
-	}
-	if err := checkQuotaEnforceable(d.cfg, users); err != nil {
-		d.logReloadFailed(err)
-		return
-	}
-	store, err := auth.NewStore(users, d.pepper)
-	if err != nil {
-		d.logReloadFailed(err)
+		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
 		return
 	}
 	d.api.ReloadStore(store)
@@ -650,19 +647,4 @@ func (d *daemon) reloadUsers() {
 	if len(users.Keys) == 0 {
 		d.log.Warn("users file has no keys; every request will be rejected until a key is added")
 	}
-}
-
-// logReloadFailed reports a failed SIGHUP reload (PLAN §30). Fail closed:
-// the previous store stays in effect.
-//
-// The sandbox no longer explains a failure here. It used to: the policy
-// granted the users file by pathname, every key mutation renamed a new
-// inode over it, and the reload was denied — so the ERROR named the
-// sandbox and told the operator to restart. The policy now grants the
-// directory (PLAN §58), so a denial is no longer the expected outcome
-// and the error carries whatever actually went wrong: a malformed edit,
-// a file moved out of the granted directory, or a permission the
-// service account does not have.
-func (d *daemon) logReloadFailed(err error) {
-	d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
 }

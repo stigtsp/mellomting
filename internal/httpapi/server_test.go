@@ -134,7 +134,7 @@ func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*confi
 	if err != nil {
 		t.Fatal(err)
 	}
-	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil, false)
+	prox, err := proxy.New(cfg, router, map[string]*backend.Client{"b1": client}, log, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -86,23 +86,22 @@ var (
 
 // Proxy wires configuration, routing, and backend clients together.
 type Proxy struct {
-	router      *routing.Router
-	clients     map[string]*backend.Client
-	cfg         *config.Config
-	log         *slog.Logger
-	affinity    *affinity
-	budget      *budget
-	quota       *accounting.Quota  // token windows (PLAN §39); nil = disabled
-	acc         *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
-	usageOptIn  bool               // operator has not disabled stream_options.include_usage (§38)
-	ensureUsage bool               // inject stream_options.include_usage (§38)
-	draining    atomic.Bool
+	router     *routing.Router
+	clients    map[string]*backend.Client
+	cfg        *config.Config
+	log        *slog.Logger
+	affinity   *affinity
+	budget     *budget
+	quota      *accounting.Quota  // token windows (PLAN §39); nil = disabled
+	acc        *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
+	usageOptIn bool               // stream_options.include_usage injection is not disabled (§38)
+	draining   atomic.Bool
 }
 
 // New builds a Proxy. clients is the backend-name -> client table built
 // from the same configuration. quota and acc enable token-usage quota and
 // JSONL accounting respectively; passing nil for both disables accounting.
-func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer, quotaConfigured bool) (*Proxy, error) {
+func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer) (*Proxy, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -113,37 +112,28 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 	if total <= 0 {
 		total = 1 << 20
 	}
-	usageOptIn := cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage
 	return &Proxy{
-		router:   router,
-		clients:  clients,
-		cfg:      cfg,
-		log:      log,
-		affinity: newAffinity(cfg.Responses.AffinityTTL.Duration(), cfg.Responses.MaxAffinityEntries),
-		budget:   newBudget(total),
-		quota:    quota,
-		acc:      acc,
-		// FIX-04/N10: stream-usage injection is driven by whether a token
-		// quota is in effect, not just by accounting.enabled. With
-		// accounting disabled but quotas active, without injection every
-		// stream settles the whole output cap against the quota. A nil
-		// ensure_stream_usage (never configured) defaults to enabled when
-		// a quota is in effect, so a quota-only deployment does not have
-		// to set it explicitly; the serve-time fail-closed check still
-		// keys off the explicit (non-nil) value.
-		usageOptIn: usageOptIn,
-		ensureUsage: usageOptIn &&
-			(cfg.Accounting.Enabled || quotaConfigured),
+		router:     router,
+		clients:    clients,
+		cfg:        cfg,
+		log:        log,
+		affinity:   newAffinity(cfg.Responses.AffinityTTL.Duration(), cfg.Responses.MaxAffinityEntries),
+		budget:     newBudget(total),
+		quota:      quota,
+		acc:        acc,
+		usageOptIn: cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage,
 	}, nil
 }
 
-// keyQuotaConfigured reports whether this key carries a token budget.
-// The startup snapshot of "some key has a quota" cannot answer this: a
-// SIGHUP reload can introduce a budget on a key hours later, and a
-// stream admitted without stream_options.include_usage settles nothing
-// against it (PLAN §38, §39).
-func keyQuotaConfigured(k *auth.Key) bool {
-	return k != nil && (k.Limits.TokensPerHour > 0 || k.Limits.TokensPerDay > 0)
+// ensureStreamUsage decides whether a stream asks the backend for a
+// usage object (PLAN §38): whenever something will consume it — the
+// JSONL, or this key's token budget, without which the stream would
+// settle the whole output cap against the budget. It is decided per
+// request from the live key record: a budget can arrive with a SIGHUP
+// reload long after startup (PLAN §30, §39).
+func (p *Proxy) ensureStreamUsage(k *auth.Key) bool {
+	return p.usageOptIn && (p.cfg.Accounting.Enabled ||
+		k.Limits.TokensPerHour > 0 || k.Limits.TokensPerDay > 0)
 }
 
 // BeginDraining makes the proxy reject new inferences during graceful
@@ -623,12 +613,8 @@ func (p *Proxy) prepare(q *Req, o operation, t target) (outbound, *apiError) {
 	if m, ok := p.cfg.Models[t.model]; ok {
 		cap = m.Policy.MaxOutputTokens
 	}
-	// The startup snapshot is a floor, not the whole answer: a key whose
-	// token budget arrived with a SIGHUP reload needs injection too, or
-	// its streams settle nothing and the budget never advances.
-	ensureUsage := p.ensureUsage || (p.usageOptIn && keyQuotaConfigured(q.Key))
 	reservation, injected, err := prepareOutbound(
-		t.fields, o, cap, t.stream, ensureUsage, p.cfg.Accounting.UnknownUsageReservation)
+		t.fields, o, cap, t.stream, p.ensureStreamUsage(q.Key), p.cfg.Accounting.UnknownUsageReservation)
 	switch {
 	case errors.Is(err, errCapExceeded):
 		return ob, &errOutputCapExceeded
