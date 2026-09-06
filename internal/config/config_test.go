@@ -1579,6 +1579,29 @@ models:
 			wantErr: "retry.max_backoff",
 		},
 		{
+			// A relative socket path resolves against the working
+			// directory, and a sandbox rule naming it would grant a
+			// path the kernel never evaluates.
+			name: "relative unix listen address",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: unix
+    address: m.sock
+    mode: "0660"
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "must be an absolute path",
+		},
+		{
 			name: "seatbelt mode invalid",
 			yaml: `
 version: 1

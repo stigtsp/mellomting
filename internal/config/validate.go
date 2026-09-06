@@ -234,8 +234,15 @@ func validateServer(s *Server) []string {
 			errs = append(errs, "server: non-loopback TCP listener requires tls configuration or allow_plaintext_non_loopback: true")
 		}
 	case "unix":
-		if s.Listen.Address == "" {
+		// Absolute, like every other path the daemon is handed: the
+		// socket is resolved against the working directory otherwise,
+		// and a sandbox policy that names it by the configured spelling
+		// would grant a path the kernel never evaluates (PLAN §53.2).
+		switch {
+		case s.Listen.Address == "":
 			errs = append(errs, "server.listen.address: required for network unix")
+		case !filepath.IsAbs(s.Listen.Address):
+			errs = append(errs, fmt.Sprintf("server.listen.address: %q must be an absolute path", s.Listen.Address))
 		}
 		if mode, err := strconv.ParseUint(s.Listen.Mode, 8, 16); err != nil || mode == 0 || mode > 0o777 {
 			errs = append(errs, fmt.Sprintf("server.listen.mode: %q must be an octal mode like 0660", s.Listen.Mode))
