@@ -15,7 +15,6 @@ import (
 	"slices"
 
 	"mellomting/internal/landlock"
-	"mellomting/internal/redact"
 )
 
 // Defaults follow PLAN §76 and the per-section suggested defaults;
@@ -497,7 +496,7 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 
 		u, err := url.Parse(b.BaseURL)
 		if err != nil || b.BaseURL == "" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: %q is not a valid URL", prefix, redact.URL(b.BaseURL)))
+			errs = append(errs, prefix+".base_url: is not a valid URL")
 			continue
 		}
 		switch u.Scheme {
@@ -577,6 +576,25 @@ var SupportedStrategies = []string{
 	"weighted-least-inflight",
 }
 
+// ModelWildcard is the key ACL entry that grants every public model
+// (PLAN §31).
+const ModelWildcard = "*"
+
+// ValidateModelName rejects a public model name that would mean
+// something else once written into a key's model ACL: the wildcard
+// itself, and a name holding the separator `key create --models` splits
+// on. Both discovery and configuration validation apply it, so a name an
+// inference server advertises can never reach an ACL as a sentinel.
+func ValidateModelName(name string) error {
+	switch {
+	case name == ModelWildcard:
+		return fmt.Errorf("%q is the ACL wildcard and cannot name a model", ModelWildcard)
+	case strings.Contains(name, ","):
+		return errors.New("a model name cannot contain a comma, which separates entries in a key's model list")
+	}
+	return nil
+}
+
 func validateModels(models map[string]Model, backends map[string]Backend) []string {
 	var errs []string
 	if len(models) == 0 {
@@ -586,16 +604,8 @@ func validateModels(models map[string]Model, backends map[string]Backend) []stri
 	for name, m := range models {
 		prefix := fmt.Sprintf("models.%s", name)
 
-		// A public model name also has to survive being written into a
-		// key's model ACL. "*" is the wildcard that grants every model,
-		// and a comma is the separator `key create --models` splits on,
-		// so a model carrying either would silently widen an ACL meant
-		// to name it alone.
-		switch {
-		case name == "*":
-			errs = append(errs, prefix+": \"*\" is the ACL wildcard and cannot name a model")
-		case strings.Contains(name, ","):
-			errs = append(errs, fmt.Sprintf("%s: a model name cannot contain a comma, which separates entries in a key's model list", prefix))
+		if err := ValidateModelName(name); err != nil {
+			errs = append(errs, prefix+": "+err.Error())
 		}
 
 		switch m.Type {

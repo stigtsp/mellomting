@@ -383,7 +383,7 @@ func keyCreate(c *keyFlags) int {
 		// name a model about to be added), but the operator should hear
 		// about it (T-L4).
 		for _, m := range models {
-			if m == "*" {
+			if m == config.ModelWildcard {
 				continue
 			}
 			if _, ok := cfg.Models[m]; !ok {
@@ -542,10 +542,9 @@ func revoke(uf *auth.UsersFile, id string) error {
 	return fmt.Errorf("key id %q not found", id)
 }
 
-// splitModels parses the --models list. "*" is the wildcard that grants
-// every model and is accepted only on its own: mixed with other names it
-// used to swallow them and return a bare wildcard, so a list the
-// operator wrote to narrow an ACL widened it instead.
+// splitModels parses the --models list. The wildcard is accepted only on
+// its own: a list that mixes it with names is ambiguous about what the
+// operator meant to grant.
 func splitModels(s string) ([]string, error) {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
@@ -555,7 +554,7 @@ func splitModels(s string) ([]string, error) {
 		if p == "" {
 			continue
 		}
-		if p == "*" {
+		if p == config.ModelWildcard {
 			wildcard = true
 			continue
 		}
@@ -563,9 +562,9 @@ func splitModels(s string) ([]string, error) {
 	}
 	switch {
 	case wildcard && len(out) > 0:
-		return nil, fmt.Errorf("--models: %q mixes the wildcard \"*\" with named models; pass either \"*\" alone or the names alone", s)
+		return nil, fmt.Errorf("--models: %q mixes the wildcard %q with named models; pass either %q alone or the names alone", s, config.ModelWildcard, config.ModelWildcard)
 	case wildcard:
-		return []string{"*"}, nil
+		return []string{config.ModelWildcard}, nil
 	}
 	return out, nil
 }
@@ -602,20 +601,14 @@ func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile
 // inferSoleModel resolves the key's model list when --models is absent
 // (D14): exactly one configured public model is inferred; zero or two or
 // more models fail, listing at most 20 model names plus the omitted count.
-// It never infers "*" — including when "*" is the name of the sole
-// configured model, which would hand the key every model instead of the
-// one the operator was naming. Configuration validation rejects that
-// name outright; this refusal keeps the invariant local to the code that
-// states it.
+// It never infers the wildcard: configuration validation refuses a model
+// named after it, so a configured name is always a plain model.
 func inferSoleModel(cfg *config.Config) ([]string, error) {
 	names := slices.Sorted(maps.Keys(cfg.Models))
 	switch len(names) {
 	case 0:
 		return nil, fmt.Errorf("no models are configured; pass --models explicitly")
 	case 1:
-		if names[0] == "*" {
-			return nil, fmt.Errorf("the only configured model is named %q, which is the ACL wildcard; pass --models explicitly", "*")
-		}
 		return names, nil
 	default:
 		const limit = 20

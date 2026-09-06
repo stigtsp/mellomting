@@ -62,7 +62,7 @@ type Key struct {
 // The "*" wildcard is explicit and easy to spot in review (PLAN §77).
 func (k *Key) Allows(model string) bool {
 	for _, m := range k.Models {
-		if m == model || m == "*" {
+		if m == model || m == config.ModelWildcard {
 			return true
 		}
 	}

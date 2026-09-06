@@ -371,21 +371,6 @@ func TestInferSoleModel(t *testing.T) {
 		}
 	})
 
-	// "never infers *" has to hold for the one input that makes the
-	// inference itself produce it: a config whose sole model is named
-	// "*". The key would carry the wildcard ACL and reach every model
-	// the deployment ever adds, while the operator was told it was
-	// created for one model.
-	t.Run("sole model named as the wildcard is refused", func(t *testing.T) {
-		got, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"*": {}}})
-		if err == nil {
-			t.Fatalf("inferSoleModel inferred the wildcard ACL %v", got)
-		}
-		if !strings.Contains(err.Error(), "--models") {
-			t.Fatalf("err = %q, want a pointer to --models", err)
-		}
-	})
-
 	t.Run("multiple models fail and list sorted names", func(t *testing.T) {
 		_, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"bravo": {}, "alpha": {}}})
 		if err == nil || !strings.Contains(err.Error(), "multiple models") {

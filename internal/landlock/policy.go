@@ -1,12 +1,11 @@
 package landlock
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
-
-	"mellomting/internal/redact"
 )
 
 // Policy is the post-startup Landlock policy of the daemon (PLAN
@@ -76,24 +75,24 @@ func BackendPorts(baseURLs ...string) ([]uint16, error) {
 	for _, raw := range baseURLs {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
-			return nil, fmt.Errorf("%q is not a valid backend base URL", redact.URL(raw))
+			return nil, errors.New("backend base URL is not valid")
 		}
 		switch u.Scheme {
 		case "http", "https":
 		default:
-			return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redact.URL(raw), u.Scheme)
+			return nil, fmt.Errorf("backend base URL: unsupported scheme %q (want http or https)", u.Scheme)
 		}
 		port := u.Port()
 		if port == "" {
 			var ok bool
 			port, ok = DefaultPortForScheme(u.Scheme)
 			if !ok {
-				return nil, fmt.Errorf("%q: unsupported URL scheme %q (want http or https)", redact.URL(raw), u.Scheme)
+				return nil, fmt.Errorf("backend base URL: unsupported scheme %q (want http or https)", u.Scheme)
 			}
 		}
 		n, err := strconv.ParseUint(port, 10, 16)
 		if err != nil || n < 1 || n > 65535 {
-			return nil, fmt.Errorf("%q carries an invalid TCP port %q", redact.URL(raw), port)
+			return nil, fmt.Errorf("backend base URL carries an invalid TCP port %q", port)
 		}
 		if !seen[uint16(n)] {
 			seen[uint16(n)] = true

@@ -1,7 +1,6 @@
 package landlock
 
 import (
-	"mellomting/internal/redact"
 	"runtime"
 	"strings"
 	"testing"
@@ -56,10 +55,10 @@ func TestBackendPortsErrors(t *testing.T) {
 	}
 }
 
-// FIX-27 / T-M13: an error from BackendPorts must never echo the raw
-// base URL when it carries userinfo credentials, even though config
-// validation already forbids those (defence-in-depth for direct callers).
-func TestBackendPortsErrorRedactsUserinfo(t *testing.T) {
+// A BackendPorts error names what is wrong, never the URL it was given:
+// on validated configuration userinfo cannot occur, and a direct caller
+// must not have the credential echoed back at it either.
+func TestBackendPortsErrorNeverEchoesUserinfo(t *testing.T) {
 	for _, raw := range []string{
 		"http://user:secret@127.0.0.1:99999", // port mismatch
 		"http://user:secret@127.0.0.1:0",     // port mismatch
@@ -71,9 +70,6 @@ func TestBackendPortsErrorRedactsUserinfo(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "user:secret") {
 			t.Errorf("BackendPorts(%q) leaked userinfo: %v", raw, err)
-		}
-		if !strings.Contains(err.Error(), redact.Marker+"@") {
-			t.Errorf("BackendPorts(%q) did not redact: %v", raw, err)
 		}
 	}
 }
