@@ -53,10 +53,12 @@ func Profile(pol sandbox.Policy) string {
 		}
 	}
 	// The accounting log is opened once and appended to; the write
-	// grant is per-file, never per-directory.
+	// grant is per-file, never per-directory. Only the write itself is
+	// granted: file-write-flags is chflags(2), which nothing here
+	// calls.
 	for _, p := range pol.WriteFiles {
 		for _, path := range pathForms(p) {
-			b.WriteString("(allow file-write-data file-write-flags (literal " + quote(path) + "))\n")
+			b.WriteString("(allow file-write-data (literal " + quote(path) + "))\n")
 		}
 	}
 

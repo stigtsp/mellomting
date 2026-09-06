@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -165,19 +166,20 @@ func (c *compiled) apply() error {
 // process. It is used only to explain a refusal: nesting does not
 // always prevent a second profile, so it is not a capability answer.
 func alreadyConfined(syms symbols) bool {
-	if syms.check == 0 {
-		return false
-	}
 	r1, _, _ := syscall_syscall(syms.check, uintptr(os.Getpid()), 0, 0)
 	return int32(r1) == 1
 }
 
-// takeError renders and frees a libsandbox error string.
+// takeError renders and frees a libsandbox error string. The buffer is
+// libsandbox's, so freeing it is this side's job.
 func takeError(syms symbols, errbuf *byte) string {
 	if errbuf == nil {
 		return "no reason reported"
 	}
-	defer syscall_syscall(syms.freeError, uintptr(unsafe.Pointer(errbuf)), 0, 0)
+	// The conversion sits inside the deferred call rather than in the
+	// defer statement, so it is part of the call expression the unsafe
+	// rules are written about.
+	defer func() { syscall_syscall(syms.freeError, uintptr(unsafe.Pointer(errbuf)), 0, 0) }()
 	var n int
 	for p := unsafe.Pointer(errbuf); *(*byte)(p) != 0; n++ {
 		p = unsafe.Add(p, 1)
@@ -185,19 +187,10 @@ func takeError(syms symbols, errbuf *byte) string {
 	// libsandbox appends a multi-line backtrace of its own parser; the
 	// first line is the diagnosis and the rest is noise in a log.
 	msg := string(unsafe.Slice(errbuf, n))
-	if i := indexByte(msg, '\n'); i >= 0 {
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = msg[:i]
 	}
 	return msg
-}
-
-func indexByte(s string, c byte) int {
-	for i := range len(s) {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // Check probes for Seatbelt without applying any restriction: it
@@ -205,7 +198,10 @@ func indexByte(s string, c byte) int {
 // same compiler the real policy goes through.
 func Check() sandbox.Report {
 	r := sandbox.Report{Platform: runtime.GOOS, Backend: Backend}
-	c, err := compile("(version 1)\n(deny default)\n")
+	// The empty policy still carries the profile's skeleton, imports
+	// included: a macOS that no longer ships the baseline profile has
+	// to be reported here rather than discovered at Apply.
+	c, err := compile(Profile(sandbox.Policy{}))
 	if err != nil {
 		r.Reason = err.Error()
 		return r

@@ -3,7 +3,7 @@
 package seatbelt
 
 import (
-	"fmt"
+	"errors"
 	"runtime"
 
 	"mellomting/internal/sandbox"
@@ -23,5 +23,5 @@ func Check() sandbox.Report {
 // platform. It never silently succeeds: a caller in required mode must
 // treat this as a startup failure (PLAN §55, §57).
 func Apply(_ sandbox.Policy) error {
-	return fmt.Errorf("seatbelt is a macOS-only facility; it is not available on this platform")
+	return errors.New("seatbelt is a macOS-only facility; it is not available on this platform")
 }

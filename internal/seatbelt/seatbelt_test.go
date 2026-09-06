@@ -42,7 +42,7 @@ func TestProfileGrantsThePolicy(t *testing.T) {
 	for _, want := range []string{
 		`(import "bsd.sb")`,
 		`(allow file-read* (subpath "/etc/mellomting"))`,
-		`(allow file-write-data file-write-flags (literal "/var/log/mellomting/usage.jsonl"))`,
+		`(allow file-write-data (literal "/var/log/mellomting/usage.jsonl"))`,
 		`(allow network-inbound (local unix-socket (path-literal "/run/mellomting/mellomting.sock")))`,
 		`(allow file-write-unlink (literal "/run/mellomting/mellomting.sock"))`,
 		`(allow network-outbound (remote tcp "*:8001"))`,
