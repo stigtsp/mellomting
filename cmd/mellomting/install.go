@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"mellomting/internal/securefile"
@@ -35,11 +34,11 @@ var errAlreadyInstalled = errors.New("already installed")
 // Exit codes: 0 ok (including the already-installed no-op), 1 install
 // failure, 2 usage error.
 func installCmd(args []string) int {
-	flags := flag.NewFlagSet("mellomting install", flag.ContinueOnError)
-	prefix := flags.String("prefix", defaultInstallPrefix, "destination prefix: the binary is installed at <prefix>/bin/"+version.Name)
-	systemdInstall := flags.Bool("systemd", false, "also provision as a systemd service (Linux root): service user, config/log/state/run dirs, scaffold config.yaml, generated pepper and empty users.yaml (each if absent), unit, logrotate")
-	if err := flags.Parse(args); err != nil {
-		return 2
+	flags := commandFlags("install", "Install this binary. With --systemd, also prepare the service and configuration.\nExisting configuration and auth files are preserved; the service is not started.")
+	prefix := flags.String("prefix", defaultInstallPrefix, "install the binary in `DIR`/bin")
+	systemdInstall := flags.Bool("systemd", false, "install as a systemd service (Linux, root)")
+	if err := parseCommandFlags(flags, args); err != nil {
+		return flagExitCode(err)
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: install: unexpected arguments %q\n", flags.Args())

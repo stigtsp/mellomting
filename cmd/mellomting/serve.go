@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -53,11 +52,11 @@ type daemon struct {
 // Exit codes: 0 clean shutdown, 1 startup or shutdown failure,
 // 2 usage error.
 func serveCmd(args []string) int {
-	fs := flag.NewFlagSet("mellomting serve", flag.ContinueOnError)
+	fs := commandFlags("serve", "Run the proxy until interrupted. Restart to apply configuration changes.")
 	var configPath string
-	fs.StringVar(&configPath, "config", "", "configuration file path")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	fs.StringVar(&configPath, "config", "", configFlagHelp)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: serve: unexpected arguments %q\n", fs.Args())

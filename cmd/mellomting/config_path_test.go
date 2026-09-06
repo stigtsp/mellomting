@@ -115,7 +115,7 @@ models:
 }
 
 // TestConfigHelpNoLookup pins D1: --help performs no config-path lookup and
-// reports a usage error (exit 2) for every config-dependent command. This
+// succeeds for every config-dependent command. This
 // guards against an accidental lookup that would fail on a cwd with a
 // hostile ./config.yaml.
 func TestConfigHelpNoLookup(t *testing.T) {
@@ -136,8 +136,8 @@ func TestConfigHelpNoLookup(t *testing.T) {
 	for name, run := range commands {
 		t.Run(name, func(t *testing.T) {
 			code, _, _ := captureOutput(t, func() int { return run([]string{"--help"}) })
-			if code != 2 {
-				t.Fatalf("%s --help exit = %d (want 2)", name, code)
+			if code != 0 {
+				t.Fatalf("%s --help exit = %d (want 0)", name, code)
 			}
 		})
 	}

@@ -72,16 +72,16 @@ type initArguments struct {
 //
 // Exit codes: 0 ok, 1 platform/preflight failure, 2 usage error.
 func initCmd(args []string) int {
-	fs := flag.NewFlagSet("mellomting init", flag.ContinueOnError)
+	fs := commandFlags("init", "Create configuration and auth files from inference servers (Linux).\nExisting files are never overwritten.")
 	var servers serverList
 	var configPath, listen, landlockMode string
 	var dryRun bool
-	fs.Var(&servers, "server", "backend server URL or NAME=URL (repeatable)")
-	fs.StringVar(&configPath, "config", "", "config destination path")
-	fs.StringVar(&listen, "listen", defaultInitListen, "listener address")
-	fs.StringVar(&landlockMode, "landlock", landlock.ModeRequired, "landlock mode: required, best-effort, or disabled")
+	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
+	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
+	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
+	fs.StringVar(&landlockMode, "landlock", landlock.ModeRequired, "sandbox `MODE`: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -161,7 +161,7 @@ func runInit(args initArguments) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 1
 	}
-	if err := printInitCompletion(os.Stdout, args); err != nil {
+	if err := printInitCompletion(os.Stdout, args, len(aggregate.Models)); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
 		return 1
 	}
@@ -206,14 +206,18 @@ func printInitSummary(w io.Writer, aggregate discovery.Result) error {
 
 // printInitCompletion prints exactly one completion line and two next
 // commands (B9). It never prints pepper or credential contents.
-func printInitCompletion(w io.Writer, args initArguments) error {
-	if _, err := fmt.Fprintf(w, "initialized %s with %s and %s\n", args.ConfigPath, args.UsersPath, args.PepperPath); err != nil {
+func printInitCompletion(w io.Writer, args initArguments, modelCount int) error {
+	if _, err := fmt.Fprintf(w, "initialized %s\n", args.ConfigPath); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(w, "next:"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "  mellomting key create --config %s --name NAME --models MODEL\n", args.ConfigPath); err != nil {
+	modelsFlag := ""
+	if modelCount != 1 {
+		modelsFlag = " --models MODEL"
+	}
+	if _, err := fmt.Fprintf(w, "  mellomting key create --config %s --name local%s\n", args.ConfigPath, modelsFlag); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "  mellomting serve --config %s\n", args.ConfigPath); err != nil {

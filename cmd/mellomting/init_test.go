@@ -310,14 +310,14 @@ func TestInitCmd(t *testing.T) {
 
 	t.Run("help is side-effect-free", func(t *testing.T) {
 		withInitLandlock(t, supportedLandlockReport())
-		code, _, stderr := captureOutput(t, func() int {
+		code, stdout, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"-h"})
 		})
 		if code != 0 {
 			t.Fatalf("code = %d", code)
 		}
-		if !strings.Contains(stderr, "mellomting init") {
-			t.Fatalf("stderr = %q", stderr)
+		if stderr != "" || !strings.Contains(stdout, "mellomting init") {
+			t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
 		}
 	})
 
@@ -1368,7 +1368,7 @@ func TestInitEndToEnd(t *testing.T) {
 			"alpha: a",
 			"beta: a, b",
 			"gamma: b",
-			"initialized " + cfg + " with " + filepath.Join(dir, "users.yaml") + " and " + filepath.Join(dir, "auth.pepper"),
+			"initialized " + cfg,
 			"mellomting key create --config " + cfg,
 			"mellomting serve --config " + cfg,
 		} {

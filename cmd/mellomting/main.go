@@ -72,6 +72,9 @@ func subcommand(args []string, defaults string) (string, []string) {
 //
 // Exit codes: 0 ok, 1 invalid or unreadable configuration, 2 usage error.
 func configCmd(args []string) int {
+	if groupHelp(args, "config", "  check           Validate configuration\n  show-effective  Show configuration with defaults") {
+		return 0
+	}
 	sub, rest := subcommand(args, "check")
 	switch sub {
 	case "check", "show-effective":
@@ -80,11 +83,15 @@ func configCmd(args []string) int {
 		return 2
 	}
 
-	fs := flag.NewFlagSet("mellomting config "+sub, flag.ContinueOnError)
+	summary := "Validate configuration."
+	if sub == "show-effective" {
+		summary = "Show configuration with defaults."
+	}
+	fs := commandFlags("config "+sub, summary)
 	var configPath string
-	fs.StringVar(&configPath, "config", "", "configuration file path")
-	if err := fs.Parse(rest); err != nil {
-		return 2
+	fs.StringVar(&configPath, "config", "", configFlagHelp)
+	if err := parseCommandFlags(fs, rest); err != nil {
+		return flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: config %s: unexpected arguments %q\n", sub, fs.Args())
@@ -116,17 +123,20 @@ func configCmd(args []string) int {
 // With -config the configured security.landlock policy is enforced in the
 // result: mode required plus an unsupported or too-old kernel exits 1.
 func sandboxCmd(args []string) int {
+	if groupHelp(args, "sandbox", "  check  Check Landlock support and configured policy") {
+		return 0
+	}
 	sub, rest := subcommand(args, "check")
 	if sub != "check" {
 		fmt.Fprintf(os.Stderr, "mellomting: unknown sandbox subcommand %q (want check)\n", sub)
 		return 2
 	}
 
-	fs := flag.NewFlagSet("mellomting sandbox check", flag.ContinueOnError)
+	fs := commandFlags("sandbox check", "Check Landlock support and configured policy. Without a readable default config, report capability only.")
 	var configPath string
-	fs.StringVar(&configPath, "config", "", "configuration file for landlock mode/minimum_abi (optional)")
-	if err := fs.Parse(rest); err != nil {
-		return 2
+	fs.StringVar(&configPath, "config", "", configFlagHelp)
+	if err := parseCommandFlags(fs, rest); err != nil {
+		return flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: sandbox %s: unexpected arguments %q\n", sub, fs.Args())
@@ -199,6 +209,9 @@ func sandboxCmd(args []string) int {
 //
 // Exit codes: 0 ok, 1 load/validation failure or unknown id, 2 usage error.
 func keyCmd(args []string) int {
+	if groupHelp(args, "key", "  create   Create an API key\n  list     List keys\n  enable   Enable a key\n  disable  Disable a key\n  revoke   Permanently remove a key") {
+		return 0
+	}
 	sub, rest := subcommand(args, "list")
 	switch sub {
 	case "create", "list", "enable", "disable", "revoke":
@@ -208,7 +221,7 @@ func keyCmd(args []string) int {
 	}
 
 	c, code := keyParseFlags(sub, rest)
-	if code != 0 {
+	if c == nil {
 		return code
 	}
 
@@ -238,22 +251,29 @@ type keyFlags struct {
 }
 
 func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
-	fs := flag.NewFlagSet("mellomting key "+sub, flag.ContinueOnError)
+	summaries := map[string]string{
+		"create":  "Create an API key. Save it securely; it is printed only once.\nModel access is inferred only when one model is configured.",
+		"list":    "List keys and their status.",
+		"enable":  "Enable a key. Follow the printed reload or restart instruction.",
+		"disable": "Disable a key. Follow the printed reload or restart instruction.",
+		"revoke":  "Permanently remove a key. Follow the printed reload or restart instruction.",
+	}
+	fs := commandFlags("key "+sub, summaries[sub])
 	c := &keyFlags{}
-	fs.StringVar(&c.configPath, "config", "", "configuration file path")
+	fs.StringVar(&c.configPath, "config", "", configFlagHelp)
 	if sub == "create" {
-		fs.StringVar(&c.name, "name", "", "human-readable key name (required)")
-		fs.StringVar(&c.models, "models", "", "comma-separated model names, or * (optional; inferred when exactly one model is configured)")
-		fs.StringVar(&c.expires, "expires", "", "expiry as RFC3339 (optional)")
-		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "max simultaneous in-flight requests (0: apply default)")
+		fs.StringVar(&c.name, "name", "", "required `USERNAME`: 1–32 lowercase letters/digits, starting with a letter")
+		fs.StringVar(&c.models, "models", "", "comma-separated `MODELS`, or '*' for all models")
+		fs.StringVar(&c.expires, "expires", "", "expiry `TIMESTAMP` in RFC3339 format")
+		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "maximum concurrent requests (0: use default)")
 		fs.Float64Var(&c.requestsPerSecond, "requests-per-second", 0, "request rate limit (0: no rate limit)")
 		fs.IntVar(&c.burst, "burst", 0, "rate-limit burst (defaults to one second of rate)")
 	}
 	if sub == "enable" || sub == "disable" || sub == "revoke" {
-		fs.StringVar(&c.id, "id", "", "key id (required)")
+		fs.StringVar(&c.id, "id", "", "required key `ID`")
 	}
-	if err := fs.Parse(rest); err != nil {
-		return nil, 2
+	if err := parseCommandFlags(fs, rest); err != nil {
+		return nil, flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: %s: unexpected arguments %q\n", sub, fs.Args())
@@ -615,40 +635,18 @@ func inferSoleModel(cfg *config.Config) ([]string, error) {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `usage: mellomting <command> [flags]
+	fmt.Fprint(w, `Usage: mellomting <command> [flags]
 
-commands:
-  version                      print version information
-  help                         print this help
-  init --server URL|NAME=URL   prepare local config and auth files from
-                               explicitly supplied inference servers
-  config check                 validate configuration (exit 0 when valid)
-  config show-effective        print the effective configuration with defaults
-  sandbox check                report Landlock capability and policy result
-  key <subcommand>             offline API key management
+  init       Create configuration from inference servers
+  serve      Run the proxy
+  key        Manage API keys
+  usage      Report token usage
+  config     Check or inspect configuration
+  sandbox    Check Landlock support
+  install    Install the binary or systemd service
+  version    Show version
+  help       Show this help
 
-key subcommands:
-  key create   --name NAME [--models M[,M...]] [--expires RFC3339]
-               [--concurrent-requests N] [--requests-per-second R] [--burst B]
-               create a key and print it once; --models is optional and is
-               inferred when exactly one model is configured (never "*");
-               without limits flags a conservative concurrency default applies
-  key list                            list keys (id, name, models, status)
-  key enable  --id ID                 re-enable a key
-  key disable --id ID                 disable a key
-  key revoke  --id ID                 permanently remove a key
-  all key subcommands accept -config PATH (default: mellomting config path)
-
-  serve -config PATH           run the proxy daemon (default: config path)
-  usage report                 report per-key token/request usage
-  install [--prefix DIR]       copy this binary to DIR/bin (default DIR:
-                                /usr/local): atomic replace, mode 0755,
-                                symlink destinations refused
-  install --systemd            also provision as a systemd service (Linux
-                                root): service user, config/log/state/run
-                                dirs, scaffold config.yaml, generated
-                                pepper, and empty users.yaml (each if
-                                absent), hardened unit + logrotate, and
-                                a daemon-reload
- `)
+Run 'mellomting <command> --help' for details.
+`)
 }

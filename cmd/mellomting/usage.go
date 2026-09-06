@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -13,6 +12,9 @@ import (
 //
 // Exit codes: 0 ok, 1 configuration or report error, 2 usage error.
 func usageCmd(args []string) int {
+	if groupHelp(args, "usage", "  report  Report token and request totals by key") {
+		return 0
+	}
 	sub, rest := subcommand(args, "report")
 	switch sub {
 	case "report":
@@ -21,11 +23,11 @@ func usageCmd(args []string) int {
 		return 2
 	}
 
-	fs := flag.NewFlagSet("mellomting usage "+sub, flag.ContinueOnError)
+	fs := commandFlags("usage "+sub, "Report token and request totals by key. Requires accounting.enabled: true.")
 	var configPath string
-	fs.StringVar(&configPath, "config", "", "configuration file path")
-	if err := fs.Parse(rest); err != nil {
-		return 2
+	fs.StringVar(&configPath, "config", "", configFlagHelp)
+	if err := parseCommandFlags(fs, rest); err != nil {
+		return flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: usage %s: unexpected arguments %q\n", sub, fs.Args())
