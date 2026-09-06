@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -372,5 +374,68 @@ func TestKeyParseFlagsValid(t *testing.T) {
 	c, code = keyParseFlags("create", []string{"x", "-expires", "2027-03-04"})
 	if code != 0 || c.expires == nil || !c.expires.Equal(time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("expires = %v (exit %d), want 2027-03-04T00:00:00Z", c.expires, code)
+	}
+}
+
+// `sandbox check` answers what `serve` would do on this host, which is
+// the capability and the configured mode together. Reporting that a
+// policy will be enforced while the mode says otherwise sends an
+// operator away believing a host is confined when nothing confines it.
+func TestSandboxCheckResultFollowsMode(t *testing.T) {
+	dir := t.TempDir()
+	write := func(t *testing.T, mode string) string {
+		t.Helper()
+		section := "landlock"
+		if runtime.GOOS == "darwin" {
+			section = "seatbelt"
+		}
+		cfg := fmt.Sprintf(`version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/m.sock
+    mode: "0660"
+auth:
+  users_file: %s/users.yaml
+  pepper_file: %s/auth.pepper
+security:
+  %s:
+    mode: %s
+servers:
+  a:
+    url: http://127.0.0.1:8001
+models:
+  m:
+    upstream_model: Q
+    servers: [a]
+`, dir, dir, section, mode)
+		path := filepath.Join(dir, mode+".yaml")
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	code, out, _ := captureOutput(t, func() int {
+		return sandboxCmd([]string{"check", "-config", write(t, "disabled")})
+	})
+	if code != 0 {
+		t.Fatalf("disabled exit = %d", code)
+	}
+	if !strings.Contains(out, "not enforced (mode disabled)") {
+		t.Fatalf("a disabled sandbox must not report that it will be enforced:\n%s", out)
+	}
+
+	// Whatever this host can do, the answer for an enforcing mode must
+	// agree with it rather than with the mode alone.
+	code, out, _ = captureOutput(t, func() int {
+		return sandboxCmd([]string{"check", "-config", write(t, "best-effort")})
+	})
+	if code != 0 {
+		t.Fatalf("best-effort exit = %d", code)
+	}
+	enforceable := platformSandbox(&config.Config{}).check().Supported
+	if enforceable != strings.Contains(out, "will enforce") {
+		t.Fatalf("host enforceable=%v but result says otherwise:\n%s", enforceable, out)
 	}
 }

@@ -195,7 +195,12 @@ func sandboxCmd(args []string) int {
 	if report.Supported {
 		reason = fmt.Sprintf("kernel ABI %d below minimum %d", report.KernelABI, minABI)
 	}
+	// The result is what `serve` would do on this host, which is the
+	// mode and the capability together: a host that can enforce a
+	// policy still enforces nothing when the mode says not to.
 	switch {
+	case mode == sandbox.ModeDisabled:
+		fmt.Println("  result:            not enforced (mode disabled)")
 	case ok && isLandlock:
 		fmt.Printf("  result:            ok (will enforce Landlock ABI %d)\n", min(report.KernelABI, landlock.MaxABI))
 	case ok:
@@ -203,7 +208,7 @@ func sandboxCmd(args []string) int {
 	case mode == "":
 		fmt.Printf("  result:            report only (%s)\n", reason)
 	case mode != sandbox.ModeRequired:
-		fmt.Printf("  result:            not enforced (mode %s)\n", mode)
+		fmt.Printf("  result:            not enforced (%s)\n", reason)
 	default:
 		fmt.Printf("  result:            FAIL (%s)\n", reason)
 		return 1
