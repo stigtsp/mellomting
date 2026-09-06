@@ -359,6 +359,19 @@ func TestScaffoldFailsValidationUntilCompleted(t *testing.T) {
 	}
 }
 
+func TestScaffoldCompletedExample(t *testing.T) {
+	// Uncommenting the two example entries should be enough to validate.
+	completed := strings.ReplaceAll(string(ConfigTemplate()), "\n  # ", "\n  ")
+	cfg, err := config.Parse([]byte(completed))
+	if err != nil {
+		t.Fatalf("completed scaffold: %v", err)
+	}
+	if cfg.Security.Landlock.Mode != "required" || cfg.Security.Landlock.MinimumABI != 8 ||
+		cfg.Security.BackendNetwork.Mode != "loopback-only" {
+		t.Fatalf("scaffold security settings changed: %+v", cfg.Security)
+	}
+}
+
 func TestEnsureDir(t *testing.T) {
 	t.Run("creates", func(t *testing.T) {
 		dir := t.TempDir()
