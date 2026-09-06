@@ -8,24 +8,24 @@ or subcommand; there is no automatic lookup in the working directory.
 ## API keys
 
 ```sh
-mellomting key create --name ci --models my-model
+mellomting key create NAME
 mellomting key list
-mellomting key disable --id ID
-mellomting key enable --id ID
-mellomting key revoke --id ID
+mellomting key disable ID
+mellomting key enable ID
+mellomting key revoke ID
 ```
 
-The username (`--name`) must start with a lowercase letter and contain only
-lowercase letters and digits, up to 32 characters. Several keys may share a
-username. `--models` accepts comma-separated public names, or a quoted `'*'`
-for all models. It can be omitted when exactly one model is configured.
-Use `--expires` with an RFC3339 timestamp to set an expiry.
+A key may use every model unless `--models` narrows it to a comma-separated
+list of public names. The name must start with a lowercase letter and contain
+only lowercase letters, digits and underscores, up to 32 characters; several
+keys may share one. `--expires` takes a date (`2027-01-01`) or an RFC 3339
+timestamp.
 
 `key create` prints only the new key and a newline to stdout; confirmation
 and apply instructions go to stderr. To capture it in a script:
 
 ```sh
-KEY=$(mellomting key create --name ci --models my-model)
+KEY=$(mellomting key create ci --models my-model)
 ```
 
 Save the key securely. It cannot be retrieved later. Keys are stored as

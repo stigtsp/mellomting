@@ -26,7 +26,7 @@ Create a key and save it somewhere safe; it is shown only once. With one
 configured model, model access is selected automatically:
 
 ```sh
-bin/mellomting key create --config ./config.yaml --name local
+bin/mellomting key create local --config ./config.yaml
 ```
 
 If there are several models, add `--models MODEL`, using a name from the
@@ -57,7 +57,7 @@ On Linux with systemd, run from the repository after building:
 sudo bin/mellomting install --systemd
 sudo editor /etc/mellomting/config.yaml
 sudo /usr/local/bin/mellomting config check
-sudo /usr/local/bin/mellomting key create --name production
+sudo /usr/local/bin/mellomting key create production
 sudo systemctl enable --now mellomting
 ```
 

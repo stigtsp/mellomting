@@ -5,13 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
 	"mellomting/internal/auth"
-	"mellomting/internal/config"
 )
 
 var keyRe = regexp.MustCompile(`sk-[a-z][a-z0-9_]{0,31}-[0-9a-f]{16}-[0-9a-f]{64}`)
@@ -88,7 +86,7 @@ func TestKeyLifecycle(t *testing.T) {
 
 	// Create a key.
 	code, out, errOut := runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "tester", "-models", "qwen-coder")
+		"key", "create", "tester", "-config", cfg, "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
 	}
@@ -114,20 +112,20 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 
 	// Disable / re-enable.
-	if code, _, _ := runCLI(t, bin, dir, "key", "disable", "-config", cfg, "-id", id); code != 0 {
+	if code, _, _ := runCLI(t, bin, dir, "key", "disable", id, "-config", cfg); code != 0 {
 		t.Fatalf("disable exit = %d", code)
 	}
 	_, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
 	if !strings.Contains(out, "disabled") {
 		t.Fatalf("not disabled: %q", out)
 	}
-	if code, _, _ := runCLI(t, bin, dir, "key", "enable", "-config", cfg, "-id", id); code != 0 {
+	if code, _, _ := runCLI(t, bin, dir, "key", "enable", id, "-config", cfg); code != 0 {
 		t.Fatalf("enable exit = %d", code)
 	}
 
 	// Second key with wildcard, then revoke it.
 	code, out, _ = runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "wild", "-models", "*",
+		"key", "create", "wild", "-config", cfg, "-models", "*",
 		"-expires", "2030-01-01T00:00:00Z")
 	if code != 0 {
 		t.Fatalf("create wildcard exit = %d", code)
@@ -137,7 +135,7 @@ func TestKeyLifecycle(t *testing.T) {
 		t.Fatalf("no raw key printed: %q", out)
 	}
 	id2 := strings.Split(key2, "-")[2]
-	if code, _, _ := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id2); code != 0 {
+	if code, _, _ := runCLI(t, bin, dir, "key", "revoke", id2, "-config", cfg); code != 0 {
 		t.Fatalf("revoke exit = %d", code)
 	}
 	_, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
@@ -160,11 +158,11 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 
 	// Error paths.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", "NOPE"); code != 1 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "NOPE", "-config", cfg); code != 1 {
 		t.Fatalf("revoke unknown exit = %d stderr=%q", code, errOut)
 	}
 	if code, _, _ := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-models", "x"); code != 2 {
-		t.Fatalf("create without name exit = %d (want 2)", code)
+		t.Fatalf("create without NAME exit = %d (want 2)", code)
 	}
 	if code, _, _ := runCLI(t, bin, dir, "key", "bogus"); code != 2 {
 		t.Fatalf("unknown subcommand exit = %d (want 2)", code)
@@ -179,7 +177,7 @@ func TestKeyCreateUnknownModelWarns(t *testing.T) {
 	cfg := filepath.Join(dir, "config.yaml")
 
 	code, _, errOut := runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "ahead", "-models", "does-not-exist")
+		"key", "create", "ahead", "-config", cfg, "-models", "does-not-exist")
 	if code != 0 {
 		t.Fatalf("create with unknown model exit = %d (want 0)", code)
 	}
@@ -191,7 +189,7 @@ func TestKeyCreateUnknownModelWarns(t *testing.T) {
 	// landlock reload warning may still appear: the fixture config
 	// defaults to landlock.mode: required).
 	code, _, errOut = runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "known", "-models", "qwen-coder")
+		"key", "create", "known", "-config", cfg, "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create with known model exit = %d", code)
 	}
@@ -208,7 +206,7 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	cfg := filepath.Join(dir, "config.yaml")
 
 	code, out, _ := runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "solo", "-models", "qwen-coder")
+		"key", "create", "solo", "-config", cfg, "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
 	}
@@ -219,7 +217,7 @@ func TestKeyRevokeLastKey(t *testing.T) {
 	id := strings.Split(key, "-")[2]
 
 	// Revoking the only key must not fail with "at least one key".
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", id, "-config", cfg); code != 0 {
 		t.Fatalf("revoke last key exit = %d stderr=%q", code, errOut)
 	}
 	if code, out, _ := runCLI(t, bin, dir, "key", "list", "-config", cfg); code != 0 || !strings.Contains(out, "no keys") {
@@ -241,7 +239,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 	// D14: create is script-safe — stdout is the raw key and a trailing
 	// newline only; the apply instruction goes to stderr.
 	code, out, errOut := runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "warn", "-models", "qwen-coder")
+		"key", "create", "warn", "-config", cfg, "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create exit = %d", code)
 	}
@@ -262,7 +260,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 
 	// The same instruction appears on a successful revoke, and stays
 	// concise (D16): no design rationale or mechanism inventory.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg, "-id", id); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", id, "-config", cfg); code != 0 {
 		t.Fatalf("revoke exit = %d stderr=%q", code, errOut)
 	} else if !strings.Contains(errOut, "Reload Mellomting to apply it") {
 		t.Fatalf("no apply instruction on revoke: stderr=%q", errOut)
@@ -287,7 +285,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, errOut = runCLI(t, bin, dir,
-		"key", "create", "-config", bePath, "-name", "warn2", "-models", "qwen-coder")
+		"key", "create", "warn2", "-config", bePath, "-models", "qwen-coder")
 	if code != 0 {
 		t.Fatalf("create (best-effort) exit = %d", code)
 	}
@@ -302,7 +300,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 		t.Fatalf("no raw key printed: %q", out)
 	}
 	id = strings.Split(id, "-")[2]
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", bePath, "-id", id); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", id, "-config", bePath); code != 0 {
 		t.Fatalf("revoke (best-effort) exit = %d stderr=%q", code, errOut)
 	} else if strings.Contains(errOut, "landlock") {
 		t.Fatalf("the apply instruction must not mention landlock: stderr=%q", errOut)
@@ -316,7 +314,7 @@ func TestKeyCreateLimits(t *testing.T) {
 	cfg := filepath.Join(dir, "config.yaml")
 
 	code, out, _ := runCLI(t, bin, dir,
-		"key", "create", "-config", cfg, "-name", "limited",
+		"key", "create", "limited", "-config", cfg,
 		"-models", "qwen-coder",
 		"-concurrent-requests", "2", "-requests-per-second", "5", "-burst", "10")
 	if code != 0 {
@@ -345,61 +343,12 @@ func TestKeyCreateLimits(t *testing.T) {
 		{"-burst", "-1"},
 	} {
 		code, _, _ := runCLI(t, bin, dir, append([]string{
-			"key", "create", "-config", cfg, "-name", "neg", "-models", "x",
+			"key", "create", "neg", "-config", cfg, "-models", "x",
 		}, args...)...)
 		if code != 2 {
 			t.Fatalf("negative limit %v exit = %d (want 2)", args, code)
 		}
 	}
-}
-
-// D14: inferSoleModel resolves --models when it is absent — exactly one
-// configured model is inferred, zero or two-or-more fail (listing at most 20
-// names plus the omitted count), and "*" is never inferred.
-func TestInferSoleModel(t *testing.T) {
-	t.Run("zero models", func(t *testing.T) {
-		_, err := inferSoleModel(&config.Config{Models: map[string]config.Model{}})
-		if err == nil || !strings.Contains(err.Error(), "no models") {
-			t.Fatalf("err = %v, want no models", err)
-		}
-	})
-
-	t.Run("single model inferred", func(t *testing.T) {
-		got, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"only": {}}})
-		if err != nil || !reflect.DeepEqual(got, []string{"only"}) {
-			t.Fatalf("got %v err %v", got, err)
-		}
-	})
-
-	t.Run("multiple models fail and list sorted names", func(t *testing.T) {
-		_, err := inferSoleModel(&config.Config{Models: map[string]config.Model{"bravo": {}, "alpha": {}}})
-		if err == nil || !strings.Contains(err.Error(), "multiple models") {
-			t.Fatalf("err = %v, want multiple models", err)
-		}
-		if !strings.Contains(err.Error(), "alpha, bravo") {
-			t.Fatalf("err = %q, want sorted names", err)
-		}
-		if strings.Contains(err.Error(), "*") {
-			t.Fatalf("err = %q must not suggest *", err)
-		}
-	})
-
-	t.Run("more than 20 models are truncated", func(t *testing.T) {
-		m := make(map[string]config.Model, 25)
-		for i := range 25 {
-			m[fmt.Sprintf("m%02d", i)] = config.Model{}
-		}
-		_, err := inferSoleModel(&config.Config{Models: m})
-		if err == nil || !strings.Contains(err.Error(), "and 5 more") {
-			t.Fatalf("err = %v, want omitted count", err)
-		}
-		if !strings.Contains(err.Error(), "config show-effective") {
-			t.Fatalf("err = %q, want show-effective pointer", err)
-		}
-		if strings.Contains(err.Error(), "m24") {
-			t.Fatalf("err = %q must omit the 25th model", err)
-		}
-	})
 }
 
 // D18: chooseKeyID retries a key-ID collision at most maxAttempts times and
@@ -482,7 +431,7 @@ func TestKeyCreateRejectsBadUsername(t *testing.T) {
 	// "_a" pins that the underscore is legal only after the first
 	// character, which must still be a letter.
 	for _, name := range []string{"Bad", "1abc", "_a", "a-b", strings.Repeat("a", 33), ""} {
-		code, _, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-name", name, "-models", "qwen-coder")
+		code, _, errOut := runCLI(t, bin, dir, "key", "create", name, "-config", cfg, "-models", "qwen-coder")
 		if code != 2 {
 			t.Fatalf("--name %q: exit = %d, want 2 (stderr=%q)", name, code, errOut)
 		}
@@ -492,74 +441,44 @@ func TestKeyCreateRejectsBadUsername(t *testing.T) {
 	}
 }
 
-// D14: key create with no --models infers the single configured model.
-func TestKeyCreateInfersSoleModel(t *testing.T) {
+// Without --models a key may use every model: the wildcard is the
+// default, written explicitly into the users file so a review sees it.
+func TestKeyCreateDefaultsToAllModels(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")
 
-	code, out, _ := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-name", "inferred")
+	code, out, errOut := runCLI(t, bin, dir, "key", "create", "everything", "-config", cfg)
 	if code != 0 {
-		t.Fatalf("create (no --models) exit = %d", code)
+		t.Fatalf("create (no --models) exit = %d stderr=%q", code, errOut)
 	}
 	if keyRe.FindString(out) == "" {
 		t.Fatalf("no raw key printed: %q", out)
 	}
-
-	// The inferred key must be scoped to the sole configured model.
-	code, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
-	if code != 0 || !strings.Contains(out, "qwen-coder") {
-		t.Fatalf("list exit=%d out=%q, want qwen-coder", code, out)
+	if !strings.Contains(errOut, "for all models") {
+		t.Fatalf("confirmation must say what was granted: %q", errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "users.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `- '*'`) && !strings.Contains(string(data), `- "*"`) {
+		t.Fatalf("users file must carry the explicit wildcard: %s", data)
 	}
 }
 
-// D14: with two or more configured models, key create without --models fails
-// (usage error) and lists the model names; it writes no key.
-func TestKeyCreateRefusesToInferMultiple(t *testing.T) {
-	bin := buildCLI(t)
-	dir := t.TempDir()
-	cfg := `version: 1
+// The operand may come before or after the flags: both spellings are
+// what an operator will type.
+func TestKeyOperandPosition(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
 
-server:
-  listen:
-    network: unix
-    address: /run/mellomting/mellomting.sock
-    mode: "0660"
-
-auth:
-  users_file: ` + dir + `/users.yaml
-  pepper_file: ` + dir + `/auth.pepper
-
-servers:
-  qwen-a:
-    url: http://127.0.0.1:8001
-
-models:
-  alpha-model:
-    type: generation
-    servers:
-      - qwen-a
-  bravo-model:
-    type: generation
-    servers:
-      - qwen-a
-`
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
+	if code, out, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfg, "-models", "qwen-coder", "after"); code != 0 || keyRe.FindString(out) == "" {
+		t.Fatalf("operand after flags: exit=%d out=%q stderr=%q", code, out, errOut)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "auth.pepper"),
-		[]byte("test-pepper-long-enough-16b+"), 0o600); err != nil {
-		t.Fatal(err)
+	if code, _, errOut := runCLI(t, bin, dir, "key", "create", "before", "extra", "-config", cfg); code != 2 || !strings.Contains(errOut, "unexpected arguments") {
+		t.Fatalf("two operands: exit=%d stderr=%q", code, errOut)
 	}
-
-	code, _, errOut := runCLI(t, bin, dir, "key", "create", "-config", cfgPath, "-name", "multi")
-	if code != 2 {
-		t.Fatalf("create (multiple models, no --models) exit = %d (want 2)", code)
-	}
-	if !strings.Contains(errOut, "alpha-model") || !strings.Contains(errOut, "bravo-model") {
-		t.Fatalf("stderr missing model names: %q", errOut)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "users.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("users.yaml must not be created on inference failure")
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfg); code != 2 || !strings.Contains(errOut, "missing ID") {
+		t.Fatalf("revoke without ID: exit=%d stderr=%q", code, errOut)
 	}
 }

@@ -356,7 +356,7 @@ func TestSystemdNextSteps(t *testing.T) {
 		for _, want := range []string{
 			"Mellomting installed.",
 			"editor /etc/mellomting/config.yaml",
-			"key create --name production",
+			"key create production",
 			"systemctl enable --now " + systemd.UnitName,
 		} {
 			if !strings.Contains(got, want) {

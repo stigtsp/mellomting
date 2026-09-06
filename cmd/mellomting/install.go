@@ -110,7 +110,7 @@ func systemdNextSteps(binaryPath string, r systemd.Report) string {
 	b.WriteString("Mellomting installed.\n\n")
 	b.WriteString("Next:\n")
 	fmt.Fprintf(&b, "  1. Run: sudo editor %s\n", systemd.ConfigPath)
-	fmt.Fprintf(&b, "  2. Run: sudo %s key create --name production\n", binaryPath)
+	fmt.Fprintf(&b, "  2. Run: sudo %s key create production\n", binaryPath)
 	fmt.Fprintf(&b, "  3. Run: sudo systemctl enable --now %s\n", systemd.UnitName)
 	return b.String()
 }

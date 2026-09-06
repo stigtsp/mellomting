@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"mellomting/internal/config"
 )
@@ -113,7 +114,9 @@ func TestSplitModels(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{in: "", want: nil},
+		// An explicitly empty list would write a key that can reach
+		// nothing, silently.
+		{in: "", wantErr: true},
 		{in: "a", want: []string{"a"}},
 		{in: " a , b ", want: []string{"a", "b"}},
 		{in: "a,,b", want: []string{"a", "b"}},
@@ -321,11 +324,11 @@ func TestKeyParseFlagsErrors(t *testing.T) {
 		args []string
 	}{
 		{"missing name", "create", nil},
-		{"invalid expires", "create", []string{"-name", "x", "-models", "m", "-expires", "not-a-date"}},
-		{"negative concurrent", "create", []string{"-name", "x", "-models", "m", "-concurrent-requests", "-1"}},
-		{"negative rps", "create", []string{"-name", "x", "-models", "m", "-requests-per-second", "-1"}},
-		{"negative burst", "create", []string{"-name", "x", "-models", "m", "-burst", "-1"}},
-		{"unexpected positional", "create", []string{"-name", "x", "-models", "m", "extra"}},
+		{"invalid expires", "create", []string{"x", "-models", "m", "-expires", "not-a-date"}},
+		{"negative concurrent", "create", []string{"x", "-models", "m", "-concurrent-requests", "-1"}},
+		{"negative rps", "create", []string{"x", "-models", "m", "-requests-per-second", "-1"}},
+		{"negative burst", "create", []string{"x", "-models", "m", "-burst", "-1"}},
+		{"unexpected positional", "create", []string{"x", "-models", "m", "extra"}},
 		{"missing id", "revoke", nil},
 		{"missing id enable", "enable", nil},
 		{"missing id disable", "disable", nil},
@@ -344,9 +347,9 @@ func TestKeyParseFlagsErrors(t *testing.T) {
 }
 
 // TestKeyParseFlagsValid pins the happy path: valid create flags parse
-// without error and mark limits as explicitly set.
+// without error, and --models defaults to the wildcard.
 func TestKeyParseFlagsValid(t *testing.T) {
-	c, code := keyParseFlags("create", []string{"-name", "x", "-models", "a, b", "-concurrent-requests", "4"})
+	c, code := keyParseFlags("create", []string{"x", "-models", "a, b", "-concurrent-requests", "4"})
 	if code != 0 {
 		t.Fatalf("key create valid flags exit = %d", code)
 	}
@@ -354,18 +357,20 @@ func TestKeyParseFlagsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.limitsSet || c.concurrentRequests != 4 || len(parsed) != 2 {
+	if c.operand != "x" || c.concurrentRequests != 4 || len(parsed) != 2 {
 		t.Fatalf("parsed flags = %+v", c)
 	}
 
-	// D14: --models is optional at the flag level; inference is
-	// config-dependent and happens later, so an absent --models must parse
-	// cleanly.
-	c, code = keyParseFlags("create", []string{"-name", "x"})
+	c, code = keyParseFlags("create", []string{"x"})
 	if code != 0 {
 		t.Fatalf("key create without --models must parse: exit = %d", code)
 	}
-	if c.models != "" {
-		t.Fatalf("models should be empty for inference, got %q", c.models)
+	if c.models != config.ModelWildcard {
+		t.Fatalf("models = %q, want the wildcard default", c.models)
+	}
+	// A bare date expires at the start of that day, UTC.
+	c, code = keyParseFlags("create", []string{"x", "-expires", "2027-03-04"})
+	if code != 0 || c.expires == nil || !c.expires.Equal(time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("expires = %v (exit %d), want 2027-03-04T00:00:00Z", c.expires, code)
 	}
 }

@@ -1237,7 +1237,7 @@ models:
 	// Disable key A via the CLI, then SIGHUP: key A is rejected on the
 	// next request without a restart, key B is unaffected, the process
 	// survives.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "disable", "-config", cfgPath, "-id", idA); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "disable", idA, "-config", cfgPath); code != 0 {
 		t.Fatalf("key disable exit = %d stderr=%q", code, errOut)
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
@@ -1250,7 +1250,7 @@ models:
 	}
 
 	// Re-enable key A and reload again: the change applies again.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "enable", "-config", cfgPath, "-id", idA); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "enable", idA, "-config", cfgPath); code != 0 {
 		t.Fatalf("key enable exit = %d stderr=%q", code, errOut)
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
@@ -1259,7 +1259,7 @@ models:
 	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 200)
 
 	// Revoke key B and reload: key B is rejected live, key A still works.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfgPath, "-id", idB); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", idB, "-config", cfgPath); code != 0 {
 		t.Fatalf("key revoke B exit = %d stderr=%q", code, errOut)
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
@@ -1270,7 +1270,7 @@ models:
 
 	// Revoke the last key and reload: the daemon survives and fails
 	// closed (every request is 401) until an operator adds a key again.
-	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", "-config", cfgPath, "-id", idA); code != 0 {
+	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", idA, "-config", cfgPath); code != 0 {
 		t.Fatalf("key revoke last exit = %d stderr=%q", code, errOut)
 	}
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {

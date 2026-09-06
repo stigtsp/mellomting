@@ -1,13 +1,12 @@
 package main
 
 import (
-	"flag"
+	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"mellomting/internal/auth"
@@ -207,9 +206,13 @@ func sandboxCmd(args []string) int {
 // keyCmd runs the offline key-management subcommands (PLAN §29). The daemon
 // treats the users file as read-only; only this CLI rewrites it.
 //
+//	mellomting key create NAME [flags]
+//	mellomting key list
+//	mellomting key enable|disable|revoke ID
+//
 // Exit codes: 0 ok, 1 load/validation failure or unknown id, 2 usage error.
 func keyCmd(args []string) int {
-	if groupHelp(args, "key", "  create   Create an API key\n  list     List keys\n  enable   Enable a key\n  disable  Disable a key\n  revoke   Permanently remove a key") {
+	if groupHelp(args, "key", "  create NAME  Create an API key\n  list         List keys\n  enable ID    Enable a key\n  disable ID   Disable a key\n  revoke ID    Permanently remove a key") {
 		return 0
 	}
 	sub, rest := subcommand(args, "list")
@@ -230,112 +233,119 @@ func keyCmd(args []string) int {
 		return keyCreate(c)
 	case "list":
 		return keyList(c)
-	case "enable", "disable":
-		return keySetEnabled(c, sub == "enable")
-	case "revoke":
+	case "enable":
+		return keySetEnabled(c, sub, true)
+	case "disable":
+		return keySetEnabled(c, sub, false)
+	default:
 		return keyRevoke(c)
 	}
-	return 2
 }
 
+// keyFlags is one parsed key subcommand. operand is the NAME of a key to
+// create or the ID of a key to enable, disable, or revoke.
 type keyFlags struct {
 	configPath         string
-	name               string
+	operand            string
 	models             string
-	expires            string
-	id                 string
+	expires            *time.Time
 	concurrentRequests int
 	requestsPerSecond  float64
 	burst              int
-	limitsSet          bool
 }
+
+// keyOperand names the positional argument of each subcommand; list
+// takes none.
+var keyOperand = map[string]string{"create": "NAME", "enable": "ID", "disable": "ID", "revoke": "ID"}
 
 func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	var summary string
 	switch sub {
 	case "create":
-		summary = "Create an API key. Save it securely; it is printed only once.\nModel access is inferred only when one model is configured."
+		summary = "Create an API key for NAME. The key is printed once, to stdout.\nIt may use every model unless --models narrows it."
 	case "list":
 		summary = "List keys and their status."
 	case "enable":
-		summary = "Enable a key. Follow the printed reload instruction."
+		summary = "Enable a key."
 	case "disable":
-		summary = "Disable a key. Follow the printed reload instruction."
+		summary = "Disable a key."
 	case "revoke":
-		summary = "Permanently remove a key. Follow the printed reload instruction."
+		summary = "Permanently remove a key."
 	}
-	fs := commandFlags("key "+sub, summary)
+	operand := keyOperand[sub]
+	fs := commandFlags(strings.TrimSpace("key "+sub+" "+operand), summary)
 	c := &keyFlags{}
 	fs.StringVar(&c.configPath, "config", "", configFlagHelp)
+	var expires string
 	if sub == "create" {
-		fs.StringVar(&c.name, "name", "", "required `USERNAME`: 1–32 lowercase letters, digits or underscores, starting with a letter")
-		fs.StringVar(&c.models, "models", "", "comma-separated `MODELS`, or '*' for all models")
-		fs.StringVar(&c.expires, "expires", "", "expiry `TIMESTAMP` in RFC3339 format")
+		fs.StringVar(&c.models, "models", config.ModelWildcard, "comma-separated `MODELS` the key may use; * means all")
+		fs.StringVar(&expires, "expires", "", "expiry `DATE`: YYYY-MM-DD or RFC3339")
 		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "maximum concurrent requests (0: use default)")
 		fs.Float64Var(&c.requestsPerSecond, "requests-per-second", 0, "request rate limit (0: no rate limit)")
 		fs.IntVar(&c.burst, "burst", 0, "rate-limit burst (defaults to one second of rate)")
 	}
-	if sub == "enable" || sub == "disable" || sub == "revoke" {
-		fs.StringVar(&c.id, "id", "", "required key `ID`")
+
+	// The operand may sit before or after the flags.
+	if operand != "" {
+		c.operand, rest = subcommand(rest, "")
 	}
 	if err := parseCommandFlags(fs, rest); err != nil {
 		return nil, flagExitCode(err)
 	}
-	if fs.NArg() != 0 {
-		fmt.Fprintf(os.Stderr, "mellomting: %s: unexpected arguments %q\n", sub, fs.Args())
+	if c.operand == "" && operand != "" && fs.NArg() == 1 {
+		c.operand, rest = fs.Arg(0), nil
+	} else if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "mellomting: key %s: unexpected arguments %q\n", sub, fs.Args())
 		return nil, 2
 	}
-	if sub == "create" {
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "concurrent-requests", "requests-per-second", "burst":
-				c.limitsSet = true
-			}
-		})
+	if operand != "" && c.operand == "" {
+		fmt.Fprintf(os.Stderr, "mellomting: key %s: missing %s (usage: mellomting key %s %s [flags])\n", sub, operand, sub, operand)
+		return nil, 2
+	}
+	if sub != "create" {
+		return c, 0
 	}
 
-	switch sub {
-	case "create":
-		if c.name == "" {
-			fmt.Fprintln(os.Stderr, "mellomting: key create: --name is required")
+	// D18: NAME is the key's username segment; validate it before any
+	// entropy use or filesystem mutation.
+	if err := auth.ValidateUsername(c.operand); err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+		return nil, 2
+	}
+	if expires != "" {
+		t, err := parseExpiry(expires)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: invalid --expires %q (want YYYY-MM-DD or RFC3339)\n", expires)
 			return nil, 2
 		}
-		// D18: --name is the key's username segment; validate it before any
-		// entropy use or filesystem mutation.
-		if err := auth.ValidateUsername(c.name); err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-			return nil, 2
-		}
-		if c.expires != "" {
-			if _, err := time.Parse(time.RFC3339, c.expires); err != nil {
-				fmt.Fprintf(os.Stderr, "mellomting: key create: invalid --expires %q (want RFC3339)\n", c.expires)
-				return nil, 2
-			}
-		}
-		// Per-key limits fail closed on negative values (T-X8); the daemon
-		// rejects them at the key-store boundary, the CLI must not emit
-		// them in the first place.
-		if c.concurrentRequests < 0 {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: --concurrent-requests must be >= 0, got %d\n", c.concurrentRequests)
-			return nil, 2
-		}
-		if c.requestsPerSecond < 0 {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: --requests-per-second must be >= 0, got %v\n", c.requestsPerSecond)
-			return nil, 2
-		}
-		if c.burst < 0 {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: --burst must be >= 0, got %d\n", c.burst)
-			return nil, 2
-		}
-	case "list":
-		// no arguments
-	case "enable", "disable", "revoke":
-		if c.id == "" {
-			fmt.Fprintf(os.Stderr, "mellomting: key %s: --id is required\n", sub)
+		c.expires = &t
+	}
+	// Per-key limits fail closed on negative values (T-X8); the daemon
+	// rejects them at the key-store boundary, the CLI must not emit them
+	// in the first place.
+	for _, l := range []struct {
+		flag  string
+		value float64
+	}{
+		{"concurrent-requests", float64(c.concurrentRequests)},
+		{"requests-per-second", c.requestsPerSecond},
+		{"burst", float64(c.burst)},
+	} {
+		if l.value < 0 {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: --%s must be >= 0, got %v\n", l.flag, l.value)
 			return nil, 2
 		}
 	}
 	return c, 0
+}
+
+// parseExpiry accepts a bare date (expiring at the start of that day,
+// UTC) or a full RFC 3339 timestamp.
+func parseExpiry(s string) (time.Time, error) {
+	if t, err := time.Parse(time.DateOnly, s); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, s)
 }
 
 // keyState loads configuration and resolves the users-file and pepper paths.
@@ -367,44 +377,18 @@ func keyCreate(c *keyFlags) int {
 		return 1
 	}
 
-	var models []string
-	if c.models == "" {
-		// D14: infer the model only when the config has exactly one
-		// public model; otherwise fail and point the operator at
-		// --models. Never infer "*".
-		inferred, err := inferSoleModel(cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-			return 2
-		}
-		models = inferred
-	} else {
-		parsed, err := splitModels(c.models)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-			return 2
-		}
-		models = parsed
-		// A model not present in the loaded config is legal (an ACL may
-		// name a model about to be added), but the operator should hear
-		// about it (T-L4).
-		for _, m := range models {
-			if m == config.ModelWildcard {
-				continue
-			}
-			if _, ok := cfg.Models[m]; !ok {
-				fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
-			}
-		}
+	models, err := splitModels(c.models)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+		return 2
 	}
-	var exp *time.Time
-	if c.expires != "" {
-		t, err := time.Parse(time.RFC3339, c.expires)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-			return 1
+	// A model not present in the loaded config is legal (an ACL may name
+	// a model about to be added), but the operator should hear about it
+	// (T-L4).
+	for _, m := range models {
+		if _, ok := cfg.Models[m]; !ok && m != config.ModelWildcard {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
 		}
-		exp = &t
 	}
 	limits := auth.KeyLimits{
 		ConcurrentRequests: c.concurrentRequests,
@@ -419,17 +403,17 @@ func keyCreate(c *keyFlags) int {
 	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
 		var genErr error
 		key, id, genErr = chooseKeyID(func() (string, string, error) {
-			return auth.Generate(c.name)
+			return auth.Generate(c.operand)
 		}, uf, 8)
 		if genErr != nil {
 			return genErr
 		}
 		uf.Keys = append(uf.Keys, auth.Key{
 			ID:         id,
-			Name:       c.name,
+			Name:       c.operand,
 			SecretHash: auth.FormatHashValue(auth.Hash(pepper, key)),
 			Enabled:    true,
-			ExpiresAt:  exp,
+			ExpiresAt:  c.expires,
 			Models:     models,
 			Limits:     limits,
 		})
@@ -445,28 +429,28 @@ func keyCreate(c *keyFlags) int {
 	// human context goes to stderr: one ACL-confirmation line plus one apply
 	// instruction (PLAN §10, D16). The key is shown exactly once.
 	fmt.Fprintln(os.Stdout, key)
-	fmt.Fprintf(os.Stderr, "Created API key %q for %s.\n", c.name, strings.Join(models, ", "))
+	access := strings.Join(models, ", ")
+	if access == config.ModelWildcard {
+		access = "all models"
+	}
+	fmt.Fprintf(os.Stderr, "Created API key %q for %s.\n", c.operand, access)
 	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
 
-func keySetEnabled(c *keyFlags, enable bool) int {
+func keySetEnabled(c *keyFlags, sub string, enable bool) int {
 	_, usersPath, _, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
-	verb := "enabled"
-	if !enable {
-		verb = "disabled"
-	}
 	err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
-		return setEnabled(uf, c.id, enable)
+		return setEnabled(uf, c.operand, enable)
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: key %s: %v\n", verb, err)
+		fmt.Fprintf(os.Stderr, "mellomting: key %s: %v\n", sub, err)
 		return 1
 	}
-	fmt.Fprintf(os.Stdout, "%s key %s\n", verb, c.id)
+	fmt.Fprintf(os.Stdout, "%sd key %s\n", sub, c.operand)
 	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
@@ -478,26 +462,30 @@ func keyList(c *keyFlags) int {
 	}
 	uf, err := auth.LoadUsers(usersPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: key list: %v\n", err)
+		fmt.Fprintf(os.Stderr, "mellomting: key list: users file %s: %v\n", usersPath, err)
 		return 1
 	}
 	if len(uf.Keys) == 0 {
 		fmt.Println("no keys")
 		return 0
 	}
-	fmt.Printf("%-10s %-16s %-10s %-22s %s\n", "ID", "NAME", "STATUS", "EXPIRES", "MODELS")
-	for i := range uf.Keys {
-		k := &uf.Keys[i]
-		status := "enabled"
+	now := time.Now()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tSTATUS\tEXPIRES\tMODELS")
+	for _, k := range uf.Keys {
+		status, expires := "enabled", "-"
 		if !k.Enabled {
 			status = "disabled"
 		}
-		expirs := "-"
 		if k.ExpiresAt != nil {
-			expirs = k.ExpiresAt.Format(time.RFC3339)
+			expires = k.ExpiresAt.UTC().Format(time.RFC3339)
+			if k.Enabled && k.ExpiresAt.Before(now) {
+				status = "expired"
+			}
 		}
-		fmt.Printf("%-10s %-16s %-10s %-22s %s\n", k.ID, k.Name, status, expirs, strings.Join(k.Models, ", "))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", k.ID, k.Name, status, expires, strings.Join(k.Models, ", "))
 	}
+	w.Flush()
 	return 0
 }
 
@@ -511,13 +499,13 @@ func keyRevoke(c *keyFlags) int {
 		return exit
 	}
 	err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
-		return revoke(uf, c.id)
+		return revoke(uf, c.operand)
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: key revoke: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stdout, "revoked key %s\n", c.id)
+	fmt.Fprintf(os.Stdout, "revoked key %s\n", c.operand)
 	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
@@ -565,6 +553,8 @@ func splitModels(s string) ([]string, error) {
 		return nil, fmt.Errorf("--models: %q mixes the wildcard %q with named models; pass either %q alone or the names alone", s, config.ModelWildcard, config.ModelWildcard)
 	case wildcard:
 		return []string{config.ModelWildcard}, nil
+	case len(out) == 0:
+		return nil, errors.New("--models: no model named")
 	}
 	return out, nil
 }
@@ -596,32 +586,6 @@ func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile
 		}
 	}
 	return "", "", fmt.Errorf("key id collision after %d attempts", maxAttempts)
-}
-
-// inferSoleModel resolves the key's model list when --models is absent
-// (D14): exactly one configured public model is inferred; zero or two or
-// more models fail, listing at most 20 model names plus the omitted count.
-// It never infers the wildcard: configuration validation refuses a model
-// named after it, so a configured name is always a plain model.
-func inferSoleModel(cfg *config.Config) ([]string, error) {
-	names := slices.Sorted(maps.Keys(cfg.Models))
-	switch len(names) {
-	case 0:
-		return nil, fmt.Errorf("no models are configured; pass --models explicitly")
-	case 1:
-		return names, nil
-	default:
-		const limit = 20
-		shown := names
-		if len(names) > limit {
-			shown = names[:limit]
-		}
-		msg := "multiple models are configured; pass --models explicitly. configured: " + strings.Join(shown, ", ")
-		if len(names) > limit {
-			msg += fmt.Sprintf(" (and %d more; run `mellomting config show-effective` for the complete set)", len(names)-limit)
-		}
-		return nil, fmt.Errorf("%s", msg)
-	}
 }
 
 func usage(w io.Writer) {

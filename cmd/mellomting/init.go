@@ -158,7 +158,7 @@ func runInit(args initArguments) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 1
 	}
-	if err := printInitCompletion(os.Stdout, args, len(aggregate.Models)); err != nil {
+	if err := printInitCompletion(os.Stdout, args); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: cannot write output: %v\n", err)
 		return 1
 	}
@@ -203,24 +203,10 @@ func printInitSummary(w io.Writer, aggregate discovery.Result) error {
 
 // printInitCompletion prints exactly one completion line and two next
 // commands (B9). It never prints pepper or credential contents.
-func printInitCompletion(w io.Writer, args initArguments, modelCount int) error {
-	if _, err := fmt.Fprintf(w, "initialized %s\n", args.ConfigPath); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(w, "next:"); err != nil {
-		return err
-	}
-	modelsFlag := ""
-	if modelCount != 1 {
-		modelsFlag = " --models MODEL"
-	}
-	if _, err := fmt.Fprintf(w, "  mellomting key create --config %s --name local%s\n", args.ConfigPath, modelsFlag); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "  mellomting serve --config %s\n", args.ConfigPath); err != nil {
-		return err
-	}
-	return nil
+func printInitCompletion(w io.Writer, args initArguments) error {
+	_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  mellomting key create local --config %s\n  mellomting serve --config %s\n",
+		args.ConfigPath, args.ConfigPath, args.ConfigPath)
+	return err
 }
 
 func parseInitArguments(configPath, listen, landlockMode string, landlockSet, dryRun bool, rawServers []string) (initArguments, error) {

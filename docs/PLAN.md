@@ -3036,13 +3036,13 @@ operator-facing configuration.
 
 ## 77a.7 Key creation and API-key format (D14, D18)
 
-When `--models` is absent: exactly one configured public model is inferred;
-zero models fails; two or more models fails and lists only the model names,
-sorted, with a request to pass `--models`; wildcard access is never inferred.
-Configuration validation rejects a public model named `*` or containing a
-comma, so a configured name is always a plain model. In `--models`, `*` is
-accepted only on its own: mixed with named models it is a usage error rather
-than a list that collapses to the wildcard.
+`key create NAME` grants every model unless `--models` narrows it: the
+wildcard is the default, and it is written into the users file explicitly so
+a review of the file sees the grant. In `--models`, `*` is accepted only on its
+own: mixed with named models it is a usage error rather than a list that
+collapses to the wildcard, and an empty list is an error rather than a key
+that can reach nothing. Configuration validation rejects a public model named
+`*` or containing a comma, so a configured name is always a plain model.
 
 Every generated and accepted client API key MUST have exactly the form
 `sk-<username>-<keyid>-<secret>` with `username` matching

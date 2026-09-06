@@ -54,17 +54,12 @@ func TestInvalidFlagsRemainErrors(t *testing.T) {
 	}
 }
 
-func TestInitNextStepsModelSelection(t *testing.T) {
-	for _, count := range []int{1, 2} {
-		var out bytes.Buffer
-		if err := printInitCompletion(&out, initArguments{ConfigPath: "/tmp/config.yaml"}, count); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(out.String(), "--models MODEL") != (count > 1) {
-			t.Fatalf("%d models: %s", count, out.String())
-		}
-		if !strings.Contains(out.String(), "--name local") {
-			t.Fatalf("next command must use a valid username: %s", out.String())
-		}
+func TestInitNextSteps(t *testing.T) {
+	var out bytes.Buffer
+	if err := printInitCompletion(&out, initArguments{ConfigPath: "/tmp/config.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "key create local --config /tmp/config.yaml") {
+		t.Fatalf("next command must create a key with a valid username: %s", out.String())
 	}
 }

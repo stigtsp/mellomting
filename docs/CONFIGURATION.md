@@ -105,7 +105,7 @@ request is retried after response bytes reach the client.
 Per-key limits are set when creating a key:
 
 ```sh
-mellomting key create --config ./config.yaml --name ci --models my-model \
+mellomting key create ci --config ./config.yaml --models my-model \
   --requests-per-second 10 --burst 20 --concurrent-requests 4
 ```
 
