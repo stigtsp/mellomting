@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -155,6 +156,29 @@ func TestEnsureConfig(t *testing.T) {
 		}
 		if string(got) != "version: 1\n# operator's file\n" {
 			t.Fatalf("existing config was modified: %q", got)
+		}
+	})
+
+	// A config written earlier by `init` is 0600 root:root. Left that
+	// way, the service account cannot read the file the unit is about
+	// to hand it and the daemon fails to start on a permission error
+	// that names no cause, so provisioning re-asserts the mode and
+	// owner the same way it does for the directories.
+	t.Run("re-asserts mode on an existing config", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte("version: 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ensureConfig(path, 0o640, uid, gid); err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o640 {
+			t.Fatalf("mode = %o, want 640; the service account cannot read it otherwise", st.Mode().Perm())
 		}
 	})
 
@@ -692,4 +716,41 @@ func TestReferencedAuthPaths(t *testing.T) {
 			t.Fatal("symlink config returned no error")
 		}
 	})
+}
+
+// The unit hardcodes Group=mellomting, so that is the group every file
+// the daemon reads must belong to. Owning them to the account's primary
+// group instead is correct only while the two agree: an account that
+// already existed with a different primary group (a package manager's,
+// or useradd without --user-group) left root:root-equivalent ownership
+// the running service could not read.
+func TestServiceGroupIDPrefersTheNamedGroup(t *testing.T) {
+	// A group that exists on every unix: root/wheel by gid 0. Resolving
+	// by name must win over the account's primary gid.
+	g, err := user.LookupGroupId("0")
+	if err != nil {
+		t.Skip("no group with gid 0 in the group database")
+	}
+	account := &user.User{Uid: "1234", Gid: "5678"}
+	gid, err := serviceGroupID(g.Name, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gid != 0 {
+		t.Fatalf("gid = %d, want 0 (the group the unit names, not the account's primary %s)", gid, account.Gid)
+	}
+}
+
+// A named group that does not exist is fail-closed: the unit would not
+// start, so provisioning says so instead of owning the files to a group
+// the daemon never runs as.
+func TestServiceGroupIDMissingGroupIsAnError(t *testing.T) {
+	account := &user.User{Uid: "1234", Gid: "5678"}
+	_, err := serviceGroupID("mellomting-no-such-group-9f2a", account)
+	if err == nil {
+		t.Fatal("a missing service group was accepted")
+	}
+	if !strings.Contains(err.Error(), "no such group exists") {
+		t.Fatalf("err = %v, want it to name the missing group", err)
+	}
 }

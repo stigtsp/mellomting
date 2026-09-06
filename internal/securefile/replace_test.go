@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -142,4 +143,83 @@ func TestReplacePreservingOwnerKeepsGroupReadable(t *testing.T) {
 	if st.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v, want 0640 preserved so the daemon can still read it", st.Mode().Perm())
 	}
+}
+
+// A privileged `key create` that writes the FIRST users file has no
+// existing owner to preserve, and used to leave a 0600 file owned by
+// root's own group in a directory set up as root:<service group>. The
+// service account could then not read the file the installer had just
+// arranged for it, and the unit failed to start. A new file adopts the
+// directory's group and becomes group-readable.
+func TestReplacePreservingOwnerAdoptsDirGroupForNewFile(t *testing.T) {
+	gid, ok := otherGroup(t)
+	if !ok {
+		t.Skip("no supplementary group to stand in for a service group")
+	}
+	dir := t.TempDir()
+	if err := os.Chown(dir, -1, gid); err != nil {
+		t.Skipf("cannot set the directory group to %d: %v", gid, err)
+	}
+
+	path := filepath.Join(dir, "users.yaml")
+	if err := ReplacePreservingOwner(path, 0o600, 0o640, func(w io.Writer) error {
+		_, err := w.Write([]byte("version: 1\n"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("no unix stat available")
+	}
+	if int(sys.Gid) != gid {
+		t.Fatalf("gid = %d, want the directory's %d", sys.Gid, gid)
+	}
+	if st.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %#o, want 0640 (the service group cannot read it otherwise)", st.Mode().Perm())
+	}
+}
+
+// The adoption is conditional: a directory owned by the caller's own
+// group designates no service account, so a new file stays 0600.
+func TestReplacePreservingOwnerKeepsPrivateModeWithoutServiceGroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chown(dir, -1, os.Getegid()); err != nil {
+		t.Skipf("cannot set the directory group: %v", err)
+	}
+	path := filepath.Join(dir, "users.yaml")
+	if err := ReplacePreservingOwner(path, 0o600, 0o640, func(w io.Writer) error {
+		_, err := w.Write([]byte("version: 1\n"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %#o, want 0600", st.Mode().Perm())
+	}
+}
+
+// otherGroup returns a group the test process belongs to that is not its
+// effective group, so a chown to it succeeds unprivileged.
+func otherGroup(t *testing.T) (int, bool) {
+	t.Helper()
+	groups, err := os.Getgroups()
+	if err != nil {
+		return 0, false
+	}
+	for _, g := range groups {
+		if g != os.Getegid() {
+			return g, true
+		}
+	}
+	return 0, false
 }

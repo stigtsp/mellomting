@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 
@@ -120,9 +121,9 @@ func (p *Provision) Run() (r Report, err error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("service user uid %q is not numeric: %w", u.Uid, err)
 	}
-	gid, err := strconv.Atoi(u.Gid)
+	gid, err := serviceGroupID(p.User, u)
 	if err != nil {
-		return Report{}, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
+		return Report{}, err
 	}
 
 	dirs := []dirSpec{
@@ -172,16 +173,28 @@ func (p *Provision) Run() (r Report, err error) {
 }
 
 // ensureFile creates path only when it does not already exist, with the
-// create-only contract the installer relies on: an existing regular file
-// is left untouched, and anything that is not a regular file — a symlink
-// above all — is refused rather than written through. content is called
-// only when the file will actually be created, so ensurePepper does not
-// draw entropy for a file that already exists.
+// create-only contract the installer relies on: the content of an
+// existing regular file is never rewritten, and anything that is not a
+// regular file — a symlink above all — is refused rather than written
+// through. content is called only when the file will actually be
+// created, so ensurePepper does not draw entropy for a file that already
+// exists. Ownership and mode are re-asserted either way, so a
+// provisioning run always leaves the service account able to read what
+// the unit will hand it.
 func ensureFile(path string, mode os.FileMode, uid, gid int, content func() (string, error)) (bool, error) {
 	st, err := os.Lstat(path)
 	if err == nil {
 		if !st.Mode().IsRegular() {
 			return false, fmt.Errorf("refusing to use %q: it is not a regular file", path)
+		}
+		// The content is the operator's, but the ownership is the
+		// installer's business: a file written earlier by `init` (or by
+		// an older installer) is root:root 0600, which the service
+		// account cannot read, and the unit then fails to start with a
+		// permission error that names no cause. Re-assert owner and mode
+		// exactly as ensureDir does for the directories.
+		if err := reassertOwnership(path, st, mode, uid, gid); err != nil {
+			return false, err
 		}
 		return false, nil
 	}
@@ -199,6 +212,35 @@ func ensureFile(path string, mode os.FileMode, uid, gid int, content func() (str
 		return false, fmt.Errorf("chown %q: %w", path, err)
 	}
 	return true, nil
+}
+
+// reassertOwnership brings an existing managed artifact to the owner and
+// mode the unit needs, without touching its content — the same stance
+// ensureDir already takes for the directories, and for the same reason:
+// the installer runs as root by design and is provisioning this host, so
+// an artifact left by an earlier `init` must not make the service
+// unstartable. Only the three fixed default paths reach here; a config
+// naming its own auth files elsewhere is the operator's to own.
+//
+// The chown and chmod go through an opened descriptor, never the path,
+// so they cannot land on a file swapped in underneath.
+func reassertOwnership(path string, st os.FileInfo, mode os.FileMode, uid, gid int) error {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if ok && int(sys.Uid) == uid && int(sys.Gid) == gid && st.Mode().Perm() == mode {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", path, err)
+	}
+	defer f.Close()
+	if err := f.Chown(uid, gid); err != nil {
+		return fmt.Errorf("chown %q: %w", path, err)
+	}
+	if err := f.Chmod(mode); err != nil {
+		return fmt.Errorf("chmod %q: %w", path, err)
+	}
+	return nil
 }
 
 func ensureConfig(path string, mode os.FileMode, uid, gid int) (bool, error) {
@@ -383,6 +425,36 @@ func systemdActive() bool {
 // group) exists, creating a system account when missing. It fails closed:
 // a failed creation or a missing post-creation entry is an error, never a
 // silent fallback.
+// serviceGroupID resolves the group the unit will actually run as. The
+// unit names it (Group=), so that is the group the files it reads must
+// belong to — not whatever primary group the account happens to carry.
+// The two agree for an account this installer created with
+// --user-group, and diverge for one that already existed with a
+// different primary group (a package manager's, or `useradd` without
+// --user-group), where owning the files to the account's primary group
+// leaves every one of them unreadable by the running service.
+//
+// An account whose primary group IS the named one still resolves
+// through the account, so a host whose group database only answers for
+// the user is not made worse off.
+func serviceGroupID(name string, u *user.User) (int, error) {
+	if g, err := user.LookupGroup(name); err == nil {
+		gid, err := strconv.Atoi(g.Gid)
+		if err != nil {
+			return 0, fmt.Errorf("service group %q gid %q is not numeric: %w", name, g.Gid, err)
+		}
+		return gid, nil
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return 0, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
+	}
+	if g, err := user.LookupGroupId(u.Gid); err != nil || g.Name != name {
+		return 0, fmt.Errorf("the unit runs as group %q but no such group exists; create it (groupadd --system %s) and add %s to it, or the service cannot read its configuration", name, name, name)
+	}
+	return gid, nil
+}
+
 func ensureAccount(name string) (*user.User, error) {
 	if u, err := user.Lookup(name); err == nil {
 		return u, nil

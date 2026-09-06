@@ -31,14 +31,43 @@ func Replace(path string, mode os.FileMode, write func(io.Writer) error) error {
 	return replace(path, mode, 0, write)
 }
 
-// ReplacePreservingOwner is Replace, except that when path already
-// exists the replacement inherits its owner and takes its mode clamped
-// by clamp (never widened). mode applies only when path does not exist.
+// ReplacePreservingOwner is Replace, except that the result stays
+// readable by the service account:
 //
-// This is what keeps a privileged rewrite of the users file from leaving
-// a file the daemon can no longer read (PLAN §29.1).
+//   - when path already exists the replacement inherits its owner and
+//     takes its mode clamped by clamp (never widened);
+//   - when path does not exist it adopts the group of the directory it
+//     is created in, if that group is not the caller's own, and mode
+//     gains group-read within clamp.
+//
+// The second rule is what keeps `key create` from writing a 0600
+// root:root users file the daemon can never read. The installer sets
+// the configuration directory to root:<service group> precisely so the
+// files inside it are group-readable, and a file created later belongs
+// to the same arrangement as one created by the installer itself
+// (PLAN §29.1).
 func ReplacePreservingOwner(path string, mode, clamp os.FileMode, write func(io.Writer) error) error {
 	return replace(path, mode, clamp, write)
+}
+
+// dirGroup reports the group owning dir when it differs from the
+// caller's own effective group — the signal that the directory was set
+// up for a distinct service account rather than merely inheriting the
+// caller's.
+func dirGroup(dir string) (int, bool) {
+	st, err := os.Stat(dir)
+	if err != nil {
+		return 0, false
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	gid := int(sys.Gid)
+	if gid == os.Getegid() {
+		return 0, false
+	}
+	return gid, true
 }
 
 func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) error {
@@ -69,7 +98,8 @@ func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) 
 		_ = os.Remove(tmpName)
 	}
 
-	if clamp != 0 && statErr == nil {
+	switch {
+	case clamp != 0 && statErr == nil:
 		mode = existing.Mode().Perm() & clamp
 		if st, ok := existing.Sys().(*syscall.Stat_t); ok {
 			// Through the descriptor, not the path, for the same reason
@@ -80,6 +110,15 @@ func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) 
 			// it is not in. The mode clamp still applies and the rename
 			// below proceeds regardless.
 			_ = tmp.Chown(int(st.Uid), int(st.Gid))
+		}
+	case clamp != 0:
+		// A file that does not exist yet has no owner to preserve, so it
+		// takes the directory's service group instead. The mode widens
+		// only once the chown has actually succeeded: a group-readable
+		// file still owned by the caller's own group is wider than the
+		// 0600 it would otherwise get.
+		if gid, ok := dirGroup(dir); ok && tmp.Chown(-1, gid) == nil {
+			mode = (mode | 0o040) & clamp
 		}
 	}
 
