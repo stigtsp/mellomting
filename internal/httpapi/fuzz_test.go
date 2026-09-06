@@ -50,7 +50,7 @@ func FuzzAuthorize(f *testing.F) {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		r.Header.Set("Authorization", authz)
 		r.Header.Set("X-Api-Key", xkey)
-		_, err := s.authorize(r, store)
+		_, err := s.authorize(r, store, peerString(r))
 		if err != nil {
 			// The client-facing error must never embed the raw key.
 			if strings.Contains(err.Error(), "sk-") {

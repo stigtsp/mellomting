@@ -1489,3 +1489,92 @@ func TestReloadRaceDoesNotPinOldPerKeyLimits(t *testing.T) {
 			w.Code, w.Body.String())
 	}
 }
+
+// PLAN §18.1 end to end: behind a trusted reverse proxy the per-source
+// pre-auth limiter must key off the forwarded client, not the proxy.
+// Without that, every request shares one bucket — one flooding client
+// throttles everyone else — and every log line names the proxy.
+func TestPreauthLimitUsesForwardedClientBehindTrustedProxy(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
+	}, func(cfg *config.Config) {
+		cfg.Server.TrustedProxies = []string{"10.0.0.1/32"}
+		cfg.Limits.PreauthRequestsPerSecond = 1
+		cfg.Limits.PreauthBurst = 1
+	}, auth.KeyLimits{})
+
+	forwarded := func(client string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+		r.RemoteAddr = "10.0.0.1:1234" // the proxy
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+e.key)
+		r.Header.Set("X-Forwarded-For", client)
+		w := httptest.NewRecorder()
+		e.srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	// One client exhausts its own bucket (burst 1).
+	if w := forwarded("198.51.100.9"); w.Code != 200 {
+		t.Fatalf("first request from the flooding client = %d (%s)", w.Code, w.Body.String())
+	}
+	var throttled bool
+	for range 5 {
+		if forwarded("198.51.100.9").Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Fatal("the flooding client was never pre-auth throttled")
+	}
+
+	// A different client behind the same proxy still has its own bucket.
+	// Sharing the proxy's bucket would 429 this one too.
+	if w := forwarded("198.51.100.10"); w.Code != 200 {
+		t.Fatalf("second client behind the same proxy = %d (%s); the proxy's own address was used as the source",
+			w.Code, w.Body.String())
+	}
+}
+
+// The header is only believed from a configured proxy: an untrusted
+// peer that sets it must not be able to pick its own rate bucket.
+func TestForwardedHeaderIgnoredFromUntrustedPeer(t *testing.T) {
+	t.Parallel()
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion"}`))
+	}, func(cfg *config.Config) {
+		cfg.Server.TrustedProxies = []string{"10.0.0.1/32"}
+		cfg.Limits.PreauthRequestsPerSecond = 1
+		cfg.Limits.PreauthBurst = 1
+	}, auth.KeyLimits{})
+
+	// The peer is not the configured proxy, so its rotating
+	// X-Forwarded-For must not buy it a fresh bucket each request.
+	send := func(client string) int {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+		r.RemoteAddr = "203.0.113.7:1234"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+e.key)
+		r.Header.Set("X-Forwarded-For", client)
+		w := httptest.NewRecorder()
+		e.srv.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send("198.51.100.1"); code != 200 {
+		t.Fatalf("first request = %d", code)
+	}
+	var throttled bool
+	for i := range 5 {
+		if send(fmt.Sprintf("198.51.100.%d", i+2)) == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Fatal("an untrusted peer rotated X-Forwarded-For to escape its own rate bucket")
+	}
+}

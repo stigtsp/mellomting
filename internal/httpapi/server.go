@@ -48,6 +48,9 @@ type Server struct {
 	sourceLimit *limiter.SourceRegistry
 	authLog     *limiter.Bucket
 	authDropped atomic.Int64
+	// peers decides whose X-Forwarded-For the ingress believes
+	// (PLAN §18.1). Empty by default: the socket peer is the client.
+	peers       trustedPeers
 	ready       atomic.Bool
 	startedUnix int64
 }
@@ -102,6 +105,7 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		globalRPS:   globalRPS,
 		sourceLimit: sourceLimit,
 		authLog:     authLog,
+		peers:       newTrustedPeers(cfg.Server.TrustedProxies),
 		startedUnix: time.Now().Unix(),
 	}
 	s.snap.Store(&snapshot{store: store, limits: limiter.NewRegistry()})
@@ -143,7 +147,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	rw := &committedWriter{ResponseWriter: w}
 	defer func() {
 		if rec := recover(); rec != nil {
-			s.log.Error("panic recovered in request handler", "remote", peerString(r), "path", r.URL.Path, "panic", sanitizePanic(rec))
+			s.log.Error("panic recovered in request handler", "remote", s.peers.clientIP(r), "path", r.URL.Path, "panic", sanitizePanic(rec))
 			if !rw.committed {
 				writeErr(rw, http.StatusInternalServerError, "api_error", "internal", "internal error")
 			}
@@ -238,12 +242,19 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The address this request counts as coming from (PLAN §18.1): the
+	// socket peer, or the client a trusted reverse proxy forwarded.
+	// Resolved once, so the source it is limited under, the source in
+	// the auth-failure log, and the source in the accounting record are
+	// the same address.
+	remote := s.peers.clientIP(r)
+
 	// Pre-auth per-source flood protection (PLAN §33): a per-source rate
 	// bucket is consumed before the shared authenticated bucket and
 	// before authentication, so a bogus-token flood from one host cannot
 	// 429 legit keys on the global bucket, and invalid-auth attempts
 	// never materialize per-key state.
-	if ok, ra := s.sourceLimit.Allow(peerString(r), time.Now()); !ok {
+	if ok, ra := s.sourceLimit.Allow(remote, time.Now()); !ok {
 		writeRateLimit(w, ra)
 		return
 	}
@@ -259,7 +270,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 	// registry it is admitted against come from the same generation
 	// even when a SIGHUP lands mid-request.
 	snap := s.snap.Load()
-	key, err := s.authorize(r, snap.store)
+	key, err := s.authorize(r, snap.store, remote)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
 		return
@@ -288,7 +299,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 		R:         r,
 		Key:       key,
 		RequestID: rid,
-		Remote:    peerString(r),
+		Remote:    remote,
 	}
 
 	// Explicit allow-listed inference routes (PLAN §11.1).
@@ -377,10 +388,11 @@ func (s *Server) allowFor(path string) string {
 //	Authorization: Bearer sk-...   (primary)
 //	X-Api-Key: sk-...              (compatibility)
 //
-// Credentials in query parameters are never read. The store is passed
-// in rather than loaded here so the caller's snapshot governs the whole
-// request.
-func (s *Server) authorize(r *http.Request, store *auth.Store) (*auth.Key, error) {
+// Credentials in query parameters are never read. The store and the
+// client address are passed in rather than resolved here so the
+// caller's snapshot governs the whole request and the logged address
+// agrees with the one the request was rate-limited under.
+func (s *Server) authorize(r *http.Request, store *auth.Store, remote string) (*auth.Key, error) {
 	var bearer string
 	auths := r.Header.Values("Authorization")
 	if len(auths) > 1 {
@@ -434,7 +446,7 @@ func (s *Server) authorize(r *http.Request, store *auth.Store) (*auth.Key, error
 		// warn line is emitted, carrying the count of attempts suppressed
 		// since the previous line.
 		if ok, _ := s.authLog.Allow(time.Now()); ok {
-			s.log.Warn("auth rejected", "class", class, "remote", peerString(r), "suppressed", s.authDropped.Swap(0))
+			s.log.Warn("auth rejected", "class", class, "remote", remote, "suppressed", s.authDropped.Swap(0))
 		} else {
 			s.authDropped.Add(1)
 		}

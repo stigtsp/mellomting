@@ -1578,6 +1578,94 @@ models:
 			wantErr: "retry.max_backoff",
 		},
 		{
+			// PLAN §18.1: an entry that cannot match is a silent no-op
+			// that leaves the operator believing a forwarded client
+			// address is honoured when it is not.
+			name: "trusted_proxies entry is not a CIDR",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+  trusted_proxies:
+    - 127.0.0.1
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "is not a CIDR",
+		},
+		{
+			name: "trusted_proxies host bits set",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+  trusted_proxies:
+    - 10.0.0.7/8
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "bits set below the prefix length",
+		},
+		{
+			name: "trusted_proxies unix entry without a unix listener",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+  trusted_proxies:
+    - unix
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: `"unix" requires server.listen.network: unix`,
+		},
+		{
+			name: "trusted_proxies cidr with a unix listener",
+			yaml: `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+  trusted_proxies:
+    - 127.0.0.1/32
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "can never match a unix listener",
+		},
+		{
 			// A model named "*" is the ACL wildcard: a key created for
 			// that one model would be granted every model instead. A
 			// name is attacker-supplied when it comes from an inference
@@ -1862,5 +1950,62 @@ models:
 	}
 	if !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("err = %v, want a base_url complaint", err)
+	}
+}
+
+// A valid trusted_proxies list must survive validation and round-trip
+// through show-effective, so an operator can confirm what the ingress
+// will believe.
+func TestTrustedProxiesAccepted(t *testing.T) {
+	t.Parallel()
+	cfg, err := Parse([]byte(`
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+    mode: "0660"
+  trusted_proxies:
+    - unix
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Server.TrustedProxies) != 1 || cfg.Server.TrustedProxies[0] != TrustedProxyUnix {
+		t.Fatalf("TrustedProxies = %v", cfg.Server.TrustedProxies)
+	}
+
+	tcp, err := Parse([]byte(`
+version: 1
+server:
+  listen:
+    network: tcp
+    address: 127.0.0.1:8080
+  trusted_proxies:
+    - 127.0.0.1/32
+    - 10.0.0.0/8
+    - ::1/128
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    upstream_model: M
+    servers:
+    - qa
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tcp.Server.TrustedProxies) != 3 {
+		t.Fatalf("TrustedProxies = %v", tcp.Server.TrustedProxies)
 	}
 }

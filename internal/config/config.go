@@ -129,7 +129,23 @@ type Server struct {
 	// AllowPlaintextNonLoopback opts in to a plaintext non-loopback TCP
 	// listener when TLS is not configured (PLAN §8.2).
 	AllowPlaintextNonLoopback bool `yaml:"allow_plaintext_non_loopback,omitempty"`
+
+	// TrustedProxies lists the peers whose forwarded client address the
+	// ingress may believe (PLAN §18.1). Each entry is a CIDR, or the
+	// literal "unix" for the peer of a Unix-socket listener, which has
+	// no address of its own — the reverse proxy is whoever may open the
+	// socket. Empty (the default) means X-Forwarded-For is ignored
+	// entirely and the socket peer is the client.
+	//
+	// This governs per-source pre-auth rate limiting and the address in
+	// operator logs. It never affects authentication or authorization,
+	// which depend on the API key alone.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
 }
+
+// TrustedProxyUnix is the TrustedProxies entry naming the peer of a
+// Unix-socket listener.
+const TrustedProxyUnix = "unix"
 
 // Listen selects the ingress listener (PLAN §8.1).
 type Listen struct {

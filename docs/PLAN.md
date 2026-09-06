@@ -913,6 +913,24 @@ Only consume proxy headers when:
 
 Otherwise use the socket peer address.
 
+`server.trusted_proxies` is that configuration: a list whose entries are CIDRs,
+or the literal `unix` for the peer of a Unix-socket listener, which has no
+address of its own — whoever may open the socket is the proxy. It is empty by
+default, and an empty list means `X-Forwarded-For` is never read.
+
+From a trusted peer, the client address is the RIGHTMOST entry of the
+`X-Forwarded-For` chain that is not itself a trusted proxy. Right-to-left is
+what makes it safe: a client may prepend anything it likes, but its forgeries
+sit to the left of the entry the trusted proxy appended, so they are never
+reached. A chain that breaks — an element that is not an address — falls back
+to the socket peer rather than believing what lies beyond the break, and the
+number of hops walked is bounded.
+
+The resolved address governs per-source pre-auth rate limiting (§33) and the
+address recorded in operator logs and accounting. It never affects
+authentication or authorization, which depend on the API key alone, so a
+misconfigured `trusted_proxies` cannot grant access.
+
 ---
 
 # 19. Routing strategies

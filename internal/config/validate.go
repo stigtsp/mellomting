@@ -186,6 +186,38 @@ func validate(c *Config) error {
 	return nil
 }
 
+// validateTrustedProxies checks server.trusted_proxies (PLAN §18.1).
+// Every entry must be able to match something: an unparseable CIDR, or
+// an entry naming a listener this server does not have, is a silent
+// no-op that leaves the operator believing a forwarded client address
+// is honoured when it is not.
+func validateTrustedProxies(s *Server) []string {
+	var errs []string
+	seen := make(map[string]bool, len(s.TrustedProxies))
+	for _, entry := range s.TrustedProxies {
+		switch {
+		case seen[entry]:
+			errs = append(errs, fmt.Sprintf("server.trusted_proxies: duplicate entry %q", entry))
+		case entry == TrustedProxyUnix:
+			if s.Listen.Network != "unix" {
+				errs = append(errs, `server.trusted_proxies: "unix" requires server.listen.network: unix`)
+			}
+		default:
+			p, err := netip.ParsePrefix(entry)
+			switch {
+			case err != nil:
+				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q is not a CIDR like 127.0.0.1/32 (or the literal %q)", entry, TrustedProxyUnix))
+			case p.Addr() != p.Masked().Addr():
+				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q has bits set below the prefix length; write %q", entry, p.Masked().String()))
+			case s.Listen.Network == "unix":
+				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q can never match a unix listener, whose peer has no address; use %q", entry, TrustedProxyUnix))
+			}
+		}
+		seen[entry] = true
+	}
+	return errs
+}
+
 func validateServer(s *Server) []string {
 	var errs []string
 
@@ -213,6 +245,8 @@ func validateServer(s *Server) []string {
 			errs = append(errs, "server.listen.mode: only valid for network unix")
 		}
 	}
+
+	errs = append(errs, validateTrustedProxies(s)...)
 
 	if s.MaxHeaderBytes <= 0 {
 		errs = append(errs, "server.max_header_bytes: must be > 0")
