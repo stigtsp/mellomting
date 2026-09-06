@@ -594,21 +594,26 @@ func platformSandboxSection() (name string, available bool) {
 // MELLOMTING_LANDLOCK_STRICT or MELLOMTING_SEATBELT_STRICT turn that
 // skip into a failure, so a run meant to prove enforcement cannot pass
 // by skipping.
-func skipIfSandboxRefused(t *testing.T, cmd *exec.Cmd, logB *syncBuffer) {
+func skipIfSandboxRefused(t *testing.T, logB *syncBuffer) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(logB.String(), "cannot be enforced") {
+		log := logB.String()
+		if strings.Contains(log, "cannot be enforced") {
 			if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" || os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
-				t.Fatalf("strict sandbox run: the host refused to apply the policy: %s", logB.String())
+				t.Fatalf("strict sandbox run: the host refused to apply the policy: %s", log)
 			}
-			t.Skipf("this host would not apply the policy: %s", logB.String())
+			t.Skipf("this host would not apply the policy: %s", log)
 		}
-		if cmd.ProcessState != nil {
+		// The daemon logs the enforcement before it accepts, so this
+		// returns as soon as the answer is known rather than waiting
+		// out a deadline meant for the failure it did not hit.
+		if strings.Contains(log, "sandbox enforced") {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Fatalf("daemon neither enforced the sandbox nor reported why: %s", logB.String())
 }
 
 // configListenUnix builds a unix listen config for listener tests.
@@ -2101,7 +2106,7 @@ models:
 	// refused when applied — a host already running this process inside
 	// another sandbox is the usual reason. That is not a failure of the
 	// daemon, so it is a skip unless the run demands enforcement.
-	skipIfSandboxRefused(t, cmd, logB)
+	skipIfSandboxRefused(t, logB)
 	client := waitReady(t, sock) // ready only after the sandbox is applied (PLAN §57 step 19)
 
 	resp, body := postJSON(t, client, "http://mellomting/v1/chat/completions", key,
