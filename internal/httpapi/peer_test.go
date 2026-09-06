@@ -118,7 +118,11 @@ func TestClientIP(t *testing.T) {
 		want:      "@",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			peers := newTrustedPeers(tc.trusted)
+			network := "tcp"
+			if tc.remote == "@" {
+				network = "unix"
+			}
+			peers := newTrustedPeers(network, tc.trusted)
 			if got := peers.clientIP(request(tc.remote, tc.forwarded...)); got != tc.want {
 				t.Fatalf("clientIP = %q, want %q", got, tc.want)
 			}
@@ -130,7 +134,7 @@ func TestClientIP(t *testing.T) {
 // up to the trusted proxy, so an enormous one must not be walked in
 // full.
 func TestClientIPBoundsTheChain(t *testing.T) {
-	peers := newTrustedPeers([]string{"127.0.0.1/32"})
+	peers := newTrustedPeers("tcp", []string{"127.0.0.1/32"})
 	hops := make([]string, maxForwardedHops+10)
 	for i := range hops {
 		hops[i] = "127.0.0.1"

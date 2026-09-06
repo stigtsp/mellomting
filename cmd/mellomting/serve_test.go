@@ -2766,12 +2766,9 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(pol.ReadFiles, usersPath) {
-		t.Fatalf("ReadFiles = %v, want the users file", pol.ReadFiles)
-	}
 	wantDir := filepath.Join(dir, "auth")
-	if !slices.Contains(pol.ReadDirs, wantDir) {
-		t.Fatalf("ReadDirs = %v, want %q; without it a key rotation cannot be reloaded", pol.ReadDirs, wantDir)
+	if !slices.Contains(pol.ReadPaths, wantDir) {
+		t.Fatalf("ReadPaths = %v, want %q; without it a key rotation cannot be reloaded", pol.ReadPaths, wantDir)
 	}
 	// The grant stays read-only: nothing in the config directory becomes
 	// writable just because the reload needs to re-open it.

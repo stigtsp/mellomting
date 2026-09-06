@@ -425,6 +425,32 @@ func systemdActive() bool {
 // group) exists, creating a system account when missing. It fails closed:
 // a failed creation or a missing post-creation entry is an error, never a
 // silent fallback.
+func ensureAccount(name string) (*user.User, error) {
+	if u, err := user.Lookup(name); err == nil {
+		return u, nil
+	}
+	args := []string{
+		"--system",
+		"--no-create-home",
+		"--user-group",
+		"--home-dir", RunDir,
+		"--shell", "/usr/sbin/nologin",
+		name,
+	}
+	useraddPath, err := resolveBinary("useradd", "/usr/sbin/useradd", "/sbin/useradd")
+	if err != nil {
+		return nil, err
+	}
+	if out, err := exec.Command(useraddPath, args...).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("create system user %q: %w: %s", name, err, out)
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return nil, fmt.Errorf("look up created user %q: %w", name, err)
+	}
+	return u, nil
+}
+
 // serviceGroupID resolves the group the unit will actually run as. The
 // unit names it (Group=), so that is the group the files it reads must
 // belong to — not whatever primary group the account happens to carry.
@@ -453,32 +479,6 @@ func serviceGroupID(name string, u *user.User) (int, error) {
 		return 0, fmt.Errorf("the unit runs as group %q but no such group exists; create it (groupadd --system %s) and add %s to it, or the service cannot read its configuration", name, name, name)
 	}
 	return gid, nil
-}
-
-func ensureAccount(name string) (*user.User, error) {
-	if u, err := user.Lookup(name); err == nil {
-		return u, nil
-	}
-	args := []string{
-		"--system",
-		"--no-create-home",
-		"--user-group",
-		"--home-dir", RunDir,
-		"--shell", "/usr/sbin/nologin",
-		name,
-	}
-	useraddPath, err := resolveBinary("useradd", "/usr/sbin/useradd", "/sbin/useradd")
-	if err != nil {
-		return nil, err
-	}
-	if out, err := exec.Command(useraddPath, args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("create system user %q: %w: %s", name, err, out)
-	}
-	u, err := user.Lookup(name)
-	if err != nil {
-		return nil, fmt.Errorf("look up created user %q: %w", name, err)
-	}
-	return u, nil
 }
 
 // ensureDir creates an operational directory with a strict mode and owner,

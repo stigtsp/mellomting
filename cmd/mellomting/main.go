@@ -251,18 +251,24 @@ type keyFlags struct {
 }
 
 func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
-	summaries := map[string]string{
-		"create":  "Create an API key. Save it securely; it is printed only once.\nModel access is inferred only when one model is configured.",
-		"list":    "List keys and their status.",
-		"enable":  "Enable a key. Follow the printed reload or restart instruction.",
-		"disable": "Disable a key. Follow the printed reload or restart instruction.",
-		"revoke":  "Permanently remove a key. Follow the printed reload or restart instruction.",
+	var summary string
+	switch sub {
+	case "create":
+		summary = "Create an API key. Save it securely; it is printed only once.\nModel access is inferred only when one model is configured."
+	case "list":
+		summary = "List keys and their status."
+	case "enable":
+		summary = "Enable a key. Follow the printed reload instruction."
+	case "disable":
+		summary = "Disable a key. Follow the printed reload instruction."
+	case "revoke":
+		summary = "Permanently remove a key. Follow the printed reload instruction."
 	}
-	fs := commandFlags("key "+sub, summaries[sub])
+	fs := commandFlags("key "+sub, summary)
 	c := &keyFlags{}
 	fs.StringVar(&c.configPath, "config", "", configFlagHelp)
 	if sub == "create" {
-		fs.StringVar(&c.name, "name", "", "required `USERNAME`: 1–32 lowercase letters/digits, starting with a letter")
+		fs.StringVar(&c.name, "name", "", "required `USERNAME`: 1–32 lowercase letters, digits or underscores, starting with a letter")
 		fs.StringVar(&c.models, "models", "", "comma-separated `MODELS`, or '*' for all models")
 		fs.StringVar(&c.expires, "expires", "", "expiry `TIMESTAMP` in RFC3339 format")
 		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "maximum concurrent requests (0: use default)")
@@ -440,12 +446,12 @@ func keyCreate(c *keyFlags) int {
 	// instruction (PLAN §10, D16). The key is shown exactly once.
 	fmt.Fprintln(os.Stdout, key)
 	fmt.Fprintf(os.Stderr, "Created API key %q for %s.\n", c.name, strings.Join(models, ", "))
-	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
+	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
 
 func keySetEnabled(c *keyFlags, enable bool) int {
-	cfg, usersPath, _, exit := keyState(c)
+	_, usersPath, _, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
@@ -461,7 +467,7 @@ func keySetEnabled(c *keyFlags, enable bool) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "%s key %s\n", verb, c.id)
-	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
+	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
 
@@ -496,17 +502,11 @@ func keyList(c *keyFlags) int {
 }
 
 // keyApplyInstruction is the one apply instruction printed after a key
-// mutation (D16: one completion line plus one reload action). A reload
-// applies the change in every mode: the sandbox grants the directory
-// holding the users file, not the single inode a mutation renames away
-// (PLAN §30, §58), so landlock.mode=required no longer forces a restart
-// for key rotation or revocation.
-func keyApplyInstruction(*config.Config) string {
-	return "Reload Mellomting to apply it: systemctl reload mellomting (or send SIGHUP)."
-}
+// mutation (D16: one completion line plus one reload action).
+const keyApplyInstruction = "Reload Mellomting to apply it: systemctl reload mellomting (or send SIGHUP)."
 
 func keyRevoke(c *keyFlags) int {
-	cfg, usersPath, _, exit := keyState(c)
+	_, usersPath, _, exit := keyState(c)
 	if exit != 0 {
 		return exit
 	}
@@ -518,7 +518,7 @@ func keyRevoke(c *keyFlags) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "revoked key %s\n", c.id)
-	fmt.Fprintln(os.Stderr, keyApplyInstruction(cfg))
+	fmt.Fprintln(os.Stderr, keyApplyInstruction)
 	return 0
 }
 

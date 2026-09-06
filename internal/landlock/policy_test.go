@@ -76,7 +76,7 @@ func TestBackendPortsErrorNeverEchoesUserinfo(t *testing.T) {
 
 func TestPolicySummarize(t *testing.T) {
 	pol := Policy{
-		ReadFiles:  []string{"/etc/mellomting/users.yaml"},
+		ReadPaths:  []string{"/etc/mellomting/users.yaml"},
 		WriteFiles: []string{"/var/log/mellomting/usage.jsonl"},
 		ConnectTCP: []uint16{8001, 8002},
 	}

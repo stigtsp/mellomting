@@ -105,7 +105,7 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 		globalRPS:   globalRPS,
 		sourceLimit: sourceLimit,
 		authLog:     authLog,
-		peers:       newTrustedPeers(cfg.Server.TrustedProxies),
+		peers:       newTrustedPeers(cfg.Server.Listen.Network, cfg.Server.TrustedProxies),
 		startedUnix: time.Now().Unix(),
 	}
 	s.snap.Store(&snapshot{store: store, limits: limiter.NewRegistry()})
@@ -139,6 +139,12 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	// The address this request counts as coming from (PLAN §18.1): the
+	// socket peer, or the client a trusted reverse proxy forwarded.
+	// Resolved once, so the source it is limited under and the source
+	// in every log and accounting record agree.
+	remote := s.peers.clientIP(r)
+
 	// Defence-in-depth panic containment (PLAN §5.1 robustness
 	// envelope): a panic on the handler goroutine must become a
 	// sanitized 500, never a torn connection or a process kill. The
@@ -147,13 +153,13 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	rw := &committedWriter{ResponseWriter: w}
 	defer func() {
 		if rec := recover(); rec != nil {
-			s.log.Error("panic recovered in request handler", "remote", s.peers.clientIP(r), "path", r.URL.Path, "panic", sanitizePanic(rec))
+			s.log.Error("panic recovered in request handler", "remote", remote, "path", r.URL.Path, "panic", sanitizePanic(rec))
 			if !rw.committed {
 				writeErr(rw, http.StatusInternalServerError, "api_error", "internal", "internal error")
 			}
 		}
 	}()
-	routeBody(s, rw, r)
+	routeBody(s, rw, r, remote)
 }
 
 // committedWriter tracks whether a response header has been written so a
@@ -212,7 +218,7 @@ func sanitizePanic(rec any) string {
 	}
 }
 
-func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
+func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string) {
 	rid := newRequestID()
 	w.Header().Set("X-Request-ID", rid)
 
@@ -241,13 +247,6 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "overload_error", "server_overloaded", msgOverload)
 		return
 	}
-
-	// The address this request counts as coming from (PLAN §18.1): the
-	// socket peer, or the client a trusted reverse proxy forwarded.
-	// Resolved once, so the source it is limited under, the source in
-	// the auth-failure log, and the source in the accounting record are
-	// the same address.
-	remote := s.peers.clientIP(r)
 
 	// Pre-auth per-source flood protection (PLAN §33): a per-source rate
 	// bucket is consumed before the shared authenticated bucket and

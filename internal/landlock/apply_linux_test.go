@@ -100,7 +100,7 @@ func TestAllThreadsEnforced(t *testing.T) {
 		deniedAddr := deniedLn.Addr().String()
 
 		pol := landlock.Policy{
-			ReadFiles:  []string{users},
+			ReadPaths:  []string{users},
 			WriteFiles: []string{allowed},
 			ConnectTCP: []uint16{uint16(portOf(t, allowedLn))},
 		}
@@ -208,7 +208,7 @@ func TestAllThreadsEnforced(t *testing.T) {
 		}
 
 		// 4. Read confinement (PLAN §58, §82): a file not in the
-		// ReadFiles grant (the auth.pepper / backend-secret /
+		// ReadPaths grant (the auth.pepper / backend-secret /
 		// unrelated-home / /etc/shadow analogue) is unreadable, while
 		// the granted users file stays readable for a SIGHUP reload
 		// (PLAN §30).

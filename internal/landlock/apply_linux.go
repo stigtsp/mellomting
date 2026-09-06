@@ -52,16 +52,11 @@ func Apply(abi int, pol Policy) error {
 	readFile := ll.AccessFSSet(llsys.AccessFSReadFile)
 	writeFile := ll.AccessFSSet(llsys.AccessFSWriteFile)
 
+	// AccessFSReadDir is deliberately absent: the daemon opens known
+	// pathnames and never enumerates a directory.
 	var rules []ll.Rule
-	for _, f := range pol.ReadFiles {
+	for _, f := range pol.ReadPaths {
 		rules = append(rules, ll.PathAccess(readFile, f))
-	}
-	// Read rights on a directory cover the files beneath it, which is
-	// what survives the rename a users-file mutation publishes through.
-	// AccessFSReadDir is deliberately not granted: the daemon opens
-	// known pathnames and never needs to enumerate the directory.
-	for _, d := range pol.ReadDirs {
-		rules = append(rules, ll.PathAccess(readFile, d))
 	}
 	for _, f := range pol.WriteFiles {
 		rules = append(rules, ll.PathAccess(writeFile, f))

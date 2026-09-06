@@ -99,7 +99,8 @@ func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) 
 	}
 
 	switch {
-	case clamp != 0 && statErr == nil:
+	case clamp == 0:
+	case statErr == nil:
 		mode = existing.Mode().Perm() & clamp
 		if st, ok := existing.Sys().(*syscall.Stat_t); ok {
 			// Through the descriptor, not the path, for the same reason
@@ -111,7 +112,7 @@ func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) 
 			// below proceeds regardless.
 			_ = tmp.Chown(int(st.Uid), int(st.Gid))
 		}
-	case clamp != 0:
+	default:
 		// A file that does not exist yet has no owner to preserve, so it
 		// takes the directory's service group instead. The mode widens
 		// only once the chown has actually succeeded: a group-readable

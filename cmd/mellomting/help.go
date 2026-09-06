@@ -37,7 +37,6 @@ func parseCommandFlags(fs *flag.FlagSet, args []string) error {
 	var out bytes.Buffer
 	fs.SetOutput(&out)
 	err := fs.Parse(args)
-	fs.SetOutput(os.Stderr)
 	var w io.Writer = os.Stderr
 	if err == flag.ErrHelp {
 		w = os.Stdout

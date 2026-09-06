@@ -82,10 +82,7 @@ func initCmd(args []string) int {
 	fs.StringVar(&landlockMode, "landlock", landlock.ModeRequired, "sandbox `MODE`: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
 	if err := parseCommandFlags(fs, args); err != nil {
-		if err == flag.ErrHelp {
-			return 0
-		}
-		return 2
+		return flagExitCode(err)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "mellomting: init: unexpected arguments %q\n", fs.Args())

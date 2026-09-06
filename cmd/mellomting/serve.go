@@ -474,12 +474,16 @@ func sandboxPolicy(cfg *config.Config) (landlock.Policy, error) {
 		return landlock.Policy{}, fmt.Errorf("landlock: %w", err)
 	}
 	pol := landlock.Policy{
-		ReadFiles: []string{cfg.Auth.UsersFile},
-		// The directory, not just the file: every key mutation renames a
-		// new users file over the old one, and a rule bound to the
-		// replaced inode would deny the SIGHUP reload that is supposed
-		// to apply it (PLAN §30, §58).
-		ReadDirs:   []string{filepath.Dir(cfg.Auth.UsersFile)},
+		// The users file's directory rather than the file: a Landlock
+		// rule binds to the inode behind the path, and every key
+		// mutation renames a new users file over the old one, so a rule
+		// on the file stops matching at the first `key create` and the
+		// SIGHUP reload meant to apply it is denied. The grant is
+		// read-only, but the directory normally also holds the pepper
+		// and the configuration, both already read at startup; an
+		// operator who wants the narrower grant gives the users file a
+		// directory of its own (PLAN §30, §58).
+		ReadPaths:  []string{filepath.Dir(cfg.Auth.UsersFile)},
 		ConnectTCP: ports,
 	}
 	if cfg.Accounting.Enabled {

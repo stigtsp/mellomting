@@ -149,6 +149,20 @@ func (e *env) do(t *testing.T, method, path, key, body string) *httptest.Respons
 	return e.doFrom(t, method, path, key, body, "192.0.2.1:1234")
 }
 
+// proxied is a chat request from socket peer remote carrying an
+// X-Forwarded-For naming client, as a reverse proxy would send it.
+func (e *env) proxied(t *testing.T, remote, client string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
+	r.RemoteAddr = remote
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+e.key)
+	r.Header.Set("X-Forwarded-For", client)
+	w := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(w, r)
+	return w
+}
+
 // doFrom is do with a caller-chosen socket peer, which is how T-M4
 // exercises per-source pre-auth limiting through the real HTTP stack.
 func (e *env) doFrom(t *testing.T, method, path, key, body, remote string) *httptest.ResponseRecorder {
@@ -1506,14 +1520,7 @@ func TestPreauthLimitUsesForwardedClientBehindTrustedProxy(t *testing.T) {
 	}, auth.KeyLimits{})
 
 	forwarded := func(client string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
-		r.RemoteAddr = "10.0.0.1:1234" // the proxy
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Authorization", "Bearer "+e.key)
-		r.Header.Set("X-Forwarded-For", client)
-		w := httptest.NewRecorder()
-		e.srv.Handler().ServeHTTP(w, r)
-		return w
+		return e.proxied(t, "10.0.0.1:1234", client) // the configured proxy
 	}
 
 	// One client exhausts its own bucket (burst 1).
@@ -1555,14 +1562,7 @@ func TestForwardedHeaderIgnoredFromUntrustedPeer(t *testing.T) {
 	// The peer is not the configured proxy, so its rotating
 	// X-Forwarded-For must not buy it a fresh bucket each request.
 	send := func(client string) int {
-		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model-a"}`))
-		r.RemoteAddr = "203.0.113.7:1234"
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Authorization", "Bearer "+e.key)
-		r.Header.Set("X-Forwarded-For", client)
-		w := httptest.NewRecorder()
-		e.srv.Handler().ServeHTTP(w, r)
-		return w.Code
+		return e.proxied(t, "203.0.113.7:1234", client).Code
 	}
 	if code := send("198.51.100.1"); code != 200 {
 		t.Fatalf("first request = %d", code)

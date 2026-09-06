@@ -2218,11 +2218,11 @@ Example policy:
 
 ```text
 READ:
-    /etc/mellomting/users.yaml       only because SIGHUP reload needs it
-    /etc/mellomting/                 files in it, because every key mutation
-                                     renames a new users.yaml over the old
-                                     one and a rule bound to the replaced
-                                     inode would deny the reload (§30)
+    /etc/mellomting/                 files in it, only because SIGHUP reload
+                                     re-reads users.yaml by pathname, and every
+                                     key mutation renames a new file over it —
+                                     a rule bound to the replaced inode would
+                                     deny the reload (§30)
 
 WRITE:
     accounting destination only if opened/reopened by pathname
