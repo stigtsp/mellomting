@@ -231,7 +231,7 @@ func journeyInitTwoServers(t *testing.T, bin string) {
 	}
 }
 
-// journeyInitLandlock exercises the init Landlock preflight through the CLI
+// journeyInitLandlock exercises the init sandbox preflight through the CLI
 // surface. The injected-seam non-Linux path is covered by the cmd package's
 // own unit tests (B6); here we assert the observable contract on this host.
 func journeyInitLandlock(t *testing.T, bin string) {
@@ -241,30 +241,30 @@ func journeyInitLandlock(t *testing.T, bin string) {
 	cfg := filepath.Join(dir, "config.yaml")
 	sock := filepath.Join(dir, "m.sock")
 
-	// best-effort is the non-Linux / unsupported-equivalent path: it always
+	// best-effort is the default and the unsupported-host path: it always
 	// proceeds without the sandbox and records the choice in the config.
 	code, _, errOut := runCmd(t, bin, dir, 60*time.Second,
-		"init", "--server", backend.URL, "--listen", sock, "--config", cfg, "--landlock", "best-effort")
+		"init", "--server", backend.URL, "--listen", sock, "--config", cfg, "--sandbox", "best-effort")
 	if code != 0 {
-		t.Fatalf("init --landlock best-effort exit = %d; stderr=%s", code, errOut)
+		t.Fatalf("init --sandbox best-effort exit = %d; stderr=%s", code, errOut)
 	}
 	cfgBytes, _ := os.ReadFile(cfg)
 	if !strings.Contains(string(cfgBytes), "best-effort") {
 		t.Fatalf("best-effort not recorded in the generated config:\n%s", cfgBytes)
 	}
 
-	// required (the default) must succeed on a Landlock-capable kernel and
-	// fail closed on one that cannot satisfy the minimum ABI. It uses a fresh
-	// directory so init does not see the best-effort artifacts above.
+	// required must succeed on a Landlock-capable kernel and fail closed on
+	// one that cannot satisfy the minimum ABI. It uses a fresh directory so
+	// init does not see the best-effort artifacts above.
 	dir2 := privateDir(t)
 	code2, _, errOut2 := runCmd(t, bin, dir2, 60*time.Second,
-		"init", "--server", backend.URL, "--listen", filepath.Join(dir2, "m.sock"), "--config", filepath.Join(dir2, "config.yaml"), "--landlock", "required")
+		"init", "--server", backend.URL, "--listen", filepath.Join(dir2, "m.sock"), "--config", filepath.Join(dir2, "config.yaml"), "--sandbox", "required")
 	if report.Supported && report.KernelABI >= landlock.DefaultMinimumABI {
 		if code2 != 0 {
-			t.Fatalf("init --landlock required should pass on this kernel (ABI %d); stderr=%s", report.KernelABI, errOut2)
+			t.Fatalf("init --sandbox required should pass on this kernel (ABI %d); stderr=%s", report.KernelABI, errOut2)
 		}
 	} else if code2 == 0 {
-		t.Fatalf("init --landlock required unexpectedly passed on an unsupported kernel (ABI %d)", report.KernelABI)
+		t.Fatalf("init --sandbox required unexpectedly passed on an unsupported kernel (ABI %d)", report.KernelABI)
 	}
 }
 
@@ -288,7 +288,9 @@ func journeyInitDryRun(t *testing.T, bin string) {
 			t.Fatalf("dry-run wrote %s (want no files)", name)
 		}
 	}
-	_ = errOut
+	if !strings.Contains(errOut, "discovered 1 model:") {
+		t.Fatalf("dry-run summary is not on stderr:\n%s", errOut)
+	}
 }
 
 // journeySystemd exercises the systemd install surface without mutating /etc:
@@ -339,7 +341,7 @@ func journeyModelsEndpoint(t *testing.T, bin string) {
 	}
 
 	code, keyOut, errOut := runCmd(t, bin, dir, 60*time.Second,
-		"key", "create", "--config", cfg, "--name", "client", "--models", "qwen3.8-27b")
+		"key", "create", "client", "--config", cfg, "--models", "qwen3.8-27b")
 	if code != 0 {
 		t.Fatalf("key create exit = %d; stderr=%s", code, errOut)
 	}
@@ -462,7 +464,7 @@ func journeyStaticTLS(t *testing.T, bin string) {
 func mustKey(t *testing.T, bin, dir, cfg string) string {
 	t.Helper()
 	code, out, errOut := runCmd(t, bin, dir, 60*time.Second,
-		"key", "create", "--config", cfg, "--name", "tlsclient", "--models", "qwen3.8-27b")
+		"key", "create", "tlsclient", "--config", cfg, "--models", "qwen3.8-27b")
 	if code != 0 {
 		t.Fatalf("key create exit = %d; stderr=%s", code, errOut)
 	}
