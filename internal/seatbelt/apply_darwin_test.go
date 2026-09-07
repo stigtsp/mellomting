@@ -189,6 +189,11 @@ func TestApplyEnforces(t *testing.T) {
 				if os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
 					t.Fatalf("strict seatbelt run: enforcement could not be tested: %s", out)
 				}
+				// Nesting is the one refusal this host cannot help; a
+				// profile it rejected is a regression, not a skip.
+				if !strings.Contains(out, "already confined by another sandbox") {
+					t.Fatalf("the host refused the profile for a reason other than nesting:\n%s", out)
+				}
 				t.Skipf("this process is already sandboxed, so it may not apply another profile: %s", out)
 			}
 			for _, want := range []string{
@@ -247,6 +252,8 @@ func confinedChild() {
 		ConnectTCP: []uint16{grantedPort},
 		Listen:     listen,
 	}); err != nil {
+		// Only a refusal to apply is a reason to skip; a profile this
+		// host rejects is a regression and has to fail.
 		fmt.Println("APPLY-REFUSED", err)
 		os.Exit(0)
 	}

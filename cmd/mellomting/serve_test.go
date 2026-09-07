@@ -493,9 +493,19 @@ func TestMPTCPListenersDisabled(t *testing.T) {
 // minimum ABI, required mode succeeds instead; that path is covered by
 // TestServeSandboxRequiredApplies.
 func TestServeSandboxRequiredFails(t *testing.T) {
-	section, available := platformSandboxSection()
-	if available {
-		t.Skipf("%s can enforce the policy on this host, so required mode applies it instead of failing; see TestServeSandboxRequiredApplies", section)
+	// The fail-closed path is forced rather than waited for: on Linux
+	// an unreachable ABI floor makes a healthy kernel refuse, and on
+	// macOS the sandbox has no such floor, so the test runs wherever
+	// Landlock is the backend and skips where Seatbelt is.
+	section, _ := platformSandboxSection()
+	if section != "landlock" {
+		t.Skipf("%s has no version floor to make unreachable; its fail-closed path is covered by TestEnforceSandboxModes", section)
+	}
+	// The floor below is the highest the configuration accepts. A
+	// kernel that reaches it would satisfy it and the daemon would
+	// start, so say that plainly rather than reporting a pass.
+	if abi := landlock.Check().KernelABI; abi >= landlock.MaxABI {
+		t.Skipf("kernel Landlock ABI %d reaches the pinned maximum %d, so no configurable floor is out of reach", abi, landlock.MaxABI)
 	}
 	bin := buildCLI(t)
 	dir := shortTempDir(t)
@@ -539,6 +549,7 @@ auth:
 security:
   %s:
     mode: required
+    minimum_abi: %d
 
 servers:
   local-a:
@@ -551,7 +562,7 @@ models:
     upstream_model: Up/Model
     servers:
       - local-a
-`, filepath.Join(dir, "s.sock"), filepath.Join(dir, "users.yaml"), filepath.Join(dir, "p"), section, backend.URL)
+`, filepath.Join(dir, "s.sock"), filepath.Join(dir, "users.yaml"), filepath.Join(dir, "p"), section, landlock.MaxABI, backend.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -571,8 +582,12 @@ models:
 		t.Fatalf("exit = %d (want 1; required sandbox must fail closed)", exitCode)
 	}
 	combined := outB.String() + errB.String()
-	if !strings.Contains(combined, section) {
-		t.Fatalf("no %s mention in output: %q", section, combined)
+	// Any startup failure exits 1 and most of them mention the backend
+	// name, so the assertion has to be the sandbox's own refusal.
+	for _, want := range []string{"cannot be enforced", "security." + section + ".mode", sandbox.ModeRequired} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("output does not show the sandbox refusing: missing %q in %q", want, combined)
+		}
 	}
 }
 
@@ -602,6 +617,12 @@ func skipIfSandboxRefused(t *testing.T, logB *syncBuffer) {
 		if strings.Contains(log, "cannot be enforced") {
 			if os.Getenv("MELLOMTING_LANDLOCK_STRICT") != "" || os.Getenv("MELLOMTING_SEATBELT_STRICT") != "" {
 				t.Fatalf("strict sandbox run: the host refused to apply the policy: %s", log)
+			}
+			// A host that cannot apply a policy is a skip; a policy it
+			// rejected — a profile that no longer compiles, a backend
+			// URL the policy cannot express — is a regression.
+			if !strings.Contains(log, "already confined by another sandbox") {
+				t.Fatalf("the sandbox failed for a reason other than nesting:\n%s", log)
 			}
 			t.Skipf("this host would not apply the policy: %s", log)
 		}
