@@ -1170,7 +1170,8 @@ func sandboxTestConfig(t *testing.T) *config.Config {
 // accepts best-effort on every platform. The real enforcement path is
 // covered by TestAllThreadsEnforced (Linux) and the e2e tests.
 // testListenAddr stands in for the bound listener the daemon confines
-// itself around.
+// itself around. The mode semantics below are driven through a stub
+// backend, so no test process is ever confined irreversibly.
 var testListenAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
 
 func TestEnforceSandboxModes(t *testing.T) {

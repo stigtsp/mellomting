@@ -434,7 +434,7 @@ func resolveInitAuthPaths(configRaw string) (configPath, usersPath, pepperPath s
 
 // initSandbox is the sandbox of the platform init is writing a
 // configuration for: the section that governs it (PLAN §53.1). Both
-// platforms default to required, so only the section varies.
+// platforms default to best-effort, so only the section varies.
 type initSandbox struct {
 	section string
 }

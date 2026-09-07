@@ -522,10 +522,11 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 	return srv
 }
 
-// sandboxPolicy builds the post-startup Landlock policy from validated
-// configuration (PLAN §58, §60, §62). It is separate from applySandbox
-// so what the daemon confines itself to can be asserted on any host,
-// not only one whose kernel can enforce it.
+// sandboxPolicy builds the post-startup policy from validated
+// configuration and the bound listener (PLAN §58, §60, §62). It is
+// backend-neutral, and separate from applySandbox so what the daemon
+// confines itself to can be asserted on any host, not only one that
+// can enforce it.
 func sandboxPolicy(cfg *config.Config, listener net.Addr) (sandbox.Policy, error) {
 	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
 	if err != nil {
