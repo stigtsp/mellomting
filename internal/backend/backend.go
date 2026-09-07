@@ -444,6 +444,13 @@ type Request struct {
 	Body    []byte
 	Headers map[string][]string
 	Stream  bool
+	// Admitted, when set, is called once this request holds a backend
+	// concurrency slot and is about to be sent upstream. Waiting for a
+	// slot and waiting for the model are both "slow" from outside and
+	// have opposite causes — a saturated backend against a slow
+	// generation — so an observer needs to be told where the boundary
+	// is. It runs on the caller's goroutine and must not block.
+	Admitted func()
 }
 
 // Result is the upstream response. Body is live only for 2xx stream
@@ -554,6 +561,9 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 	h, err := c.acquire(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if req.Admitted != nil {
+		req.Admitted()
 	}
 
 	path := req.Path

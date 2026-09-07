@@ -30,6 +30,7 @@ import (
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
+	"mellomting/internal/inflight"
 	"mellomting/internal/routing"
 )
 
@@ -96,13 +97,14 @@ type Proxy struct {
 	quota      *accounting.Quota  // token windows (PLAN §39); nil = disabled
 	acc        *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
 	usageOptIn bool               // stream_options.include_usage injection is not disabled (§38)
+	inflight   *inflight.Registry // live-request view for `mellomting top`; nil = untracked
 	draining   atomic.Bool
 }
 
 // New builds a Proxy. clients is the backend-name -> client table built
 // from the same configuration. quota and acc enable token-usage quota and
 // JSONL accounting respectively; passing nil for both disables accounting.
-func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer) (*Proxy, error) {
+func New(cfg *config.Config, router *routing.Router, clients map[string]*backend.Client, log *slog.Logger, quota *accounting.Quota, acc *accounting.Writer, live *inflight.Registry) (*Proxy, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -123,6 +125,7 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 		quota:      quota,
 		acc:        acc,
 		usageOptIn: cfg.Accounting.EnsureStreamUsage == nil || *cfg.Accounting.EnsureStreamUsage,
+		inflight:   live,
 	}, nil
 }
 
@@ -185,6 +188,11 @@ type result struct {
 func (p *Proxy) dispatch(q *Req, o operation) {
 	out := result{status: 500, class: "internal_error", bytesIn: -1, usageStatus: accounting.UsageUnknown}
 	start := time.Now()
+	// The live view of this request, for `mellomting top`. Every exit
+	// path runs the deferred End, so the registry holds exactly the
+	// requests still in the daemon.
+	live := p.inflight.Begin(q.RequestID, q.Key.ID, q.Key.Name, q.Remote, userAgent(q.R), o.method+" "+o.path)
+	defer live.End()
 	defer func() {
 		if out.status == 0 {
 			out.status = 500
@@ -367,12 +375,17 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		}
 		out.backend = backendName
 
+		live.Target(publicModel, backendName)
+		live.Phase(inflight.PhaseQueued)
 		res, err := client.Forward(uctx, backend.Request{
 			Method:  o.method,
 			Path:    outPath,
 			Body:    bd,
 			Headers: headers,
 			Stream:  stream,
+			// The slot is held: what follows is the model thinking,
+			// not this daemon queueing.
+			Admitted: func() { live.Phase(inflight.PhaseWaiting) },
 		})
 		if err != nil {
 			if errors.Is(err, context.Canceled) && q.R.Context().Err() != nil {
@@ -412,8 +425,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// reading a nil body from a spawned goroutine killed the
 		// process).
 		if res.Body != nil {
+			live.Phase(inflight.PhaseStreaming)
 			var usage accounting.Usage
-			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, publicModel, &usage, injectedUsage)
+			status, bytesOut, cls := p.pump(q, res, o, ucancel, backendName, publicModel, &usage, injectedUsage, live)
 			out.status, out.bytesOut, out.class = status, bytesOut, cls
 
 			out.usage, out.usageStatus = usage, accounting.StatusOf(usage)
@@ -421,6 +435,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			return
 		}
 		res.Close()
+		live.Phase(inflight.PhaseSending)
+		live.Wrote(len(res.BodyBytes))
 		out.status = res.Status
 		out.class = "ok"
 		out.bytesOut = len(res.BodyBytes)
@@ -738,7 +754,7 @@ func (p *Proxy) sleepBackoff(ctx context.Context, attempt int) bool {
 // stream_idle_timeout, client write-idle is bounded by
 // stream_write_timeout, and any terminal path cancels the upstream
 // context.
-func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName, publicModel string, usage *accounting.Usage, injectedUsage bool) (int, int, string) {
+func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.CancelFunc, backendName, publicModel string, usage *accounting.Usage, injectedUsage bool, live *inflight.Request) (int, int, string) {
 	defer res.Close()
 	defer ucancel() // tear down the upstream on every exit path.
 	flusher, _ := q.W.(http.Flusher)
@@ -894,6 +910,7 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 		if hasData {
 			if u := accounting.ParseStreamChunk(data); u.Present {
 				*usage = u
+				live.Tokens(u.Total)
 			}
 			// Deliberately not gated on the usage above having parsed:
 			// a usage-only chunk whose usage object carries no field we
@@ -927,6 +944,7 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 			return 200, bytesOut, "client_write_error"
 		}
 		bytesOut += len(ev)
+		live.Wrote(len(ev))
 		if flusher != nil {
 			flusher.Flush()
 		}

@@ -105,7 +105,7 @@ func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.p, err = New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil)
+	e.p, err = New(cfg, router, clients, testsupport.DiscardLogger(), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
