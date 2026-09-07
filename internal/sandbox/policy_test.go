@@ -78,15 +78,19 @@ func TestPolicySummarize(t *testing.T) {
 		ReadPaths:  []string{"/etc/mellomting/users.yaml"},
 		WriteFiles: []string{"/var/log/mellomting/usage.jsonl"},
 		ConnectTCP: []uint16{8001, 8002},
+		Listen:     Listener{UnixPath: "/run/mellomting/mellomting.sock"},
 	}
 	sum := pol.Summarize()
-	if len(sum) != 4 {
+	if len(sum) != 5 {
 		t.Fatalf("summarize = %v", sum)
 	}
 	joined := strings.Join(sum, " | ")
 	for _, want := range []string{
 		"read /etc/mellomting/users.yaml",
 		"write /var/log/mellomting/usage.jsonl",
+		// The listener the daemon keeps answering on is part of what
+		// the policy grants, so the operational log has to name it.
+		"accept /run/mellomting/mellomting.sock",
 		"connect tcp 8001",
 		"connect tcp 8002",
 	} {

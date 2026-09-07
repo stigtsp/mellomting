@@ -1,6 +1,7 @@
 package seatbelt
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,10 +119,36 @@ func TestProfileGrantsBothPathForms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := Profile(sandbox.Policy{ReadPaths: []string{link}})
-	for _, want := range []string{link, resolved} {
-		if !strings.Contains(p, `(subpath "`+want+`")`) {
-			t.Fatalf("profile does not grant %q:\n%s", want, p)
+	// Every kind of path in the policy goes through the same
+	// resolution, and the ones this is really about — the accounting
+	// log under /var, the socket under /var or /tmp — are the write
+	// and listener grants, not the read.
+	// Both exist by the time the daemon builds its policy: the log is
+	// open and the socket is bound before the sandbox is applied. An
+	// unresolvable path falls back to the configured spelling, which
+	// would quietly hide the very substitution under test.
+	socket := filepath.Join(link, "s.sock")
+	logFile := filepath.Join(link, "usage.jsonl")
+	for _, f := range []string{socket, logFile} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := Profile(sandbox.Policy{
+		ReadPaths:  []string{link},
+		WriteFiles: []string{logFile},
+		Listen:     sandbox.Listener{UnixPath: socket},
+	})
+	for _, want := range []struct{ rule, path string }{
+		{`(allow file-read* (subpath "%s"))`, link},
+		{`(allow file-read* (subpath "%s"))`, resolved},
+		{`(allow file-write-data (literal "%s"))`, logFile},
+		{`(allow file-write-data (literal "%s"))`, filepath.Join(resolved, "usage.jsonl")},
+		{`(allow network-inbound (local unix-socket (path-literal "%s")))`, socket},
+		{`(allow network-inbound (local unix-socket (path-literal "%s")))`, filepath.Join(resolved, "s.sock")},
+	} {
+		if rule := fmt.Sprintf(want.rule, want.path); !strings.Contains(p, rule) {
+			t.Fatalf("profile is missing %s\n%s", rule, p)
 		}
 	}
 }

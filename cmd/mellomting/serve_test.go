@@ -2927,4 +2927,20 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 	if len(pol.WriteFiles) != 0 {
 		t.Fatalf("WriteFiles = %v, want none with accounting disabled", pol.WriteFiles)
 	}
+	// Backends the daemon must still reach: without this a policy that
+	// derived no ports at all would look correct.
+	if !slices.Equal(pol.ConnectTCP, []uint16{8001}) {
+		t.Fatalf("ConnectTCP = %v, want the backend's port", pol.ConnectTCP)
+	}
+
+	// With accounting on, the log is the one writable path.
+	accounting := *cfg
+	accounting.Accounting = config.Accounting{Enabled: true, Path: filepath.Join(dir, "usage.jsonl")}
+	withLog, err := sandboxPolicy(&accounting, &net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(withLog.WriteFiles, []string{accounting.Accounting.Path}) {
+		t.Fatalf("WriteFiles = %v, want the accounting log", withLog.WriteFiles)
+	}
 }
