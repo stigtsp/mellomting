@@ -54,25 +54,28 @@ type Policy struct {
 	// (PLAN §60); restricting the address is the job of the backend
 	// network modes (PLAN §16).
 	ConnectTCP []uint16
-	// Listen is the ingress listener to keep serving on.
-	Listen Listener
+	// Listeners are the sockets the daemon keeps serving on: the
+	// ingress, and the admin socket when one is configured.
+	Listeners []Listener
 }
 
 // Summarize renders the policy for operational logs (PLAN §43): the
 // summary carries no secret.
 func (p Policy) Summarize() []string {
-	out := make([]string, 0, len(p.ReadPaths)+len(p.WriteFiles)+len(p.ConnectTCP)+1)
+	out := make([]string, 0, len(p.ReadPaths)+len(p.WriteFiles)+len(p.ConnectTCP)+len(p.Listeners))
 	for _, f := range p.ReadPaths {
 		out = append(out, "read "+f)
 	}
 	for _, f := range p.WriteFiles {
 		out = append(out, "write "+f)
 	}
-	switch {
-	case p.Listen.UnixPath != "":
-		out = append(out, "accept "+p.Listen.UnixPath)
-	case p.Listen.TCPPort != 0:
-		out = append(out, fmt.Sprintf("accept tcp %d", p.Listen.TCPPort))
+	for _, l := range p.Listeners {
+		switch {
+		case l.UnixPath != "":
+			out = append(out, "accept "+l.UnixPath)
+		case l.TCPPort != 0:
+			out = append(out, fmt.Sprintf("accept tcp %d", l.TCPPort))
+		}
 	}
 	for _, port := range p.ConnectTCP {
 		out = append(out, fmt.Sprintf("connect tcp %d", port))

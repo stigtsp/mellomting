@@ -62,22 +62,24 @@ func Profile(pol sandbox.Policy) string {
 		}
 	}
 
-	// The listener is already bound and listening, but Seatbelt filters
-	// accepts as well as binds, so a policy that named neither would
-	// confine the daemon into answering nothing.
-	switch {
-	case pol.Listen.UnixPath != "":
-		// Accepting only. Closing the listener also unlinks the socket,
-		// but that error is discarded and the next start removes a
-		// stale one anyway (safeUnixListen), so the right to delete is
-		// not worth handing to a process this policy exists to contain
-		// — and Landlock, which would need it on the whole directory,
-		// does not grant it either.
-		for _, path := range pathForms(pol.Listen.UnixPath) {
-			b.WriteString("(allow network-inbound (local unix-socket (path-literal " + quote(path) + ")))\n")
+	// The listeners are already bound; Seatbelt filters accepts as well
+	// as binds, so a policy naming none would confine the daemon into
+	// answering nothing.
+	for _, l := range pol.Listeners {
+		switch {
+		case l.UnixPath != "":
+			// Accepting only. Closing the listener also unlinks the
+			// socket, but that error is discarded and the next start
+			// removes a stale one anyway (safeUnixListen), so the right
+			// to delete is not worth handing to a process this policy
+			// exists to contain — and Landlock, which would need it on
+			// the whole directory, does not grant it either.
+			for _, path := range pathForms(l.UnixPath) {
+				b.WriteString("(allow network-inbound (local unix-socket (path-literal " + quote(path) + ")))\n")
+			}
+		case l.TCPPort != 0:
+			b.WriteString(fmt.Sprintf("(allow network-inbound (local ip \"*:%d\"))\n", l.TCPPort))
 		}
-	case pol.Listen.TCPPort != 0:
-		b.WriteString(fmt.Sprintf("(allow network-inbound (local ip \"*:%d\"))\n", pol.Listen.TCPPort))
 	}
 
 	// Backend connections are filtered by destination port only. That

@@ -45,11 +45,11 @@ func TestGeneratedProfileCompiles(t *testing.T) {
 		{"tcp listener", sandbox.Policy{
 			ReadPaths:  []string{"/etc/mellomting"},
 			ConnectTCP: []uint16{8001},
-			Listen:     sandbox.Listener{TCPPort: 8080},
+			Listeners:  []sandbox.Listener{{TCPPort: 8080}},
 		}},
 		{"no accounting", sandbox.Policy{
 			ReadPaths: []string{"/etc/mellomting"},
-			Listen:    sandbox.Listener{UnixPath: "/run/mellomting/x.sock"},
+			Listeners: []sandbox.Listener{{UnixPath: "/run/mellomting/x.sock"}},
 		}},
 		{"empty", sandbox.Policy{}},
 	} {
@@ -250,7 +250,7 @@ func confinedChild() {
 	if err := Apply(sandbox.Policy{
 		ReadPaths:  []string{grantedDir},
 		ConnectTCP: []uint16{grantedPort},
-		Listen:     listen,
+		Listeners:  []sandbox.Listener{listen},
 	}); err != nil {
 		// Only a refusal to apply is a reason to skip; a profile this
 		// host rejects is a regression and has to fail.

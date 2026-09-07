@@ -1172,7 +1172,7 @@ func sandboxTestConfig(t *testing.T) *config.Config {
 // testListenAddr stands in for the bound listener the daemon confines
 // itself around. The mode semantics below are driven through a stub
 // backend, so no test process is ever confined irreversibly.
-var testListenAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+var testListenAddr = []net.Addr{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}}
 
 func TestEnforceSandboxModes(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -2903,21 +2903,34 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 		Backends: map[string]config.Backend{"b1": {BaseURL: "http://127.0.0.1:8001"}},
 	}
 
-	pol, err := sandboxPolicy(cfg, &net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"})
+	pol, err := sandboxPolicy(cfg, []net.Addr{&net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The listener comes from the bound socket, not the configuration,
 	// so an address the kernel chose is the one that gets granted.
-	if pol.Listen.UnixPath != "/run/mellomting/x.sock" {
-		t.Fatalf("listener = %+v, want the bound socket", pol.Listen)
+	if pol.Listeners[0].UnixPath != "/run/mellomting/x.sock" {
+		t.Fatalf("listener = %+v, want the bound socket", pol.Listeners)
 	}
-	ephemeral, err := sandboxPolicy(cfg, &net.TCPAddr{Port: 51234})
+	// Several bound sockets are all granted: the ingress and, when
+	// configured, the admin socket `top` reads.
+	both, err := sandboxPolicy(cfg, []net.Addr{
+		&net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"},
+		&net.UnixAddr{Name: "/run/mellomting/admin.sock", Net: "unix"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ephemeral.Listen.TCPPort != 51234 {
-		t.Fatalf("listener = %+v, want the port the kernel chose", ephemeral.Listen)
+	if len(both.Listeners) != 2 || both.Listeners[1].UnixPath != "/run/mellomting/admin.sock" {
+		t.Fatalf("listeners = %+v, want both bound sockets", both.Listeners)
+	}
+
+	ephemeral, err := sandboxPolicy(cfg, []net.Addr{&net.TCPAddr{Port: 51234}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ephemeral.Listeners[0].TCPPort != 51234 {
+		t.Fatalf("listener = %+v, want the port the kernel chose", ephemeral.Listeners)
 	}
 	wantDir := filepath.Join(dir, "auth")
 	if !slices.Contains(pol.ReadPaths, wantDir) {
@@ -2937,7 +2950,7 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 	// With accounting on, the log is the one writable path.
 	accounting := *cfg
 	accounting.Accounting = config.Accounting{Enabled: true, Path: filepath.Join(dir, "usage.jsonl")}
-	withLog, err := sandboxPolicy(&accounting, &net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"})
+	withLog, err := sandboxPolicy(&accounting, []net.Addr{&net.UnixAddr{Name: "/run/mellomting/x.sock", Net: "unix"}})
 	if err != nil {
 		t.Fatal(err)
 	}

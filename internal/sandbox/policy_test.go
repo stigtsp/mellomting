@@ -78,7 +78,7 @@ func TestPolicySummarize(t *testing.T) {
 		ReadPaths:  []string{"/etc/mellomting/users.yaml"},
 		WriteFiles: []string{"/var/log/mellomting/usage.jsonl"},
 		ConnectTCP: []uint16{8001, 8002},
-		Listen:     Listener{UnixPath: "/run/mellomting/mellomting.sock"},
+		Listeners:  []Listener{{UnixPath: "/run/mellomting/mellomting.sock"}},
 	}
 	sum := pol.Summarize()
 	if len(sum) != 5 {

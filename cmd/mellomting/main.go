@@ -48,6 +48,8 @@ func commandDispatch(argv []string) int {
 		return keyCmd(argv[2:])
 	case "usage":
 		return usageCmd(argv[2:])
+	case "top":
+		return topCmd(argv[2:])
 	case "serve":
 		return serveCmd(argv[2:])
 	default:
@@ -608,6 +610,7 @@ func usage(w io.Writer) {
   serve      Run the proxy
   key        Manage API keys
   usage      Report token usage
+  top        Watch requests in flight
   config     Check or inspect configuration
   sandbox    Check sandbox support
   install    Install the binary or systemd service

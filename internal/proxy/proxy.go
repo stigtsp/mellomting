@@ -258,7 +258,11 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 	}
 	if o.method == "POST" {
 		out.bytesIn = len(body)
+		live.Read(len(body))
 	}
+	// The body is in: what follows is routing and admission, not
+	// waiting on the client.
+	live.Phase(inflight.PhaseRouting)
 
 	// 3. Resolve where the request goes and under which policy
 	// (PLAN §12, §13, §31), then 3.5 apply the output cap, stream-usage

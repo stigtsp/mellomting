@@ -520,8 +520,12 @@ func newRequestID() string {
 // socket peer is the only trustworthy source; X-Forwarded-* is never
 // consumed on the ingress side).
 func peerString(r *http.Request) string {
-	if r.RemoteAddr == "" {
-		return "unknown"
+	// A Unix-socket peer has no address of its own. Naming the
+	// transport says that, where "unknown" reads like something went
+	// wrong; all such peers share one pre-auth rate bucket either way,
+	// which is right, because they are genuinely indistinguishable.
+	if r.RemoteAddr == "" || r.RemoteAddr == "@" {
+		return "unix"
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

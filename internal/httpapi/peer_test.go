@@ -111,11 +111,13 @@ func TestClientIP(t *testing.T) {
 		forwarded: []string{"198.51.100.9"},
 		want:      "198.51.100.9",
 	}, {
+		// A unix peer has no address, so the header is not believed
+		// and the transport is what gets reported.
 		name:      "unix peer untrusted without the unix entry",
 		trusted:   []string{"127.0.0.1/32"},
 		remote:    "@",
 		forwarded: []string{"198.51.100.9"},
-		want:      "@",
+		want:      "unix",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			network := "tcp"

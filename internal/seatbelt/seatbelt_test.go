@@ -15,7 +15,7 @@ func testPolicy() sandbox.Policy {
 		ReadPaths:  []string{"/etc/mellomting"},
 		WriteFiles: []string{"/var/log/mellomting/usage.jsonl"},
 		ConnectTCP: []uint16{8001, 8002},
-		Listen:     sandbox.Listener{UnixPath: "/run/mellomting/mellomting.sock"},
+		Listeners:  []sandbox.Listener{{UnixPath: "/run/mellomting/mellomting.sock"}},
 	}
 }
 
@@ -66,9 +66,23 @@ func TestProfileDoesNotGrantSocketRemoval(t *testing.T) {
 	}
 }
 
+// A daemon with an admin socket alongside its ingress must keep
+// accepting on both: naming only the first would confine `top` out of
+// the answer it exists to give.
+func TestProfileGrantsEveryListener(t *testing.T) {
+	pol := testPolicy()
+	pol.Listeners = append(pol.Listeners, sandbox.Listener{UnixPath: "/run/mellomting/admin.sock"})
+	p := Profile(pol)
+	for _, want := range []string{"/run/mellomting/mellomting.sock", "/run/mellomting/admin.sock"} {
+		if !strings.Contains(p, `(path-literal "`+want+`")`) {
+			t.Fatalf("listener %s not granted:\n%s", want, p)
+		}
+	}
+}
+
 func TestProfileGrantsTheTCPListener(t *testing.T) {
 	pol := testPolicy()
-	pol.Listen = sandbox.Listener{TCPPort: 8080}
+	pol.Listeners = []sandbox.Listener{{TCPPort: 8080}}
 	p := Profile(pol)
 	if !strings.Contains(p, `(allow network-inbound (local ip "*:8080"))`) {
 		t.Fatalf("TCP listener not granted:\n%s", p)
@@ -137,7 +151,7 @@ func TestProfileGrantsBothPathForms(t *testing.T) {
 	p := Profile(sandbox.Policy{
 		ReadPaths:  []string{link},
 		WriteFiles: []string{logFile},
-		Listen:     sandbox.Listener{UnixPath: socket},
+		Listeners:  []sandbox.Listener{{UnixPath: socket}},
 	})
 	for _, want := range []struct{ rule, path string }{
 		{`(allow file-read* (subpath "%s"))`, link},

@@ -130,6 +130,14 @@ type Server struct {
 	// listener when TLS is not configured (PLAN §8.2).
 	AllowPlaintextNonLoopback bool `yaml:"allow_plaintext_non_loopback,omitempty"`
 
+	// AdminSocket is a Unix socket serving the live-request view that
+	// `mellomting top` reads (PLAN §43). It is separate from the
+	// ingress on purpose: what it exposes — every caller's address,
+	// user agent and token use — must not be readable by the clients
+	// the ingress serves. Created 0600, so only the service account
+	// and root can open it. Empty (the default) means no such socket.
+	AdminSocket string `yaml:"admin_socket,omitempty"`
+
 	// TrustedProxies lists the peers whose forwarded client address the
 	// ingress may believe (PLAN §18.1). Each entry is a CIDR, or the
 	// literal "unix" for the peer of a Unix-socket listener, which has

@@ -27,10 +27,12 @@ import (
 	"time"
 
 	"mellomting/internal/accounting"
+	"mellomting/internal/adminapi"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
 	"mellomting/internal/httpapi"
+	"mellomting/internal/inflight"
 	"mellomting/internal/landlock"
 	"mellomting/internal/logging"
 	"mellomting/internal/proxy"
@@ -41,6 +43,23 @@ import (
 	"mellomting/internal/version"
 )
 
+// adminSocketMode keeps the live-request view to the service account
+// and root: it shows every caller's address, user agent and token use,
+// which is not the ingress's audience.
+const adminSocketMode = "0600"
+
+// listenerAddrs is the set of bound sockets the sandbox policy must
+// keep open.
+func listenerAddrs(lns ...net.Listener) []net.Addr {
+	addrs := make([]net.Addr, 0, len(lns))
+	for _, ln := range lns {
+		if ln != nil {
+			addrs = append(addrs, ln.Addr())
+		}
+	}
+	return addrs
+}
+
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
 	cfg       *config.Config
@@ -48,6 +67,7 @@ type daemon struct {
 	api       *httpapi.Server
 	proxy     *proxy.Proxy
 	acc       *accounting.Writer // usage JSONL writer; nil when disabled
+	live      *inflight.Registry // in-flight requests, for `mellomting top`
 	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
 	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
 }
@@ -93,6 +113,18 @@ func serveCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
 		return 1
 	}
+	// The admin socket is bound here too, before the sandbox: the
+	// policy has to name every listener the daemon keeps answering on.
+	var adminLn net.Listener
+	if p := cfg.Server.AdminSocket; p != "" {
+		adminLn, err = buildListener(config.Listen{Network: "unix", Address: p, Mode: adminSocketMode})
+		if err != nil {
+			log.Error("admin listener failed", "error_class", "listener")
+			fmt.Fprintf(os.Stderr, "mellomting: serve: admin socket: %v\n", err)
+			_ = ln.Close()
+			return 1
+		}
+	}
 	// Static TLS (PLAN §67): wrap the listener before the sandbox is
 	// applied. The certificate and key were already loaded with the rest
 	// of the startup secrets (PLAN §57 step 9).
@@ -124,9 +156,12 @@ func serveCmd(args []string) int {
 	// request may be processed. No config/secret file descriptors are
 	// open here (auth.LoadUsers/LoadPepper and securefile.Read close
 	// their own FDs), so the open-file caveat (PLAN §59) is satisfied.
-	if err := applySandbox(cfg, ln.Addr(), log); err != nil {
+	if err := applySandbox(cfg, listenerAddrs(ln, adminLn), log); err != nil {
 		log.Error("sandbox enforcement failed", "error_class", "sandbox")
 		_ = ln.Close()
+		if adminLn != nil {
+			_ = adminLn.Close()
+		}
 		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
 		return 1
 	}
@@ -134,6 +169,19 @@ func serveCmd(args []string) int {
 	srv := newHTTPServer(cfg, d.api, d.log)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
+
+	if adminLn != nil {
+		// Its own server: a slow or wedged admin reader must not touch
+		// the ingress, and the admin socket carries no client traffic
+		// to bound.
+		adminSrv := &http.Server{
+			Handler:           adminapi.Handler(d.live),
+			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
+		}
+		go func() { _ = adminSrv.Serve(adminLn) }()
+		defer func() { _ = adminSrv.Close() }()
+		log.Info("admin socket ready", "address", cfg.Server.AdminSocket)
+	}
 
 	d.api.SetReady(true)
 	log.Info("mellomting ready",
@@ -237,8 +285,8 @@ func newDaemonLogger(cfg *config.Config) (*slog.Logger, error) {
 // users file (SIGHUP reload, PLAN §30), write the accounting log, and
 // connect to the configured backend TCP ports. Secrets are preloaded
 // and their FDs closed before this runs (PLAN §59).
-func applySandbox(cfg *config.Config, listener net.Addr, log *slog.Logger) error {
-	return enforceSandbox(platformSandbox(cfg), cfg, listener, log)
+func applySandbox(cfg *config.Config, listeners []net.Addr, log *slog.Logger) error {
+	return enforceSandbox(platformSandbox(cfg), cfg, listeners, log)
 }
 
 // enforceSandbox applies one backend's policy under the configured mode.
@@ -246,13 +294,13 @@ func applySandbox(cfg *config.Config, listener net.Addr, log *slog.Logger) error
 // refuses to start — are the same whichever backend enforces them, so
 // they live here and are exercised against a stub rather than by
 // confining the test process irreversibly.
-func enforceSandbox(b sandboxBackend, cfg *config.Config, listener net.Addr, log *slog.Logger) error {
+func enforceSandbox(b sandboxBackend, cfg *config.Config, listeners []net.Addr, log *slog.Logger) error {
 	if b.mode == sandbox.ModeDisabled {
 		log.Info("sandbox disabled by configuration", "backend", b.name)
 		return nil
 	}
 
-	pol, err := sandboxPolicy(cfg, listener)
+	pol, err := sandboxPolicy(cfg, listeners)
 	if err != nil {
 		return err
 	}
@@ -527,7 +575,7 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 // backend-neutral, and separate from applySandbox so what the daemon
 // confines itself to can be asserted on any host, not only one that
 // can enforce it.
-func sandboxPolicy(cfg *config.Config, listener net.Addr) (sandbox.Policy, error) {
+func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, error) {
 	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
 	if err != nil {
 		return sandbox.Policy{}, fmt.Errorf("sandbox: %w", err)
@@ -554,11 +602,13 @@ func sandboxPolicy(cfg *config.Config, listener net.Addr) (sandbox.Policy, error
 	// the operator asked the kernel to choose: an address ending in :0
 	// is a real port by now, and naming the configured 0 would grant
 	// nothing and leave the daemon unable to answer.
-	switch addr := listener.(type) {
-	case *net.UnixAddr:
-		pol.Listen.UnixPath = addr.Name
-	case *net.TCPAddr:
-		pol.Listen.TCPPort = uint16(addr.Port)
+	for _, a := range listeners {
+		switch addr := a.(type) {
+		case *net.UnixAddr:
+			pol.Listeners = append(pol.Listeners, sandbox.Listener{UnixPath: addr.Name})
+		case *net.TCPAddr:
+			pol.Listeners = append(pol.Listeners, sandbox.Listener{TCPPort: uint16(addr.Port)})
+		}
 	}
 	return pol, nil
 }
@@ -676,7 +726,13 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
 	}
 
-	prox, err := proxy.New(cfg, router, clients, log, quota, writer)
+	// Requests are tracked only when something can read the view: with
+	// no admin socket the registry would record work nobody observes.
+	var live *inflight.Registry
+	if cfg.Server.AdminSocket != "" {
+		live = inflight.New()
+	}
+	prox, err := proxy.New(cfg, router, clients, log, quota, writer, live)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
@@ -691,7 +747,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("users file has no keys; every request will be rejected until a key is added")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, pepper: pepper, tlsConfig: tlsConfig}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig}, nil
 }
 
 // loadStore reads the users file and builds the key store the daemon

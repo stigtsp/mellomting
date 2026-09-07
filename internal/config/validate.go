@@ -254,6 +254,13 @@ func validateServer(s *Server) []string {
 		}
 	}
 
+	if s.AdminSocket != "" && !filepath.IsAbs(s.AdminSocket) {
+		errs = append(errs, fmt.Sprintf("server.admin_socket: %q must be an absolute path", s.AdminSocket))
+	}
+	if s.AdminSocket != "" && s.AdminSocket == s.Listen.Address {
+		errs = append(errs, "server.admin_socket: must not be the ingress socket; it is separate so clients cannot read it")
+	}
+
 	errs = append(errs, validateTrustedProxies(s)...)
 
 	if s.MaxHeaderBytes <= 0 {
