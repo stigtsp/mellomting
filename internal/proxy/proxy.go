@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"mellomting/internal/accounting"
 	"mellomting/internal/apierr"
@@ -192,7 +193,9 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		p.log.Info("request",
 			"request_id", q.RequestID,
 			"key_id", q.Key.ID,
+			"key_name", q.Key.Name,
 			"remote", q.Remote,
+			"user_agent", userAgent(q.R),
 			"endpoint", o.method+" "+o.path,
 			"public_model", logModel(out.model),
 			"backend", out.backend,
@@ -200,6 +203,10 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"bytes_in", out.bytesIn,
 			"bytes_out", out.bytesOut,
+			"tokens_in", out.usage.Input,
+			"tokens_out", out.usage.Output,
+			"tokens_total", out.usage.Total,
+			"usage_status", string(out.usageStatus),
 			"retry_count", out.retries,
 			"error_class", out.class,
 		)
@@ -1022,6 +1029,31 @@ func stringField(fields map[string]json.RawMessage, field string) (string, bool)
 // exceed the accounting read bound and be skipped as unreadable waste
 // (FIX-26 eval / FIX-28).
 const maxLoggedModelLen = 128
+
+// maxUserAgentBytes bounds the client-supplied User-Agent in a log
+// line. The header is attacker-controlled and otherwise bounded only by
+// max_header_bytes, which is far more than a log wants per request.
+const maxUserAgentBytes = 200
+
+// userAgent renders the client's User-Agent for the operational log
+// (PLAN §43). The value is whatever the client sent, so it is bounded
+// and stripped of control characters: a log read in a terminal must not
+// carry an escape sequence that rewrites what an operator sees.
+func userAgent(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	ua := r.Header.Get("User-Agent")
+	if len(ua) > maxUserAgentBytes {
+		ua = ua[:maxUserAgentBytes]
+	}
+	return strings.Map(func(c rune) rune {
+		if unicode.IsControl(c) {
+			return -1
+		}
+		return c
+	}, ua)
+}
 
 // logModel truncates a client-supplied model name for structured logs
 // and accounting records.

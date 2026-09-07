@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"mellomting/internal/testsupport"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -1028,5 +1031,86 @@ func TestQuotaAddedAfterStartupSettlesStreamUsage(t *testing.T) {
 	}
 	if ok, _ := quota.Admit("K1", accounting.WindowLimit{TokensPerHour: 14, TokensPerDay: 100}, 0, now); ok {
 		t.Fatal("expected reject: the stream settled nothing against the quota")
+	}
+}
+
+// The access log has to carry who the client was and what the request
+// cost.
+func TestRequestLogCarriesClientAndTokens(t *testing.T) {
+	f := newFakeVLLM(t, usageOnlyJSON)
+	cfg := testConfig(f.server.URL)
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client},
+		slog.New(slog.NewJSONHandler(&buf, nil)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"gen-1","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("User-Agent", "codex-cli/1.2.3")
+	w := httptest.NewRecorder()
+	p.ChatCompletions(&Req{W: w, R: r, Key: testKey(), RequestID: "req_ua", Remote: "198.51.100.9"})
+	if w.Code != 200 {
+		t.Fatalf("status = %d: %s\nlog:\n%s", w.Code, w.Body.String(), buf.String())
+	}
+
+	var rec map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err == nil && m["msg"] == "request" {
+			rec = m
+		}
+	}
+	if rec == nil {
+		t.Fatalf("no request line logged:\n%s", buf.String())
+	}
+	want := map[string]any{
+		"remote":       "198.51.100.9",
+		"user_agent":   "codex-cli/1.2.3",
+		"key_name":     "t",
+		"tokens_in":    float64(10),
+		"tokens_out":   float64(5),
+		"tokens_total": float64(15),
+		"usage_status": "exact",
+	}
+	for k, v := range want {
+		if rec[k] != v {
+			t.Fatalf("request log %s = %v, want %v (line: %v)", k, rec[k], v, rec)
+		}
+	}
+}
+
+// The User-Agent is whatever the client chose to send, so the log has
+// to bound it and strip control characters: a log read in a terminal
+// must not carry an escape sequence that rewrites what an operator
+// sees.
+func TestUserAgentIsBoundedAndSanitized(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header["User-Agent"] = []string{"curl/8.0\x1b[2Jwiped\x00" + strings.Repeat("A", 400)}
+	ua := userAgent(r)
+	if strings.ContainsAny(ua, "\x1b\x00") {
+		t.Fatalf("control characters survived: %q", ua)
+	}
+	if len(ua) > maxUserAgentBytes {
+		t.Fatalf("user agent not bounded: %d bytes", len(ua))
+	}
+	if !strings.HasPrefix(ua, "curl/8.0") {
+		t.Fatalf("user agent = %q, want the client's value", ua)
+	}
+	if userAgent(nil) != "" {
+		t.Fatal("a request without a header must render empty")
 	}
 }
