@@ -85,7 +85,9 @@ control lands in the implementation plan.
 - Multipath TCP explicitly disabled on every listener/dialer because Go
   1.24+ default listeners are MPTCP-capable and bypass classic TCP
   restrictions (§61).
-- Default policy: `mode: required`, `minimum_abi: 8` (§55).
+- Default policy: `mode: best-effort`, `minimum_abi: 6` (§55). The sandbox
+  is containment for a compromised process, not the control that decides
+  whether the proxy may run; `required` makes it that.
 - Non-Linux builds clearly report that Landlock is unavailable and
   `Apply` fails (§7); `sandbox check` reports capability either way.
 - `deploy/mellomting.service` ships the hardened systemd unit that

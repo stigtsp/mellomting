@@ -53,7 +53,9 @@ func topCmd(args []string) int {
 	}
 	sock := cfg.Server.AdminSocket
 	if sock == "" {
-		fmt.Fprintln(os.Stderr, "mellomting: top: no server.admin_socket is configured, so the daemon publishes no live view")
+		fmt.Fprint(os.Stderr, "mellomting: top: the daemon publishes no live view; add an admin socket to the configuration:\n\n"+
+			"  server:\n    admin_socket: /run/mellomting/admin.sock\n\n"+
+			"and restart it — the socket is bound at startup.\n")
 		return 1
 	}
 
@@ -193,12 +195,16 @@ func orDash(s string) string {
 	return s
 }
 
+// truncate cuts on rune boundaries: a user agent is arbitrary client
+// text, and slicing bytes out of a multi-byte one prints a replacement
+// character in the middle of the table.
 func truncate(s string, n int) string {
 	if s == "" {
 		return "-"
 	}
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }

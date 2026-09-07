@@ -1836,6 +1836,26 @@ backend_5xx
 backend_stream_error
 ```
 
+## 43.1 Access log
+
+Every completed request emits one `request` line carrying those fields plus
+the client's `user_agent` (truncated, control characters stripped, never
+otherwise trusted), the `key_name`, the token counts and `usage_status`.
+That line is the access log; there is no second log file.
+
+## 43.2 Live view
+
+`mellomting top` renders the requests currently in flight: age, phase, key,
+model, tokens so far, bytes in and out, client address and user agent.
+
+The daemon publishes it as JSON over `server.admin_socket`, a Unix socket
+created `0600` and bound before the sandbox is applied. It is separate from
+the ingress because it exposes every caller's address, user agent and token
+use, which the proxy's own clients must not be able to read. Unconfigured,
+no in-flight tracking happens at all.
+
+Phases are `reading`, `routing`, `queued`, `waiting`, `streaming`, `sending`.
+
 ---
 
 # 44. Usage CLI

@@ -65,16 +65,17 @@ Save the key securely. It cannot be retrieved later. Keys are stored as
 HMAC-SHA-256 hashes with a separate pepper file. Their format is
 `sk-<username>-<keyid>-<secret>`, with a 16-character hex ID and a 256-bit secret.
 
-Key commands update the users file offline. With the default required
-Landlock sandbox, restart the service after a change:
+Key commands update the users file offline. Reload the service to apply a
+change:
 
 ```sh
-sudo systemctl restart mellomting
+sudo systemctl reload mellomting
 ```
 
-The sandbox pins the users file to its startup inode, so replacing that file
-prevents reload. A process running without that restriction can reload it on
-`SIGHUP`. Follow the apply instruction printed by the key command.
+`SIGHUP` reloads the key store in place, under every sandbox mode, without
+severing in-flight streams. A reload that fails leaves the previous key store
+in effect and logs why. Follow the apply instruction printed by the key
+command.
 
 ## Installation
 
@@ -120,10 +121,68 @@ responses, and backend credentials are never logged. For a systemd service:
 sudo journalctl -u mellomting
 ```
 
+Every completed request writes one `request` line, which is the access log:
+
+```json
+{"time":"...","level":"INFO","msg":"request","request_id":"...","key_id":"a1b2",
+ "key_name":"ci","remote":"198.51.100.9","user_agent":"codex-cli/1.2.3",
+ "endpoint":"POST /v1/chat/completions","public_model":"my-model",
+ "backend":"a","status":200,"duration_ms":8412,"bytes_in":712,"bytes_out":4108,
+ "tokens_in":120,"tokens_out":480,"tokens_total":600,"usage_status":"reported",
+ "retry_count":0,"error_class":""}
+```
+
+`remote` is the client address after `server.trusted_proxies` is applied, and
+`unix` for a Unix-socket client. `user_agent` is client-controlled: it is
+truncated and stripped of control characters, but not otherwise trusted.
+`usage_status` says whether the backend reported the token counts or they are
+unknown. To read only the access log:
+
+```sh
+sudo journalctl -u mellomting -o cat | jq 'select(.msg == "request")'
+```
+
 With accounting enabled, `mellomting usage report` reports per-key token and
 request totals. Use the supplied logrotate policy for the JSONL file; it uses
 `copytruncate` because the sandbox retains access to the open file. Renaming
 the file does not redirect the running writer to a replacement.
+
+## Watching requests in flight
+
+The access log records a request when it finishes. To see what the daemon is
+doing right now, give it an admin socket:
+
+```yaml
+server:
+  admin_socket: /run/mellomting/admin.sock
+```
+
+and restart it — the socket is bound at startup, before the sandbox. Then:
+
+```sh
+mellomting top
+```
+
+```
+mellomting 14:02:11 — 2 in flight
+
+AGE   PHASE      KEY    MODEL     TOKENS  IN    OUT   CLIENT          USER-AGENT
+8.4s  streaming  ci     my-model  412     712B  4.0K  198.51.100.9    codex-cli/1.2.3
+0.9s  waiting    alice  my-model  -       680B  -     198.51.100.14   curl/8.7.1
+```
+
+`PHASE` is where the request is: `reading` its body, `routing`, `queued` for a
+backend, `waiting` for the first response byte, `streaming` events back, or
+`sending` a buffered response. `TOKENS` stays `-` until the backend reports
+usage, which for a stream is at the end.
+
+`--interval` sets the refresh (default `1s`), and `--once` prints a single
+snapshot without clearing the screen, for scripts and pipes.
+
+The socket is created `0600`, so only the service account and root can read it.
+It is deliberately not part of the ingress: it exposes every caller's address,
+user agent and token use, which is not something the proxy's own clients should
+see. Without `admin_socket` configured, no request tracking happens at all.
 
 ## Troubleshooting
 
@@ -136,5 +195,8 @@ the file does not redirect the running writer to a replacement.
   proxy host and permitted by `security.backend_network`.
 - Pepper permission errors: use mode `0600` for a local file, or `0640` with
   an appropriate service group. The setup commands create these modes for you.
-- Key changes not taking effect: restart the service when instructed by the
+- Key changes not taking effect: reload the service when instructed by the
   key command.
+- `mellomting top` cannot reach the daemon: check that `server.admin_socket` is
+  set in the same configuration the daemon was started with, and that the
+  daemon has been restarted since it was added.

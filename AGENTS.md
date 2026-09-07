@@ -169,6 +169,15 @@ injection with synthetic-chunk swallow, conservative unknown-usage
 reservation, the `mellomting usage report` CLI, and
 `docs/COMPATIBILITY.md`.
 
+Phase 3c adds the operator's view of live traffic (PLAN §43):
+`internal/inflight` is the registry of requests currently being served,
+updated by the proxy as each moves through reading, routing, queued,
+waiting, streaming and sending; `internal/adminapi` publishes it as JSON
+on `server.admin_socket`, a 0600 Unix socket bound before the sandbox and
+deliberately off the ingress; `mellomting top` renders it. The completed
+`request` log line is the matching access log. With no admin socket
+configured the registry is not created and nothing is tracked.
+
 Phase 4 adds Landlock hardening (PLAN §95): `internal/landlock` builds
 the minimal post-startup policy from config (users-file read, accounting
 write, backend TCP connect ports; everything else denied), enforces it
