@@ -168,6 +168,15 @@ jobs:
       - name: Test (darwin)
         run: go test ./...
 
+      # Seatbelt enforcement is the one thing that cannot be proven off
+      # macOS, and TestApplyEnforces skips when the host process is
+      # itself sandboxed — invisible in the run above. STRICT turns that
+      # skip into a failure, so this step is what stands behind the
+      # claim that the profile confines anything at all. The equivalent
+      # Landlock gate is the landlock job.
+      - name: Seatbelt enforcement (strict)
+        run: MELLOMTING_SEATBELT_STRICT=1 go test -count=1 -run 'TestApplyEnforces|TestServeSandboxRequired' ./internal/seatbelt/ ./cmd/mellomting/
+
   build:
     name: cross-compile
     runs-on: ubuntu-latest
