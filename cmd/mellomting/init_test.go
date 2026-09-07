@@ -1377,12 +1377,21 @@ func TestCommitInitArtifacts(t *testing.T) {
 
 }
 
-func TestInitEndToEnd(t *testing.T) {
+// requireInitCommit skips a subtest that has to write the files, which
+// only Linux can do. It is per-subtest rather than on the whole test so
+// the dry-run journey — where the wording of the summary is asserted —
+// still runs on a macOS development host instead of drifting until CI
+// catches it.
+func requireInitCommit(t *testing.T) {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("init commit is Linux-only")
 	}
+}
 
+func TestInitEndToEnd(t *testing.T) {
 	t.Run("two overlapping servers", func(t *testing.T) {
+		requireInitCommit(t)
 		withInitSandbox(t, supportedLandlockReport())
 		ts1 := testsupport.FakeModelsServer(t, "alpha", "beta")
 		ts2 := testsupport.FakeModelsServer(t, "beta", "gamma")
@@ -1399,12 +1408,12 @@ func TestInitEndToEnd(t *testing.T) {
 			t.Fatalf("code = %d stderr=%q", code, stderr)
 		}
 		for _, want := range []string{
-			"discovered 3 model(s):",
+			"discovered 3 models:",
 			"alpha: a",
 			"beta: a, b",
 			"gamma: b",
 			"initialized " + cfg,
-			"mellomting key create --config " + cfg,
+			"mellomting key create local --config " + cfg,
 			"mellomting serve --config " + cfg,
 		} {
 			if !strings.Contains(stdout, want) {
@@ -1445,13 +1454,18 @@ func TestInitEndToEnd(t *testing.T) {
 		if strings.Contains(stdout, "initialized") || strings.Contains(stdout, "next:") || strings.Contains(stdout, "Writing") {
 			t.Fatalf("dry-run stdout leaked completion/write claim:\n%s", stdout)
 		}
-		if !strings.Contains(stderr, "server \"local\": 1 model(s)") {
-			t.Fatalf("stderr missing discovery context:\n%s", stderr)
+		// The summary goes to stderr under --dry-run so stdout stays a
+		// pipeable configuration.
+		for _, want := range []string{"discovered 1 model:", "alpha: local"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("stderr missing %q:\n%s", want, stderr)
+			}
 		}
 		requireDirEmpty(t, dir)
 	})
 
 	t.Run("broken stdout before publication writes nothing", func(t *testing.T) {
+		requireInitCommit(t)
 		withInitSandbox(t, supportedLandlockReport())
 		ts := testsupport.FakeModelsServer(t, "alpha")
 		dir := newCommitDir(t)
@@ -1473,6 +1487,7 @@ func TestInitEndToEnd(t *testing.T) {
 	})
 
 	t.Run("summary is bounded to 20 rows", func(t *testing.T) {
+		requireInitCommit(t)
 		withInitSandbox(t, supportedLandlockReport())
 		ids := make([]string, 25)
 		for i := range ids {

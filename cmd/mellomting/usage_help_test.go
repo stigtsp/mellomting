@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"mellomting/internal/discovery"
 )
 
 // TestUsageHelpHasNoPlanReferences: the help text is operator-facing
@@ -51,6 +53,31 @@ func TestInvalidFlagsRemainErrors(t *testing.T) {
 				t.Fatalf("invalid flag: code=%d stdout=%q stderr=%q", code, out, errOut)
 			}
 		})
+	}
+}
+
+// TestInitSummaryWording pins the discovery summary on every platform.
+// The end-to-end journey that showed this text only runs where init can
+// write files, so its wording went stale unnoticed until CI.
+func TestInitSummaryWording(t *testing.T) {
+	var out bytes.Buffer
+	if err := printInitSummary(&out, discovery.Result{Models: map[string][]string{
+		"alpha": {"a"},
+		"beta":  {"a", "b"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"discovered 2 models:", "  alpha: a\n", "  beta: a, b\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("summary missing %q:\n%s", want, out.String())
+		}
+	}
+	out.Reset()
+	if err := printInitSummary(&out, discovery.Result{Models: map[string][]string{"alpha": {"a"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "discovered 1 model:") {
+		t.Fatalf("one model must not be pluralised:\n%s", out.String())
 	}
 }
 
