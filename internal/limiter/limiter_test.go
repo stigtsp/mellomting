@@ -327,6 +327,44 @@ func TestRegistryCarryOverAcrossGenerations(t *testing.T) {
 	}
 }
 
+func TestRegistryCarriesThroughIdleGenerations(t *testing.T) {
+	key := &auth.Key{ID: "kept", Limits: auth.KeyLimits{
+		RequestsPerSecond: 1, Burst: 1, ConcurrentRequests: 1,
+	}}
+	r := NewRegistry()
+	state := r.For(key)
+	now := time.Now()
+	state.AllowRate(now)
+	release, ok := state.AcquireConcurrency()
+	if !ok {
+		t.Fatal("initial concurrency admission failed")
+	}
+	defer release()
+	for range 3 {
+		r = NewRegistryCarrying(r)
+	}
+	got := r.For(key)
+	if ok, _ := got.AllowRate(now); ok {
+		t.Fatal("idle reloads reset the rate bucket")
+	}
+	if release, ok := got.AcquireConcurrency(); ok {
+		release()
+		t.Fatal("idle reloads lost an active concurrency slot")
+	}
+}
+
+func TestRegistryRetainPrunesHistoricalKeys(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"kept", "removed"} {
+		r.For(&auth.Key{ID: id, Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 1, ConcurrentRequests: 1}})
+	}
+	r = NewRegistryCarrying(NewRegistryCarrying(r))
+	r.Retain(func(id string) bool { return id == "kept" })
+	if len(r.carry) != 1 || len(r.carryConc) != 1 || r.carry["kept"] == nil || r.carryConc["kept"] == nil {
+		t.Fatal("pruning must retain only current keys across idle generations")
+	}
+}
+
 // A reload must not transiently double a key's concurrency bound. The
 // previous generation's in-flight requests hold release closures bound
 // to its channel, so rebuilding an unchanged bound would hand out a

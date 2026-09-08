@@ -1341,6 +1341,14 @@ func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 	if p.quota == nil && p.acc == nil {
 		return
 	}
+	// Retrieval and cancellation return an existing response's cumulative
+	// usage, not tokens consumed by this request. Keep the access record,
+	// but omit that usage so reports and quota replay cannot count it again.
+	if o.route == routeByResponseID {
+		out.usage = accounting.Usage{}
+		out.usageStatus = accounting.UsageUnknown
+		out.reservation = 0
+	}
 	total := out.usage.Total
 	if out.usageStatus == accounting.UsageUnknown {
 		if out.status >= 200 && out.status < 300 {

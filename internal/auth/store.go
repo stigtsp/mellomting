@@ -245,6 +245,12 @@ type Store struct {
 	now       func() time.Time
 }
 
+// HasID reports membership for pruning reload state; it does not authenticate.
+func (s *Store) HasID(id string) bool {
+	_, ok := s.byID[id]
+	return ok
+}
+
 // NewStore builds a Store from a validated users file and pepper.
 func NewStore(uf *UsersFile, pepper []byte) (*Store, error) {
 	if len(pepper) == 0 {

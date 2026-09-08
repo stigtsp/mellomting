@@ -93,6 +93,65 @@ func usageJSON(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"id":"x","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`))
 }
 
+func TestResponsesReadsDoNotRepeatUsage(t *testing.T) {
+	const response = `{"id":"resp_accounted","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}`
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response))
+	})
+	quota := accounting.NewQuota()
+	writer, path := tmpWriter(t)
+	p := newAccountingProxy(t, f, quota, writer)
+	key := testKey()
+	for _, req := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/responses", `{"model":"gen-1"}`},
+		{http.MethodGet, "/v1/responses/resp_accounted", ""},
+		{http.MethodGet, "/v1/responses/resp_accounted", ""},
+		{http.MethodPost, "/v1/responses/resp_accounted/cancel", ""},
+	} {
+		w := run(t, p, req.method, req.path, req.body, key)
+		if w.Code != http.StatusOK || w.Body.String() != response {
+			t.Fatalf("%s %s: status=%d body=%s", req.method, req.path, w.Code, w.Body.String())
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	if len(lines) != 4 {
+		t.Fatalf("got %d accounting records, want 4", len(lines))
+	}
+	for i, line := range lines {
+		var rec accounting.Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatal(err)
+		}
+		want := int64(0)
+		if i == 0 {
+			want = 10
+		}
+		if rec.TotalTokens != want || rec.ChargedTokens != want {
+			t.Fatalf("record %d: total=%d counted toward quota=%d, want %d", i, rec.TotalTokens, rec.ChargedTokens, want)
+		}
+	}
+	replayed := accounting.NewQuota()
+	if err := replayed.Replay(path, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []*accounting.Quota{quota, replayed} {
+		if ok, _ := q.Admit(key.ID, accounting.WindowLimit{TokensPerDay: 10}, 0, time.Now()); !ok {
+			t.Fatal("retrieval/cancel usage was counted toward quota again")
+		}
+		if ok, _ := q.Admit(key.ID, accounting.WindowLimit{TokensPerDay: 9}, 0, time.Now()); ok {
+			t.Fatal("original generation usage was not counted toward quota")
+		}
+	}
+}
+
 func TestOutputCapRejectsExcess(t *testing.T) {
 	f := newFakeVLLM(t, okJSON)
 	cfg := testConfig(f.server.URL)

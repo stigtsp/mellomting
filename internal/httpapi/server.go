@@ -122,9 +122,11 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 // reload does not gift every key a fresh burst; changed limits rebuild
 // the bucket from the reloaded store (FIX-22).
 func (s *Server) ReloadStore(st *auth.Store) {
+	limits := limiter.NewRegistryCarrying(s.snap.Load().limits)
+	limits.Retain(st.HasID)
 	s.snap.Store(&snapshot{
 		store:  st,
-		limits: limiter.NewRegistryCarrying(s.snap.Load().limits),
+		limits: limits,
 	})
 }
 

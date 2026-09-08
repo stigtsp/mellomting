@@ -169,10 +169,20 @@ func NewRegistryCarrying(prev *Registry) *Registry {
 	var carryConc map[string]*Concurrency
 	if prev != nil {
 		prev.mu.Lock()
-		if n := len(prev.keys); n > 0 {
-			carry = make(map[string]*Bucket, n)
-			carryConc = make(map[string]*Concurrency, n)
+		carry = make(map[string]*Bucket, len(prev.carry)+len(prev.keys))
+		carryConc = make(map[string]*Concurrency, len(prev.carryConc)+len(prev.keys))
+		for id, b := range prev.carry {
+			carry[id] = b
+		}
+		for id, c := range prev.carryConc {
+			carryConc[id] = c
+		}
+		if len(prev.keys) > 0 {
 			for id, ks := range prev.keys {
+				// Materialized state supersedes older carried settings,
+				// including a rate limit that has since been removed.
+				delete(carry, id)
+				delete(carryConc, id)
 				if ks.Bucket != nil {
 					carry[id] = ks.Bucket
 				}
@@ -184,6 +194,29 @@ func NewRegistryCarrying(prev *Registry) *Registry {
 		prev.mu.Unlock()
 	}
 	return &Registry{keys: make(map[string]*KeyState), carry: carry, carryConc: carryConc}
+}
+
+// Retain drops state for keys removed from the current store. Call before
+// publishing a reloaded registry so repeated rotations remain bounded by
+// the current key set rather than retaining every historical key.
+func (r *Registry) Retain(keep func(string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range r.carry {
+		if !keep(id) {
+			delete(r.carry, id)
+		}
+	}
+	for id := range r.carryConc {
+		if !keep(id) {
+			delete(r.carryConc, id)
+		}
+	}
+	for id := range r.keys {
+		if !keep(id) {
+			delete(r.keys, id)
+		}
+	}
 }
 
 // For returns the limit state of a key, creating it on first use.
