@@ -151,7 +151,7 @@ func serveCmd(args []string) int {
 	}
 
 	if cfg.Security.BackendNetwork.Mode == "any" {
-		log.Warn("backend_network.mode is \"any\": outbound connections to inference backends are not restricted to loopback or allow-listed CIDRs")
+		log.Warn("backend_network.mode is \"any\": backend addresses are unrestricted")
 	}
 
 	// Sandbox confinement (PLAN §53-63, §95). This is the last step
@@ -321,7 +321,7 @@ func enforceSandbox(b sandboxBackend, cfg *config.Config, listeners []net.Addr, 
 			}
 			return fmt.Errorf("security.%s.mode is %q but the sandbox cannot be enforced: %s", b.name, b.mode, msg)
 		}
-		log.Warn("sandbox not applied (continuing without one)", "backend", b.name, "reason", reason, "detail", detail)
+		log.Warn("running without a sandbox", "backend", b.name, "reason", reason, "detail", detail)
 		return nil
 	}
 
@@ -735,7 +735,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 			"queue_size", cfg.Accounting.QueueSize,
 		)
 	} else if quotaKeysConfigured(users.Keys) {
-		log.Warn("accounting disabled; token quotas are enforced in-memory only (windows reset on restart and no usage is recorded)")
+		log.Warn("accounting disabled; usage is not recorded and token quotas reset on restart")
 	}
 
 	// Requests are tracked only when something can read the view: with
@@ -757,7 +757,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		"accounting_enabled", cfg.Accounting.Enabled,
 	)
 	if len(users.Keys) == 0 {
-		log.Warn("users file has no keys; every request will be rejected until a key is added")
+		log.Warn("no API keys configured; add one with mellomting key create")
 	}
 	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, usersHash: sha256.Sum256(data)}, nil
 }
@@ -821,6 +821,6 @@ func (d *daemon) refreshUsers(force bool) {
 	d.api.ReloadStore(store)
 	d.log.Info("users reloaded", "keys", len(users.Keys))
 	if len(users.Keys) == 0 {
-		d.log.Warn("users file has no keys; every request will be rejected until a key is added")
+		d.log.Warn("no API keys configured; add one with mellomting key create")
 	}
 }

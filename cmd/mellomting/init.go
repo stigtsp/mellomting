@@ -82,7 +82,7 @@ type initArguments struct {
 //
 // Exit codes: 0 ok, 1 platform/preflight failure, 2 usage error.
 func initCmd(args []string) int {
-	fs := commandFlags("init", "Create configuration and auth files from inference servers.\nExisting files are never overwritten. Writing them is Linux-only;\n--dry-run prints the configuration on any platform.")
+	fs := commandFlags("init", "Create configuration and key files from inference servers.\nRequires Linux; use --dry-run on other platforms. Existing files are preserved.")
 	var servers serverList
 	var configPath, listen, sandboxMode string
 	var dryRun bool
@@ -115,7 +115,7 @@ func initCmd(args []string) int {
 		return 1
 	}
 	if !parsed.DryRun && !initCommitSupported {
-		fmt.Fprintf(os.Stderr, "mellomting: init: writing files is Linux-only on this build; rerun with --dry-run to print the configuration\n")
+		fmt.Fprintln(os.Stderr, "mellomting: init: creating files requires Linux; use --dry-run to preview the configuration")
 		return 1
 	}
 	return runInit(parsed)

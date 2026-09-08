@@ -2328,7 +2328,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "accounting disabled; token quotas are enforced in-memory only") {
+	if !strings.Contains(string(logData), "accounting disabled; usage is not recorded and token quotas reset on restart") {
 		t.Fatalf("startup warning missing: %q", string(logData))
 	}
 }

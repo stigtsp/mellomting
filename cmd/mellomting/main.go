@@ -402,7 +402,7 @@ func keyCreate(c *keyFlags) int {
 	// (T-L4).
 	for _, m := range models {
 		if _, ok := cfg.Models[m]; !ok && m != config.ModelWildcard {
-			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not present in the configuration; the ACL will allow it once the model exists\n", m)
+			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not configured; access will apply when it is added\n", m)
 		}
 	}
 	limits := auth.KeyLimits{
@@ -506,7 +506,7 @@ func keyList(c *keyFlags) int {
 
 // keyApplyInstruction is the one apply instruction printed after a key
 // mutation, explaining when the running daemon applies the change.
-const keyApplyInstruction = "A running Mellomting applies valid key changes automatically within about one second."
+const keyApplyInstruction = "Key changes apply automatically within about a second."
 
 func keyRevoke(c *keyFlags) int {
 	_, usersPath, _, exit := keyState(c)

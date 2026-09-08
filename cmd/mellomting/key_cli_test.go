@@ -193,7 +193,7 @@ func TestKeyCreateUnknownModelWarns(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create with known model exit = %d", code)
 	}
-	if strings.Contains(errOut, "is not present in the configuration") {
+	if strings.Contains(errOut, "is not configured") {
 		t.Fatalf("unexpected unknown-model warning: stderr=%q", errOut)
 	}
 }

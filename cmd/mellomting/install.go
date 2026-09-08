@@ -94,7 +94,7 @@ func performInstall(src, prefix string) (dest string, code int) {
 		}
 		fmt.Fprintf(os.Stderr, "mellomting: install: %v\n", err)
 		if errors.Is(err, fs.ErrPermission) {
-			fmt.Fprintln(os.Stderr, "mellomting: the destination is not writable by this user; run with write access (e.g. root) or choose another --prefix")
+			fmt.Fprintln(os.Stderr, "mellomting: permission denied; use sudo or choose another --prefix")
 		}
 		return dest, 1
 	}
@@ -110,9 +110,9 @@ func systemdNextSteps(binaryPath string, r systemd.Report) string {
 	var b strings.Builder
 	b.WriteString("Mellomting installed.\n\n")
 	b.WriteString("Next:\n")
-	fmt.Fprintf(&b, "  1. Run: sudo editor %s\n", systemd.ConfigPath)
-	fmt.Fprintf(&b, "  2. Run: sudo %s key create production\n", binaryPath)
-	fmt.Fprintf(&b, "  3. Run: sudo systemctl enable --now %s\n", systemd.UnitName)
+	fmt.Fprintf(&b, "  sudo editor %s\n", systemd.ConfigPath)
+	fmt.Fprintf(&b, "  sudo %s key create production\n", binaryPath)
+	fmt.Fprintf(&b, "  sudo systemctl enable --now %s\n", systemd.UnitName)
 	return b.String()
 }
 

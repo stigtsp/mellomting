@@ -27,7 +27,7 @@ const maxTopUserAgent = 28
 //
 // Exit codes: 0 ok, 1 the daemon could not be reached, 2 usage error.
 func topCmd(args []string) int {
-	fs := commandFlags("top", "Watch the requests the daemon is serving.\nRequires server.admin_socket in the configuration.")
+	fs := commandFlags("top", "Watch active requests. Requires server.admin_socket.")
 	var configPath string
 	var interval time.Duration
 	var once bool
@@ -53,9 +53,8 @@ func topCmd(args []string) int {
 	}
 	sock := cfg.Server.AdminSocket
 	if sock == "" {
-		fmt.Fprint(os.Stderr, "mellomting: top: the daemon publishes no live view; add an admin socket to the configuration:\n\n"+
-			"  server:\n    admin_socket: /run/mellomting/admin.sock\n\n"+
-			"and restart it — the socket is bound at startup.\n")
+		fmt.Fprint(os.Stderr, "mellomting: top: add server.admin_socket to your configuration and restart Mellomting:\n\n"+
+			"  server:\n    admin_socket: /run/mellomting/admin.sock\n")
 		return 1
 	}
 
