@@ -246,11 +246,11 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
 		t.Fatalf("stdout must be the raw key and newline only: %q", out)
 	}
-	if !strings.Contains(errOut, "Reload Mellomting to apply it") {
+	if !strings.Contains(errOut, keyApplyInstruction) {
 		t.Fatalf("no apply instruction on create: stderr=%q", errOut)
 	}
-	if !strings.Contains(errOut, "systemctl reload") {
-		t.Fatalf("the apply instruction must name the reload command: stderr=%q", errOut)
+	if strings.Contains(errOut, "systemctl reload") {
+		t.Fatalf("key updates must not require a manual reload: stderr=%q", errOut)
 	}
 	id := keyRe.FindString(out)
 	if id == "" {
@@ -262,7 +262,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 	// concise (D16): no design rationale or mechanism inventory.
 	if code, _, errOut := runCLI(t, bin, dir, "key", "revoke", id, "-config", cfg); code != 0 {
 		t.Fatalf("revoke exit = %d stderr=%q", code, errOut)
-	} else if !strings.Contains(errOut, "Reload Mellomting to apply it") {
+	} else if !strings.Contains(errOut, keyApplyInstruction) {
 		t.Fatalf("no apply instruction on revoke: stderr=%q", errOut)
 	} else {
 		for _, banned := range []string{"inode", "pinned", "atomic", "rename", "MPTCP"} {
@@ -289,7 +289,7 @@ func TestKeyMutationApplyInstruction(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create (best-effort) exit = %d", code)
 	}
-	if !strings.Contains(errOut, "Reload Mellomting to apply it") {
+	if !strings.Contains(errOut, keyApplyInstruction) {
 		t.Fatalf("apply instruction differs by sandbox mode: stderr=%q", errOut)
 	}
 	if strings.Contains(errOut, "landlock") {

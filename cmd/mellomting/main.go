@@ -505,8 +505,8 @@ func keyList(c *keyFlags) int {
 }
 
 // keyApplyInstruction is the one apply instruction printed after a key
-// mutation (D16: one completion line plus one reload action).
-const keyApplyInstruction = "Reload Mellomting to apply it: systemctl reload mellomting (or send SIGHUP)."
+// mutation, explaining when the running daemon applies the change.
+const keyApplyInstruction = "A running Mellomting applies valid key changes automatically within about one second."
 
 func keyRevoke(c *keyFlags) int {
 	_, usersPath, _, exit := keyState(c)

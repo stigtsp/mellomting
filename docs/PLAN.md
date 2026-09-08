@@ -1386,7 +1386,14 @@ Preserve ownership safely.
 
 Keep reload deliberately narrow.
 
-`SIGHUP` reloads:
+The daemon MUST check the users file for content changes once per second
+and automatically reload valid changes, including atomic replacements made
+by the key CLI. Unchanged content MUST NOT rebuild the admission state.
+Invalid or unreadable updates retain the previous valid store; repeated
+polls of the same invalid content MUST NOT repeatedly log the same error.
+`SIGHUP` also triggers an immediate reload.
+
+Both automatic checks and `SIGHUP` reload:
 
 - API keys;
 - key enabled state;

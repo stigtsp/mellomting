@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -39,6 +40,7 @@ import (
 	"mellomting/internal/routing"
 	"mellomting/internal/sandbox"
 	"mellomting/internal/seatbelt"
+	"mellomting/internal/securefile"
 	"mellomting/internal/tlsconfig"
 	"mellomting/internal/version"
 )
@@ -62,14 +64,16 @@ func listenerAddrs(lns ...net.Listener) []net.Addr {
 
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
-	cfg       *config.Config
-	log       *slog.Logger
-	api       *httpapi.Server
-	proxy     *proxy.Proxy
-	acc       *accounting.Writer // usage JSONL writer; nil when disabled
-	live      *inflight.Registry // in-flight requests, for `mellomting top`
-	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
-	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
+	usersHash       [sha256.Size]byte // last observed users-file content
+	usersReadFailed bool              // suppress repeated polling read errors
+	cfg             *config.Config
+	log             *slog.Logger
+	api             *httpapi.Server
+	proxy           *proxy.Proxy
+	acc             *accounting.Writer // usage JSONL writer; nil when disabled
+	live            *inflight.Registry // in-flight requests, for `mellomting top`
+	pepper          []byte             // HMAC pepper, loaded once at startup (PLAN §27)
+	tlsConfig       *tls.Config        // static listener TLS (PLAN §67); nil when absent
 }
 
 // serveCmd runs the proxy daemon.
@@ -201,10 +205,14 @@ func serveCmd(args []string) int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
+	usersPoll := time.NewTicker(time.Second)
+	defer usersPoll.Stop()
 
 	var received os.Signal
 	for received == nil {
 		select {
+		case <-usersPoll.C:
+			d.refreshUsers(false)
 		case err := <-errCh:
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error("server stopped", "error_class", "server")
@@ -626,7 +634,11 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// Before any client, router, or writer is constructed: a key set
 	// the daemon cannot serve should be reported without opening
 	// resources first.
-	store, users, err := loadStore(cfg, pepper)
+	data, err := securefile.Read(cfg.Auth.UsersFile, 1<<20)
+	if err != nil {
+		return nil, fmt.Errorf("load users file: %w", err)
+	}
+	store, users, err := parseStore(cfg, pepper, data)
 	if err != nil {
 		return nil, err
 	}
@@ -747,16 +759,16 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("users file has no keys; every request will be rejected until a key is added")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, usersHash: sha256.Sum256(data)}, nil
 }
 
-// loadStore reads the users file and builds the key store the daemon
+// parseStore validates users-file bytes and builds the key store the daemon
 // will serve from. It is the one admission path for a key set, at
 // startup and on every SIGHUP reload alike, so a key set startup would
-// refuse — a token quota the configuration cannot charge, which would
+// refuse — a token quota the configuration cannot enforce, which would
 // be silently unlimited — cannot slip in through a reload either.
-func loadStore(cfg *config.Config, pepper []byte) (*auth.Store, *auth.UsersFile, error) {
-	users, err := auth.LoadUsers(cfg.Auth.UsersFile)
+func parseStore(cfg *config.Config, pepper, data []byte) (*auth.Store, *auth.UsersFile, error) {
+	users, err := auth.ParseUsers(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load users file: %w", err)
 	}
@@ -778,7 +790,30 @@ func loadStore(cfg *config.Config, pepper []byte) (*auth.Store, *auth.UsersFile,
 // grants after startup (PLAN §58). In-flight requests are unaffected;
 // they keep serving against the store they looked up (PLAN §74).
 func (d *daemon) reloadUsers() {
-	store, users, err := loadStore(d.cfg, d.pepper)
+	d.refreshUsers(true)
+}
+
+// refreshUsers runs on the signal loop, serializing polling with SIGHUP.
+// Hash the bounded, securely opened bytes rather than metadata so atomic
+// replacements and same-size edits are detected. Never publish invalid data.
+func (d *daemon) refreshUsers(force bool) {
+	data, err := securefile.Read(d.cfg.Auth.UsersFile, 1<<20)
+	if err != nil {
+		if force || !d.usersReadFailed {
+			d.log.Error("users reload failed; keeping previous store", "error_class", "users_read")
+		}
+		d.usersReadFailed = true
+		return
+	}
+	d.usersReadFailed = false
+	hash := sha256.Sum256(data)
+	if !force && hash == d.usersHash {
+		return
+	}
+	// Remember rejected content too: retry when it changes, without logging
+	// the same malformed file every second. SIGHUP always retries explicitly.
+	d.usersHash = hash
+	store, users, err := parseStore(d.cfg, d.pepper, data)
 	if err != nil {
 		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
 		return

@@ -1347,6 +1347,23 @@ models:
 	waitStatus(t, client, http.MethodPost, chatURL, keyA, chatBody, 200)
 	waitStatus(t, client, http.MethodPost, chatURL, keyB, chatBody, 200)
 
+	// Keys added after startup become usable without a signal. auth.Update
+	// publishes through the same atomic replacement used by the key CLI.
+	keyC, idC := newKey("automatic")
+	waitStatus(t, client, http.MethodPost, chatURL, keyC, chatBody, 200)
+	if err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		for i := range uf.Keys {
+			if uf.Keys[i].ID == idC {
+				uf.Keys = append(uf.Keys[:i], uf.Keys[i+1:]...)
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, client, http.MethodPost, chatURL, keyC, chatBody, 401)
+
 	// Disable key A via the CLI, then SIGHUP: key A is rejected on the
 	// next request without a restart, key B is unaffected, the process
 	// survives.
@@ -2163,13 +2180,10 @@ models:
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(logB.String(), "users reloaded") {
 		if time.Now().After(deadline) {
-			t.Fatalf("sandboxed daemon did not reload the users file after SIGHUP; log=%s", logB.String())
+			t.Fatalf("sandboxed daemon did not automatically reload the users file; log=%s", logB.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -2875,14 +2889,42 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.reloadUsers()
-
+	d.refreshUsers(false)
 	out := logBuf.String()
+	d.refreshUsers(false)
+	if logBuf.String() != out {
+		t.Fatal("unchanged invalid content was retried by the automatic check")
+	}
 	if strings.Contains(out, "users reloaded") {
 		t.Fatalf("the reload installed a quota that can never be enforced: %s", out)
 	}
 	if !strings.Contains(out, "would count zero tokens against it") {
 		t.Fatalf("reload rejection message missing: %q", out)
+	}
+	// The old key remains usable after the rejected update.
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	d.api.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("invalid automatic update replaced the active store: %d", w.Code)
+	}
+	// A subsequent corrected edit is installed automatically, and unchanged
+	// content does not rebuild the store or emit another reload message.
+	if err := auth.Update(usersPath, func(uf *auth.UsersFile) error {
+		uf.Keys[0].Limits.TokensPerDay = 0
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshUsers(false)
+	out = logBuf.String()
+	if !strings.Contains(out, "users reloaded") {
+		t.Fatal("corrected content was not automatically installed")
+	}
+	d.refreshUsers(false)
+	if logBuf.String() != out {
+		t.Fatal("unchanged valid content was reloaded")
 	}
 }
 

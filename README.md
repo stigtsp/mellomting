@@ -109,3 +109,11 @@ make check
 This runs formatting, build, vet, tests, and race checks, plus staticcheck and
 govulncheck when installed. `make release` builds release artifacts.
 See [the design](docs/PLAN.md) and [contributor guidance](AGENTS.md).
+
+## Key-file updates
+
+The running daemon checks the users file once per second and automatically
+applies valid key additions, removals, and policy changes. Invalid or unreadable
+updates leave the previous key store active. Existing requests continue normally.
+SIGHUP (or `systemctl reload mellomting`) triggers an immediate check. Other
+configuration changes still require a restart.
