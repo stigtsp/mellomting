@@ -303,7 +303,7 @@ func parseInitServers(raw []string) ([]discovery.Server, error) {
 	out := make([]discovery.Server, 0, len(parsed))
 	for i, p := range parsed {
 		if !initServerNamePattern.MatchString(p.name) {
-			return nil, fmt.Errorf("server %d: name %q must match ^[a-z][a-z0-9-]{0,62}$", i+1, p.name)
+			return nil, fmt.Errorf("server %d: invalid name %q; use 1–63 lowercase letters, digits or hyphens, starting with a letter", i+1, p.name)
 		}
 		if names[p.name] {
 			return nil, fmt.Errorf("server %d: duplicate name %q", i+1, p.name)
@@ -332,7 +332,7 @@ func parseInitServers(raw []string) ([]discovery.Server, error) {
 		}
 		destination := u.Scheme + "|" + canonicalInitIP(ip) + "|" + strconv.Itoa(portNum)
 		if destinations[destination] {
-			return nil, fmt.Errorf("server %d: duplicate canonical destination %s://%s:%d", i+1, u.Scheme, canonicalInitIP(ip), portNum)
+			return nil, fmt.Errorf("server %d: duplicate address %s://%s:%d", i+1, u.Scheme, canonicalInitIP(ip), portNum)
 		}
 		destinations[destination] = true
 		out = append(out, discovery.Server{Name: p.name, BaseURL: p.url})
@@ -477,10 +477,10 @@ func (s initSandbox) preflight(mode string, explicit bool, check func() sandbox.
 	}
 	report := check()
 	if !report.Supported {
-		return fmt.Errorf("%s required but unavailable: %s; rerun with --sandbox best-effort to apply one wherever the host allows", s.section, report.Reason)
+		return fmt.Errorf("%s required but unavailable: %s; use --sandbox best-effort to allow running without it", s.section, report.Reason)
 	}
 	if s.section == landlockSection && report.KernelABI < landlock.DefaultMinimumABI {
-		return fmt.Errorf("landlock kernel ABI %d is below the required minimum %d; rerun with --sandbox best-effort to apply one wherever the host allows", report.KernelABI, landlock.DefaultMinimumABI)
+		return fmt.Errorf("landlock ABI %d is below the required minimum %d; use --sandbox best-effort to allow running without it", report.KernelABI, landlock.DefaultMinimumABI)
 	}
 	return nil
 }
@@ -713,7 +713,7 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		}
 	}
 	if len(existing) > 0 {
-		return fmt.Errorf("refusing to overwrite existing %s; inspect and remove them manually", strings.Join(existing, ", "))
+		return fmt.Errorf("refusing to overwrite existing %s; choose another --config directory", strings.Join(existing, ", "))
 	}
 
 	for i := range files {

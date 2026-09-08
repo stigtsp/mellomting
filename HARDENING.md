@@ -1,124 +1,102 @@
 # Hardening
 
-Concrete controls, referenced to `docs/PLAN.md`. Phase markers show where a
-control lands in the implementation plan.
-
 ## Authentication and keys
 
-- Opaque bearer keys `sk-<username>-<keyid>-<secret>`, 256-bit secrets from
-  `crypto/rand`, accepted only in `Authorization: Bearer` / `X-Api-Key`
-  headers, never query parameters (§25). [Phase 1]
-- Keys stored only as `HMAC-SHA-256(pepper, key)`; pepper in
-  `/etc/mellomting/auth.pepper` (0640, `root:mellomting`); constant-time
-  comparison with a dummy HMAC for unknown key IDs (§26, §27). [Phase 1]
-- No network management API: keys are managed only by the offline
-  `mellomting key` CLI with atomic, locked users-file updates (§29).
-  [Phase 3]
+- API keys have 256-bit random secrets. Clients send them in
+  `Authorization: Bearer` or `X-Api-Key`, never query parameters.
+- The users file stores HMAC-SHA-256 hashes. The pepper is stored separately.
+  Key comparisons use constant-time checks.
+- Manage keys with `mellomting key`. Valid users-file changes apply
+  automatically within about a second, without interrupting active requests.
+- Protect secret files with mode `0600`, or `0640` and the service group.
+  The systemd installer creates its auth files as `root:mellomting`, mode
+  `0640`.
 
-## Request path
+## Requests and configuration
 
-- Explicit allow-listed inference endpoints only; every other path —
-  including backend admin paths such as `/metrics` — is 404. No catch-all
-  route (§11.3). [Phase 1]
-- Client `Authorization` / `Proxy-Authorization` / `X-Api-Key` and proxy
-  identity headers are stripped before forwarding; backend credentials are
-  injected only from trusted configuration and read from secret files
-  (§17, §18). [Phase 1]
-- Shallow body parsing into `map[string]json.RawMessage`; only
-  routing/policy fields are inspected, unknown fields pass through (§12).
-  [Phase 1]
-- Bounded everything: bodies, header size, SSE event size, in-flight
-  requests, buffered bytes, backend queues, retries, qualifier concurrency
-  (§4, §9.1, §22, §32-37). Every limit has a finite default.
-- A streamed request is never retried after response bytes reached the
-  client (§24). [Phase 2]
+- Only the supported inference endpoints are forwarded. Backend admin paths,
+  including `/metrics`, are inaccessible through the proxy.
+- Client credentials and proxy identity headers are stripped before forwarding.
+  Backend credentials come from configured files.
+- Requests, responses, headers, SSE events, connections, concurrency, queues,
+  and retries have size or count limits. Requests are never retried after
+  response bytes reach the client.
+- Unknown request fields pass through. Routing and policy fields are checked
+  before forwarding.
+- Configuration files are size-limited and strictly validated. Unknown fields,
+  duplicate keys, YAML aliases and anchors, and unsupported versions are rejected.
+- Backend URLs cannot contain credentials, paths other than `/`, queries, or
+  fragments. Resolved addresses are checked against `security.backend_network`
+  on every new connection.
+- Non-loopback plaintext TCP requires
+  `allow_plaintext_non_loopback: true` and produces a startup warning.
 
-## Configuration handling
+## TLS
 
-- Size-bounded YAML (1 MiB), strict known-field decoding, no
-  aliases/anchors, no custom tags, no duplicate keys, no unsupported
-  versions; fail-closed validation (§28). [Phase 0 — `config check`]
-- Backend URLs validated at start-up: no query/fragment/userinfo/path,
-  loopback IP literals required in `loopback-only` mode (§15.1, §16).
-  [Phase 0 validation / Phase 1 enforcement]
-- Plaintext non-loopback TCP listeners fail unless explicitly opted in
-  with `allow_plaintext_non_loopback: true` and a loud startup warning
-  (§8.2). [Phase 1]
+Static TLS requires `server.tls.cert_file` and `server.tls.key_file` on a TCP
+listener. TLS 1.2 is the minimum. Restart after replacing either file.
 
-## Ingress TLS
+Certificates and keys are loaded before sandbox activation. They must be
+regular files no larger than 1 MiB; the final path component cannot be a
+symlink. Private keys must have restricted permissions.
 
-- Static TLS (`server.tls.cert_file` / `key_file`) wraps the TCP listener before
-  Landlock enforcement: the certificate and key are loaded before the
-  sandbox is applied and their FDs are closed before activation
-  (§57 step 9, §59, §67). [Phase 6]
-- Secure defaults: TLS 1.2 minimum with Go's built-in cipher suites
-  (§97). Certificate reload requires a process restart in v1 (§67).
-- Certificate and key are read without following the final symlink and
-  must be regular files bounded to 1 MiB (§28, via `internal/securefile`).
-- Native ACME is shelved for the first release: the source schema has no
-  `tls.mode` key, so an `acme` configuration is refused by the strict
-  decoder at `config check` time rather than by a runtime check (§68).
-  Reverse-proxy TLS remains the recommended hardened deployment (§67, §68).
-- Plaintext non-loopback TCP requires explicit opt-in (§8.2); loopback
-  TCP and the Unix socket are the intended fronting modes for nginx or
-  `tailscale serve`.
+Automatic certificate issuance (ACME) is not supported. A trusted reverse
+proxy can terminate TLS and forward to a Unix socket or loopback listener.
 
-## Sandbox (Landlock)
+## Sandbox
 
-- Applied on Linux at start-up, after all secrets are preloaded and their
-  FDs are closed, and before the listener accepts (§57); a `required`
-  policy never degrades silently to no sandbox — start-up fails instead,
-  and the library's `BestEffort()` downgrade path is never used (§55).
-  [Phase 4 — `internal/landlock.Apply`]
-- Enforced on all Go runtime threads via the ABI 8+ all-thread TSYNC path;
-  threads created afterwards inherit the confined domain at clone time
-  (§56, covered by `TestAllThreadsEnforced`).
-- Post-startup policy is minimal (§58): read the users file (SIGHUP
-  reload), write the accounting log, connect to the configured backend
-  TCP ports; execute nowhere; everything else denied. Scoped IPC
-  (signals / abstract Unix sockets to processes outside the domain) is
-  restricted on ABI 6+ (§62).
-- `best-effort` mode enforces the full policy or continues with a loud
-  warning (never a partially degraded policy); TCP port rules are
-  port-based only — external address restriction comes from the backend
-  network modes (§16, §60).
-- Multipath TCP explicitly disabled on every listener/dialer because Go
-  1.24+ default listeners are MPTCP-capable and bypass classic TCP
-  restrictions (§61).
-- Default policy: `mode: best-effort`, `minimum_abi: 6` (§55). The sandbox
-  is containment for a compromised process, not the control that decides
-  whether the proxy may run; `required` makes it that.
-- Non-Linux builds clearly report that Landlock is unavailable and
-  `Apply` fails (§7); `sandbox check` reports capability either way.
-- `deploy/mellomting.service` ships the hardened systemd unit that
-  complements the in-process sandbox (§64).
+Linux uses Landlock; macOS uses Seatbelt. Both default to `best-effort`:
+apply the full policy when available, otherwise log a warning and continue.
+Use `required` to refuse startup without confinement, or `disabled` to skip it.
 
-## Logging
+Check what the configured mode would do:
 
-- Structured JSON to stdout/stderr only; operational fields (request ID,
-  key ID, model, status, durations, error class) — never prompts,
-  responses, keys, credentials, or raw backend error bodies (§43).
-- Backend failures map to sanitized error classes (e.g.
-  `backend_connect`, `backend_5xx`); client errors are OpenAI-shaped JSON
-  with no Go stack traces, paths, or hostnames (§72).
+```sh
+mellomting sandbox check
+```
 
-## Build and supply chain
+The sandbox is applied after startup files are loaded and before requests
+are accepted. It restricts the daemon to the resources it still needs:
 
-- `CGO_ENABLED=0`, `-trimpath`, version/commit/build-date embedded
-  (PLAN §89, Makefile). Primary targets `linux/amd64`, `linux/arm64`.
-- CI: `gofmt`, `go vet`, staticcheck, govulncheck, `go test`,
-  `go test -race`, a fuzz smoke for the parser, CodeQL (via
-  `security-events`), SHA-pinned actions, Dependabot for Go modules and
-  GitHub Actions (PLAN §89, `.github/workflows/ci.yml`).
-- Configuration files, users file, pepper, and backend secret files are
-  opened without following symlinks where practical (§28) [Phase 4,
-  `internal/securefile`].
+- Read the directory containing the users file, allowing reloads after atomic
+  file replacement. Put that file in a separate directory to narrow access.
+- Write the accounting log when enabled.
+- Connect to configured backend TCP ports.
+- Accept requests on listeners opened at startup.
 
-## Deployment recommendations
+No execution rights are granted. Landlock also restricts signals and abstract
+Unix sockets to processes outside its domain. TCP rules restrict ports;
+backend address checks are enforced separately by the proxy.
 
-- Unix socket under `systemd RuntimeDirectory` with mode 0660 (§8), or
-  loopback TCP.
-- Backends on loopback, as different unprivileged users, admin/dev
-  endpoints disabled, no dynamic LoRA loading (§67).
-- TLS at a trusted reverse proxy for the strongest profile; native TLS/ACME
-  is convenience, not the recommended hardened deployment (§67, §68).
+Landlock requires ABI 6 by default. The highest ABI supported by both kernel
+and library is used. Enforcement covers all runtime threads, including threads
+created later. Multipath TCP is disabled on the proxy's listeners and dialers.
+
+Seatbelt may be unavailable when the process is already inside another
+sandbox. In `required` mode, this prevents startup.
+
+The sandbox limits the impact of a compromised proxy. It cannot protect
+resources the proxy is allowed to access. See [Threat model](THREAT_MODEL.md).
+
+## Logs and operator access
+
+Operational logs are structured JSON. Prompts, responses, API keys, backend
+credentials, and raw backend errors are not logged. Client errors use the
+OpenAI JSON error format without stack traces, paths, or backend hostnames.
+
+The optional admin socket exposes active request metadata, including client
+addresses and token usage. Its mode is `0600`; only the service account and
+root can read it.
+
+## Deployment and builds
+
+Use the supplied systemd unit to run the proxy as an unprivileged service.
+Keep inference servers under separate unprivileged users and disable their
+admin and development endpoints.
+
+Release builds use `CGO_ENABLED=0` and `-trimpath`, with version and commit
+metadata embedded. Primary targets are `linux/amd64` and `linux/arm64`.
+
+Run `make check` for formatting, build, vet, tests, race checks, staticcheck,
+and govulncheck when installed. See [Operations](docs/OPERATIONS.md) for setup
+and [the design](docs/PLAN.md) for the full security requirements.

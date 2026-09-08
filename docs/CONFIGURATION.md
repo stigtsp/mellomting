@@ -75,16 +75,15 @@ server:
 Both files are required. TLS requires version 1.2 or newer. Restart after
 replacing a certificate. TLS cannot be configured on a Unix listener.
 
-`mellomting top` reads its live view from a second, operator-only socket, which
-is off unless configured:
+To enable `mellomting top`, configure an admin socket:
 
 ```yaml
 server:
   admin_socket: /run/mellomting/admin.sock
 ```
 
-It must be an absolute path and not the ingress address. It is created `0600`
-and bound at startup, so adding it takes a restart. See
+Use an absolute path different from the client listener. The socket has mode
+`0600`; restart after adding it. See
 [Operations](OPERATIONS.md).
 
 ## Accounting and limits
@@ -128,10 +127,9 @@ explicit network policy; `init` derives a restricted policy for supplied
 remote IP addresses. Keep credentials in protected files, and keep the
 generated absolute `auth.users_file` and `auth.pepper_file` paths.
 
-The self-confinement — Landlock on Linux, Seatbelt on macOS — defaults to
-`best-effort`: it is applied wherever the host can enforce it, and a host that
-cannot is served with a warning. `required` refuses to start unless the policy
-is enforced; `disabled` skips it. Run
+The sandbox uses Landlock on Linux and Seatbelt on macOS. It defaults to
+`best-effort`: apply when available and warn otherwise. `required` refuses
+startup without it; `disabled` skips it. Run
 `mellomting sandbox check --config ./config.yaml` to inspect capability and
 configured policy. See [Hardening](../HARDENING.md).
 

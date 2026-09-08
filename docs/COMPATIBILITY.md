@@ -1,141 +1,9 @@
-# Mellomting — API compatibility notes
+# API compatibility
 
-This file records Mellomting's compatibility behaviour with the OpenAI
-and vLLM APIs, so operators and client authors know exactly what the
-proxy changes and what it passes through unchanged (PLAN §12, §30, §36,
-§38).
+Mellomting accepts OpenAI-compatible requests and forwards them to configured
+inference servers. This page describes the changes clients can observe.
 
-The source of truth for intended behaviour is `PLAN.md`. Where an
-upstream API has changed since PLAN.md was written, this file is updated
-to record the observed/expected compatibility contract (PLAN §30).
-
-## General strategy: shallow parse, broad pass-through (PLAN §12)
-
-Mellomting decodes the top-level request object into
-`map[string]json.RawMessage` and inspects only the routing/policy fields:
-
-```text
-model
-stream
-stream_options
-previous_response_id
-max_tokens
-max_completion_tokens
-max_output_tokens
-```
-
-Every other field is preserved **byte-for-byte** and forwarded verbatim
-to the backend. Mellomting never uses strict endpoint structs that would
-silently discard new fields, so tool calling, structured output,
-reasoning fields, new OpenAI fields, vLLM extensions, and
-coding-agent-specific parameters pass through unchanged.
-
-The only field Mellomting rewrites is `model`, which is replaced with the
-backend's configured `upstream_model` on the outbound request (PLAN §13).
-The client always sees its own public model name.
-
-## Generative output caps (PLAN §36)
-
-Each generative public model can define a policy cap:
-
-```yaml
-policy:
-  max_output_tokens: 32768
-```
-
-The per-endpoint field is:
-
-| Endpoint          | Cap field                   |
-|-------------------|-----------------------------|
-| Chat Completions  | `max_completion_tokens` (or `max_tokens`) |
-| Completions       | `max_tokens`                |
-| Responses         | `max_output_tokens`         |
-
-Behaviour:
-
-- If a client asks for **more** than the configured cap, the request is
-  rejected (400 `output_limit_exceeded`); the backend is not reached.
-- If a client supplies **no** output limit, Mellomting injects the
-  configured cap into the forwarded request (so a runaway generation is
-  bounded even when the client does not bound it).
-- Mellomting **never** silently raises a client-supplied limit.
-
-This is a deliberate divergence from raw OpenAI/vLLM behaviour: an
-unbounded request becomes bounded at the proxy. Clients that already
-supply their own `max_tokens` / `max_completion_tokens` /
-`max_output_tokens` are unaffected as long as they stay within the cap.
-
-## Streaming token usage (PLAN §38)
-
-When `accounting.ensure_stream_usage` is enabled (default when
-accounting is on), Mellomting injects:
-
-```json
-"stream_options": { "include_usage": true }
-```
-
-into known OpenAI-compatible Chat/Completions stream requests that did
-not already request usage, preserving any other existing `stream_options`
-fields.
-
-- If the client **already** requested usage, the chunk is relayed
-  unchanged.
-- If Mellomting injected the option on the client's behalf, the synthetic
-  final usage-only chunk (usage present, no `choices`) is **consumed for
-  accounting and not relayed**, so the client sees no semantic change to
-  the stream.
-- The Responses API emits usage in-band; no injection is performed there.
-
-If exact stream usage cannot be obtained, the inference completes
-normally and accounting records `usage_status: unknown` (never a made-up
-exact count).
-
-## Token quotas vs. accounting persistence
-
-Per-key token budgets (`limits.tokens_per_hour` / `tokens_per_day`) are
-enforced **regardless** of `accounting.enabled`. The in-memory quota
-tracker always runs, so `accounting.enabled: false` only disables JSONL
-usage records and startup replay — it never silently voids a token
-quota.
-
-Consequence: with accounting disabled, token quotas are enforced
-in-memory only, so a daemon restart resets the current windows and no
-usage is ever recorded. Mellomting warns about exactly this at startup
-when accounting is disabled and at least one key carries a token budget.
-Operators who need durable, replay-able quotas must leave accounting
-enabled.
-
-## Accounting log rotation (FIX-11/N7)
-
-The accounting writer opens `usage.jsonl` once at startup and holds the
-file descriptor forever; v1 has no in-process reopen path. Rotate the log
-with `copytruncate`, **not** with rename: rename leaves the daemon
-appending to the rotated inode while `mellomting usage report` reads an
-empty current file, and under `security.landlock.mode: required` the
-renamed file is a new inode the policy does not grant, so the daemon
-cannot reopen it anyway.
-
-The shipped policy is `deploy/mellomting.logrotate` (install at
-`/etc/logrotate.d/mellomting`). It rotates `/var/log/mellomting/usage.jsonl`
-(the default `accounting.path`) in place with `copytruncate`, preserving
-the inode the Landlock policy granted at startup, so rotation works
-without a restart in every mode. `copytruncate` truncates in place; in
-the rare window between the copy and the truncate a line may be
-duplicated or lost, which is acceptable for token-accounting JSONL.
-
-## Stream response bound (FIX-12)
-
-`server.max_response_bytes` bounds the total bytes a response may emit in
-both modes: buffered responses and, since FIX-12, live SSE streams. A
-backend that streams small events indefinitely is cut off once the
-cumulative emitted bytes pass the cap, terminating the stream with a
-`backend_stream_error` class (the client sees a truncated stream without
-`[DONE]`; the HTTP status was already 200). The default is 67108864 (64 MiB).
-
-## Endpoint coverage
-
-Mellomting forwards only the allow-listed inference endpoints and 404s
-everything else, including backend admin paths (PLAN §11.3):
+## Endpoints
 
 ```text
 POST /v1/chat/completions
@@ -147,9 +15,87 @@ POST /v1/responses/{id}/cancel
 GET  /v1/models
 ```
 
-## Tested upstream versions
+Other routes, including backend admin endpoints, are not forwarded.
+`/v1/models` lists the public models available to the authenticated key.
 
-The compatibility suite is exercised against a fake backend that emulates
-the OpenAI-compatible contract. Real-vLLM compatibility tests (PLAN §85)
-record the tested vLLM version here once they run against a live
-deployment.
+## Request fields
+
+Mellomting checks the top-level routing and policy fields: `model`, `stream`,
+`stream_options`, `previous_response_id`, and output token limits. Other
+fields pass through, including tools, structured output, reasoning parameters,
+and server extensions. JSON formatting may change when the body is re-encoded.
+
+The outbound `model` is replaced with the configured `upstream_model`.
+Response bodies are relayed without rewriting model names; a backend may
+return its own model name.
+
+## Output limits
+
+Set a per-model cap with `policy.max_output_tokens`:
+
+```yaml
+policy:
+  max_output_tokens: 32768
+```
+
+| Endpoint | Request field |
+| --- | --- |
+| Chat Completions | `max_completion_tokens` or `max_tokens` |
+| Completions | `max_tokens` |
+| Responses | `max_output_tokens` |
+
+Requests above the cap receive HTTP 400 with code `output_limit_exceeded`.
+When no limit is supplied, Mellomting inserts the cap. Lower client limits
+are preserved.
+
+## Streaming usage
+
+When accounting or a key's token quota needs usage, Mellomting defaults to
+setting `stream_options.include_usage: true` for Chat and Completions streams.
+This also overrides an explicit `false`. Other stream options are preserved.
+
+If the client requested usage, its usage chunk is forwarded. Otherwise,
+Mellomting reads the final usage-only chunk for accounting and omits it from
+the client's stream. Responses streams report usage directly and need no
+injected option.
+
+`accounting.ensure_stream_usage: false` disables injection. Missing usage is
+recorded as `unknown`; quota accounting uses the configured fallback
+reservation. A missing usage report alone does not interrupt the response.
+
+## Responses and quotas
+
+Response IDs are tied to the key and backend that created them. Retrieval,
+cancellation, and continuations require a matching entry in the proxy's
+bounded affinity table. Entries expire and are cleared on restart.
+
+Retrieval and cancellation do not count the response's original usage toward
+quota again. They still produce request records.
+
+Token quotas apply even when accounting is disabled. Without accounting,
+usage is held in memory and quota windows reset on restart. Enable accounting
+for JSONL records and startup replay.
+
+## Response size
+
+`server.max_response_bytes` limits both buffered responses and bytes emitted
+by SSE streams. The default is 64 MiB. A stream exceeding the limit is
+terminated; headers already sent to the client cannot be changed. The request
+log records `backend_stream_error`.
+
+## Log rotation
+
+Use the supplied `deploy/mellomting.logrotate` policy for the accounting log.
+It uses `copytruncate` because the daemon keeps the log open until shutdown.
+Renaming the log would leave the daemon writing to the old file.
+
+A line can be duplicated or lost between copying and truncating. Token
+accounting is intended for usage tracking and quota enforcement.
+
+## Test coverage
+
+Automated compatibility tests use a simulated OpenAI-compatible backend.
+No real-vLLM version is recorded as tested here yet.
+
+See [Configuration](CONFIGURATION.md) for settings and
+[the design](PLAN.md) for the full contract.

@@ -114,7 +114,7 @@ func fetchInflight(ctx context.Context, client *http.Client) ([]inflight.Record,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("the daemon is not answering on its admin socket: %w", err)
+		return nil, fmt.Errorf("cannot reach the admin socket: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -122,7 +122,7 @@ func fetchInflight(ctx context.Context, client *http.Client) ([]inflight.Record,
 	}
 	var snap adminapi.Snapshot
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<22)).Decode(&snap); err != nil {
-		return nil, fmt.Errorf("admin socket returned something unreadable: %w", err)
+		return nil, fmt.Errorf("invalid admin response: %w", err)
 	}
 	return snap.Requests, nil
 }

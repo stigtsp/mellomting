@@ -24,7 +24,7 @@ const (
 	MsgBadMethod = "method not allowed"
 	MsgBadAuth   = "invalid api key"
 	MsgOverload  = "server is overloaded"
-	MsgRateLimit = "too many requests; slow down"
+	MsgRateLimit = "too many requests"
 )
 
 // DefaultRetryAfter is the conservative Retry-After, in seconds, used

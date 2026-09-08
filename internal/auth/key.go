@@ -42,7 +42,7 @@ var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 // the operator-facing check used before entropy use or filesystem mutation.
 func ValidateUsername(username string) error {
 	if !usernamePattern.MatchString(username) {
-		return fmt.Errorf("invalid --name: must match ^[a-z][a-z0-9_]{0,31}$")
+		return fmt.Errorf("invalid name: use 1–32 lowercase letters, digits or underscores, starting with a letter")
 	}
 	return nil
 }

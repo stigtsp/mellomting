@@ -21,7 +21,7 @@ func TestUsageHelpHasNoPlanReferences(t *testing.T) {
 
 func TestCommandHelp(t *testing.T) {
 	commands := []string{
-		"", "init", "serve", "install", "key", "key create", "key list",
+		"", "init", "serve", "install", "top", "key", "key create", "key list",
 		"key enable", "key disable", "key revoke", "config", "config check",
 		"config show-effective", "sandbox", "sandbox check", "usage", "usage report",
 	}

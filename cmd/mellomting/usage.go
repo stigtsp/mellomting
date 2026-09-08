@@ -41,7 +41,7 @@ func usageCmd(args []string) int {
 		return 1
 	}
 	if !cfg.Accounting.Enabled {
-		fmt.Fprintln(os.Stderr, "mellomting: usage report: accounting is disabled in configuration")
+		fmt.Fprintln(os.Stderr, "mellomting: usage report: accounting is disabled; set accounting.enabled: true and restart")
 		return 1
 	}
 

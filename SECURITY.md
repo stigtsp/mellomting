@@ -1,7 +1,6 @@
 # Security policy
 
-**Mellomting** is a small, security-conscious, OpenAI-compatible LLM proxy
-and multiplexer. Its security boundary is defined in `docs/PLAN.md`:
+Mellomting's security boundary is documented in:
 
 - `docs/PLAN.md` §4 — security invariants (the contract)
 - `THREAT_MODEL.md` — the threat model
@@ -14,7 +13,8 @@ Report security issues privately:
 1. Open the **Security** tab of this repository and choose
    **Report a vulnerability** (private disclosure).
 2. Include: affected version (run `mellomting version`), configuration used,
-   and a minimal reproduction if you have one.
+   and a minimal reproduction if you have one. Remove API keys, credentials,
+   and private prompts before sharing configuration or logs.
 
 This is a small project maintained on a best-effort basis. There is no
 guaranteed response time, but reports are read and answered. Please do not
@@ -36,20 +36,18 @@ not accepted as vulnerabilities:
 
 ## What Mellomting does not expose
 
-By design (PLAN §3), Mellomting has:
+Mellomting has:
 
 - No web UI and no management HTTP API — configuration and API keys are
   managed by offline CLI commands over local files.
 - No database and no plugin system.
-- No telemetry of any kind (PLAN §90) — Mellomting makes no network
-  requests other than to the inference backends and, if configured, the
-  qualifier backends that the operator explicitly pointed it at.
+- No telemetry. Outbound requests serve configured inference backends or
+  explicit model discovery during setup.
 
 ## Verifying your deployment
 
-- `mellomting config check -config <path>` — validates the configuration
-  fail-closed; every limit is bounded.
-- `mellomting sandbox check [-config <path>]` — reports Landlock capability
-  and the configured sandbox policy result.
-- `mellomting config show-effective -config <path>` — shows the effective
+- `mellomting config check --config <path>` — validates the configuration.
+- `mellomting sandbox check --config <path>` — reports sandbox support
+  and the configured startup behavior.
+- `mellomting config show-effective --config <path>` — shows the effective
   configuration with defaults applied.

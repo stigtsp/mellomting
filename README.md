@@ -7,11 +7,8 @@ binary, without a database or telemetry.
 ## Quick start
 
 You need Linux, Go, and a running inference server. This example uses a server
-at `127.0.0.1:8000`. The daemon confines itself after startup where the host can
-enforce it — Landlock on Linux, Seatbelt on macOS — and warns when it cannot;
-add `--sandbox required` to `init` to refuse to start instead. Local file
-creation by `init` is currently Linux-only; `--dry-run` prints the configuration
-on any platform.
+at `127.0.0.1:8000`. On other platforms, `init --dry-run` previews the
+configuration without creating files.
 
 Build and generate a local configuration:
 
@@ -23,15 +20,14 @@ bin/mellomting init --server http://127.0.0.1:8000 --config ./config.yaml
 `init` discovers the server's models and creates `config.yaml`, `users.yaml`,
 and `auth.pepper`. It refuses to overwrite existing files.
 
-Create a key and save it somewhere safe; it is shown only once. With one
-configured model, model access is selected automatically:
+Create a key and save it securely; it is shown only once:
 
 ```sh
 bin/mellomting key create local --config ./config.yaml
 ```
 
-If there are several models, add `--models MODEL`, using a name from the
-discovery output. Then start the proxy:
+The key allows all models. Add `--models MODEL` to restrict it to a name from
+the discovery output. Then start the proxy:
 
 ```sh
 bin/mellomting serve --config ./config.yaml
@@ -63,7 +59,7 @@ sudo systemctl enable --now mellomting
 ```
 
 Fill in the server and model entries before checking the configuration.
-If you configure several models, add `--models MODEL` when creating a key.
+Use `--models MODEL` to restrict a key's model access.
 The service uses a Unix socket at `/run/mellomting/mellomting.sock` by default.
 
 The installer prepares the service account, configuration, auth files, unit,
@@ -71,6 +67,10 @@ and log rotation. Existing configuration and auth files are preserved.
 See [Operations](docs/OPERATIONS.md) for installation options and maintenance.
 
 ## Configuration
+
+The sandbox defaults to `best-effort`: Mellomting applies it when available
+and warns otherwise. Use `--sandbox required` with `init` to require it.
+See [Hardening](HARDENING.md) for platform support and deployment controls.
 
 The generated configuration lists inference servers and the models they serve:
 
@@ -93,6 +93,13 @@ bin/mellomting config check --config ./config.yaml
 bin/mellomting config show-effective --config ./config.yaml
 ```
 
+## Key-file updates
+
+Valid key additions, removals, and policy changes apply automatically within
+about a second. Invalid updates leave the previous store active; existing
+requests continue. SIGHUP (or `systemctl reload mellomting`) triggers an
+immediate check. Other configuration changes require a restart.
+
 ## Further reading
 
 - [Operations](docs/OPERATIONS.md): keys, installation, logs, and troubleshooting.
@@ -109,11 +116,3 @@ make check
 This runs formatting, build, vet, tests, and race checks, plus staticcheck and
 govulncheck when installed. `make release` builds release artifacts.
 See [the design](docs/PLAN.md) and [contributor guidance](AGENTS.md).
-
-## Key-file updates
-
-The running daemon checks the users file once per second and automatically
-applies valid key additions, removals, and policy changes. Invalid or unreadable
-updates leave the previous key store active. Existing requests continue normally.
-SIGHUP (or `systemctl reload mellomting`) triggers an immediate check. Other
-configuration changes still require a restart.

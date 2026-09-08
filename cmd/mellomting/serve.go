@@ -438,7 +438,7 @@ func checkQuotaEnforceable(cfg *config.Config, users *auth.UsersFile) error {
 		return nil
 	}
 	slices.Sort(uncounted)
-	return fmt.Errorf("a per-key token quota is configured in %s, but a request to %s (%s) whose usage the backend does not report would count zero tokens against it, so the quota would never apply; set accounting.unknown_usage_reservation (or, on a generation model, policy.max_output_tokens)", cfg.Auth.UsersFile, plural(len(uncounted), "model"), strings.Join(uncounted, ", "))
+	return fmt.Errorf("token quotas need a fallback for missing usage on %s (%s); set accounting.unknown_usage_reservation or, for generation models, policy.max_output_tokens", plural(len(uncounted), "model"), strings.Join(uncounted, ", "))
 }
 
 // quotaKeysConfigured reports whether any key carries a token budget, so

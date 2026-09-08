@@ -211,7 +211,7 @@ func validateTrustedProxies(s *Server) []string {
 			case p.Addr() != p.Masked().Addr():
 				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q has bits set below the prefix length; write %q", entry, p.Masked().String()))
 			case s.Listen.Network == "unix":
-				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q can never match a unix listener, whose peer has no address; use %q", entry, TrustedProxyUnix))
+				errs = append(errs, fmt.Sprintf("server.trusted_proxies: %q cannot match a Unix listener; use %q", entry, TrustedProxyUnix))
 			}
 		}
 		seen[entry] = true
@@ -258,7 +258,7 @@ func validateServer(s *Server) []string {
 		errs = append(errs, fmt.Sprintf("server.admin_socket: %q must be an absolute path", s.AdminSocket))
 	}
 	if s.AdminSocket != "" && s.AdminSocket == s.Listen.Address {
-		errs = append(errs, "server.admin_socket: must not be the ingress socket; it is separate so clients cannot read it")
+		errs = append(errs, "server.admin_socket: must differ from server.listen.address")
 	}
 
 	errs = append(errs, validateTrustedProxies(s)...)
@@ -536,7 +536,7 @@ func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
 			errs = append(errs, fmt.Sprintf("%s.base_url: fragments are not supported", prefix))
 		}
 		if p := u.Path; p != "" && p != "/" {
-			errs = append(errs, fmt.Sprintf("%s.base_url: path %q makes endpoint construction ambiguous", prefix, p))
+			errs = append(errs, fmt.Sprintf("%s.base_url: path %q must be empty or /", prefix, p))
 		}
 
 		// A trailing colon splits cleanly into a host and an empty port,

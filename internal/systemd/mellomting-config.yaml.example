@@ -19,18 +19,14 @@ server:
     address: /run/mellomting/mellomting.sock
     mode: "0660"
 
-# Behind a reverse proxy, name the peers whose X-Forwarded-For may be
-# believed: the address it yields is what per-source rate limiting and
-# the logs use. Entries are CIDRs, or "unix" for the peer of the socket
-# above. Left empty, the header is ignored and the socket peer is the
-# client.
+# Trust X-Forwarded-For only from these proxy peers (CIDRs or "unix").
+# Their client addresses are used for rate limits and logs.
+# When unset, use the socket peer's address.
   # trusted_proxies:
   #   - unix
 
-# A second socket, readable only by the service account and root, that
-# 'mellomting top' reads to show the requests in flight. It carries
-# every caller's address, user agent and token use, so it is kept off
-# the ingress. Without it, nothing is tracked.
+# Enable 'mellomting top'. Only the service account and root can read
+# this socket, which exposes client addresses, user agents and token usage.
   # admin_socket: /run/mellomting/admin.sock
 
 auth:
@@ -40,12 +36,9 @@ auth:
 security:
   backend_network:
     mode: loopback-only
-# The daemon confines itself after startup wherever the host can enforce
-# it, and warns when it cannot. Set mode: required to refuse to start
-# instead. minimum_abi defaults to 6, which needs Linux 6.12; raising it
-# on an older kernel means no sandbox at all rather than a lesser one.
-# On macOS the sandbox is Seatbelt; only the section for the running
-# platform is read.
+# Apply the sandbox when available; warn otherwise. Use "required" to
+# refuse startup without it. Landlock requires ABI 6 by default.
+# macOS uses Seatbelt; only the current platform's setting applies.
 #  seatbelt:
 #    mode: best-effort
   landlock:

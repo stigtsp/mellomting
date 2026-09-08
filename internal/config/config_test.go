@@ -439,7 +439,7 @@ models:
     servers:
     - qa
 `,
-			wantErr: "ambiguous",
+			wantErr: "must be empty or /",
 		},
 		{
 			name: "backend url scheme rejected",
@@ -1706,7 +1706,7 @@ models:
     servers:
     - qa
 `,
-			wantErr: "can never match a unix listener",
+			wantErr: "cannot match a Unix listener",
 		},
 		{
 			// A model named "*" is the ACL wildcard: a key created for

@@ -7,36 +7,29 @@ or subcommand; there is no automatic lookup in the working directory.
 
 ## Sandbox
 
-The daemon confines itself after startup, once every secret is loaded and
-its file descriptors are closed. Which mechanism enforces that depends on
-the host, and only the one for the running platform is consulted:
+Sandbox support depends on the platform:
 
 | Platform | Mechanism | Configured by |
 | --- | --- | --- |
 | Linux | Landlock | `security.landlock.mode` |
 | macOS | Seatbelt | `security.seatbelt.mode` |
 
-Both default to `best-effort`: the sandbox is applied wherever the host
-can enforce it, and a host that cannot is served with a warning. It is
-containment for a process that is already compromised, not the control
-that keeps an attacker out, so it does not decide whether the proxy runs.
-Set `required` to refuse to start unless the policy is enforced, or
-`disabled` to skip it. A configuration may carry both sections and be
-served on either platform.
+Both default to `best-effort`: apply the sandbox when available and warn
+otherwise. Set `required` to refuse startup without it, or `disabled` to skip
+it. Only the setting for the current platform applies.
+
+Check support and the configured startup behavior:
 
 ```sh
 mellomting sandbox check
 ```
 
-reports the backend for this host, whether it is available, and what the
-configured mode would do. Under `required` a host that cannot enforce the
-policy does not start the daemon — including a macOS host that is already
-running it inside another sandbox, which may not apply a second profile.
+On macOS, a process already inside another sandbox may be unable to apply
+Seatbelt. In `required` mode, this prevents startup.
 
 Landlock's `minimum_abi` defaults to 6, which needs Linux 6.12 or newer.
-On an older kernel the sandbox is not applied at all rather than applied
-at a lower ABI, so a host that reports a lower ABI under `best-effort`
-runs unconfined and says so at every start.
+With a lower ABI, `best-effort` runs without a sandbox and logs a warning;
+`required` refuses startup.
 
 ## API keys
 
@@ -65,17 +58,16 @@ Save the key securely. It cannot be retrieved later. Keys are stored as
 HMAC-SHA-256 hashes with a separate pepper file. Their format is
 `sk-<username>-<keyid>-<secret>`, with a 16-character hex ID and a 256-bit secret.
 
-Key commands update the users file offline. Reload the service to apply a
-change:
+Key commands update the users file. The running daemon applies valid changes
+automatically within about a second. Existing requests continue normally.
+Invalid or unreadable updates leave the previous key store active and log an
+error. To trigger an immediate check:
 
 ```sh
 sudo systemctl reload mellomting
 ```
 
-`SIGHUP` reloads the key store in place, under every sandbox mode, without
-severing in-flight streams. A reload that fails leaves the previous key store
-in effect and logs why. Follow the apply instruction printed by the key
-command.
+Without systemd, send the daemon `SIGHUP`.
 
 ## Installation
 
@@ -128,8 +120,8 @@ Every completed request writes one `request` line, which is the access log:
  "key_name":"ci","remote":"198.51.100.9","user_agent":"codex-cli/1.2.3",
  "endpoint":"POST /v1/chat/completions","public_model":"my-model",
  "backend":"a","status":200,"duration_ms":8412,"bytes_in":712,"bytes_out":4108,
- "tokens_in":120,"tokens_out":480,"tokens_total":600,"usage_status":"reported",
- "retry_count":0,"error_class":""}
+ "tokens_in":120,"tokens_out":480,"tokens_total":600,"usage_status":"exact",
+ "retry_count":0,"error_class":"ok"}
 ```
 
 `remote` is the client address after `server.trusted_proxies` is applied, and
@@ -149,15 +141,14 @@ the file does not redirect the running writer to a replacement.
 
 ## Watching requests in flight
 
-The access log records a request when it finishes. To see what the daemon is
-doing right now, give it an admin socket:
+To watch active requests, configure an admin socket:
 
 ```yaml
 server:
   admin_socket: /run/mellomting/admin.sock
 ```
 
-and restart it — the socket is bound at startup, before the sandbox. Then:
+Restart the daemon, then run:
 
 ```sh
 mellomting top
@@ -179,10 +170,9 @@ usage, which for a stream is at the end.
 `--interval` sets the refresh (default `1s`), and `--once` prints a single
 snapshot without clearing the screen, for scripts and pipes.
 
-The socket is created `0600`, so only the service account and root can read it.
-It is deliberately not part of the ingress: it exposes every caller's address,
-user agent and token use, which is not something the proxy's own clients should
-see. Without `admin_socket` configured, no request tracking happens at all.
+The socket has mode `0600`, restricting access to the service account and
+root. It exposes client addresses, user agents, and token usage. Request
+tracking is disabled when no admin socket is configured.
 
 ## Troubleshooting
 
@@ -195,8 +185,8 @@ see. Without `admin_socket` configured, no request tracking happens at all.
   proxy host and permitted by `security.backend_network`.
 - Pepper permission errors: use mode `0600` for a local file, or `0640` with
   an appropriate service group. The setup commands create these modes for you.
-- Key changes not taking effect: reload the service when instructed by the
-  key command.
+- Key changes not taking effect: check the daemon logs for a reload error
+  and confirm the key command uses the same configuration as the daemon.
 - `mellomting top` cannot reach the daemon: check that `server.admin_socket` is
   set in the same configuration the daemon was started with, and that the
   daemon has been restarted since it was added.

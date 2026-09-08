@@ -2538,7 +2538,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "would count zero tokens against it") {
+	if !strings.Contains(string(logData), "token quotas need a fallback for missing usage") {
 		t.Fatalf("startup rejection message missing: %q", string(logData))
 	}
 }
@@ -2639,7 +2639,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "would count zero tokens against it") {
+	if !strings.Contains(string(logData), "token quotas need a fallback for missing usage") {
 		t.Fatalf("startup rejection message missing: %q", string(logData))
 	}
 }
@@ -2898,7 +2898,7 @@ models:
 	if strings.Contains(out, "users reloaded") {
 		t.Fatalf("the reload installed a quota that can never be enforced: %s", out)
 	}
-	if !strings.Contains(out, "would count zero tokens against it") {
+	if !strings.Contains(out, "token quotas need a fallback for missing usage") {
 		t.Fatalf("reload rejection message missing: %q", out)
 	}
 	// The old key remains usable after the rejected update.

@@ -27,7 +27,7 @@ var (
 	errDraining           = apiError{503, "overload_error", "server_overloaded", "server is shutting down", "overload"}
 	errOverloaded         = apiError{503, "overload_error", "server_overloaded", "server is overloaded", "overload"}
 	errNoBackend          = apiError{503, "overload_error", "server_overloaded", "no backend is available", "no_backend_available"}
-	errUnsupported        = apiError{415, "invalid_request_error", "unsupported_media_type", "only identity request encoding is supported", "bad_request"}
+	errUnsupported        = apiError{415, "invalid_request_error", "unsupported_media_type", "request compression is not supported", "bad_request"}
 	errBodyTooBig         = apiError{413, "invalid_request_error", "body_too_large", "request body exceeds the size limit", "bad_request"}
 	errBodyUnread         = apiError{400, "invalid_request_error", "body_unreadable", "request body could not be read", "bad_request"}
 	errBadJSON            = apiError{400, "invalid_request_error", "invalid_json", "request body is not a valid JSON object", "bad_request"}
@@ -40,9 +40,9 @@ var (
 	errPrevNotFound       = apiError{404, "invalid_request_error", "response_not_found", "previous response not found", "affinity"}
 	errRespNotFound       = apiError{404, "invalid_request_error", "response_not_found", "response not found", "affinity"}
 	errRespBadID          = apiError{404, "invalid_request_error", "response_not_found", "response not found", "bad_request"}
-	errOutputCapExceeded  = apiError{400, "invalid_request_error", "output_limit_exceeded", "requested output tokens exceed the model policy cap", "bad_request"}
+	errOutputCapExceeded  = apiError{400, "invalid_request_error", "output_limit_exceeded", "requested output tokens exceed the model limit", "bad_request"}
 	errOutputLimitInvalid = apiError{400, "invalid_request_error", "invalid_output_limit", "output limit must be a non-negative integer", "bad_request"}
-	errNotNormal          = apiError{400, "invalid_request_error", "invalid_json", "request body could not be normalized", "bad_request"}
+	errNotNormal          = apiError{400, "invalid_request_error", "invalid_json", "request body could not be processed", "bad_request"}
 	errQuota              = apiError{429, "rate_limit_error", "token_quota_exceeded", "token quota exceeded for this window", "token_quota"}
 	errInternal           = apiError{500, "api_error", "internal", "internal error", "internal_error"}
 	errPolicy             = apiError{500, "api_error", "internal", "internal error", "policy"}

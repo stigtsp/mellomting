@@ -97,10 +97,10 @@ func TestParseInitServers(t *testing.T) {
 		args   []string
 		errSub string
 	}{
-		{"empty name", []string{"=http://127.0.0.1:8000"}, "must match"},
-		{"uppercase name", []string{"A=http://127.0.0.1:8000"}, "must match"},
-		{"name starts with digit", []string{"1a=http://127.0.0.1:8000"}, "must match"},
-		{"name too long", []string{strings.Repeat("a", 64) + "=http://127.0.0.1:8000"}, "must match"},
+		{"empty name", []string{"=http://127.0.0.1:8000"}, "invalid name"},
+		{"uppercase name", []string{"A=http://127.0.0.1:8000"}, "invalid name"},
+		{"name starts with digit", []string{"1a=http://127.0.0.1:8000"}, "invalid name"},
+		{"name too long", []string{strings.Repeat("a", 64) + "=http://127.0.0.1:8000"}, "invalid name"},
 		{"duplicate names", []string{"a=http://127.0.0.1:8000", "a=http://127.0.0.1:8001"}, "duplicate name"},
 		{"hostname rejected", []string{"http://example.com:8000"}, "literal IP"},
 		{"missing port", []string{"http://127.0.0.1"}, "explicit port"},
@@ -112,7 +112,7 @@ func TestParseInitServers(t *testing.T) {
 		{"fragment rejected", []string{"http://127.0.0.1:8000#f"}, "fragment"},
 		{"userinfo rejected", []string{"http://user:pass@127.0.0.1:8000"}, "userinfo"},
 		{"bad scheme", []string{"ftp://127.0.0.1:8000"}, "scheme"},
-		{"duplicate destination", []string{"http://127.0.0.1:8000", "http://[::ffff:127.0.0.1]:8000"}, "duplicate canonical destination"},
+		{"duplicate destination", []string{"http://127.0.0.1:8000", "http://[::ffff:127.0.0.1]:8000"}, "duplicate address"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -459,7 +459,7 @@ func TestInitCmd(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate canonical destination rejected", func(t *testing.T) {
+	t.Run("duplicate address rejected", func(t *testing.T) {
 		withInitSandbox(t, supportedLandlockReport())
 		code, _, stderr := captureOutput(t, func() int {
 			return initCmd([]string{"--server", validServer, "--server", "http://[::ffff:127.0.0.1]:8000"})
@@ -467,7 +467,7 @@ func TestInitCmd(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("code = %d", code)
 		}
-		if !strings.Contains(stderr, "duplicate canonical destination") {
+		if !strings.Contains(stderr, "duplicate address") {
 			t.Fatalf("stderr = %q", stderr)
 		}
 	})
