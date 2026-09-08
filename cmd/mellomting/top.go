@@ -137,7 +137,6 @@ func render(w io.Writer, records []inflight.Record, now time.Time, clear bool) {
 	}
 	fmt.Fprintf(w, "mellomting %s — %d in flight\n\n", now.Format(time.TimeOnly), len(records))
 	if len(records) == 0 {
-		fmt.Fprintln(w, "no requests in flight")
 		return
 	}
 	t := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

@@ -14,6 +14,6 @@ func Check() sandbox.Report {
 	return sandbox.Report{
 		Platform: runtime.GOOS,
 		Backend:  Backend,
-		Reason:   "Landlock is a Linux-only kernel feature",
+		Reason:   "Landlock requires Linux",
 	}
 }

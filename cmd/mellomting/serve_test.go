@@ -2435,7 +2435,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "require a per-key token quota") {
+	if !strings.Contains(string(logData), "require accounting.enabled or a per-key token quota") {
 		t.Fatalf("startup rejection message missing: %q", string(logData))
 	}
 }

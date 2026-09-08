@@ -319,7 +319,7 @@ func enforceSandbox(b sandboxBackend, cfg *config.Config, listeners []net.Addr, 
 			if detail != "" {
 				msg += ": " + detail
 			}
-			return fmt.Errorf("security.%s.mode is %q but the sandbox cannot be enforced: %s", b.name, b.mode, msg)
+			return fmt.Errorf("security.%s.mode: %s; cannot be enforced: %s", b.name, b.mode, msg)
 		}
 		log.Warn("running without a sandbox", "backend", b.name, "reason", reason, "detail", detail)
 		return nil
@@ -327,7 +327,7 @@ func enforceSandbox(b sandboxBackend, cfg *config.Config, listeners []net.Addr, 
 
 	report := b.check()
 	if !report.Supported {
-		return failClosed("sandbox cannot be enforced", report.Reason)
+		return failClosed("unsupported host", report.Reason)
 	}
 	if reason, detail := b.ready(report); reason != "" {
 		return failClosed(reason, detail)
@@ -415,7 +415,7 @@ func checkQuotaEnforceable(cfg *config.Config, users *auth.UsersFile) error {
 	// a silent no-op.
 	if !cfg.Accounting.Enabled && !hasQuota &&
 		(cfg.Accounting.EnsureStreamUsage != nil || cfg.Accounting.UnknownUsageReservation != 0) {
-		return fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require a per-key token quota (tokens_per_hour or tokens_per_day) when accounting is disabled; no key in %s carries one", cfg.Auth.UsersFile)
+		return fmt.Errorf("accounting.ensure_stream_usage/unknown_usage_reservation require accounting.enabled or a per-key token quota (tokens_per_hour or tokens_per_day)")
 	}
 
 	// A quota is only enforceable if a request whose usage the backend

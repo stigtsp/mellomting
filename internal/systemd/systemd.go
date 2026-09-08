@@ -356,7 +356,7 @@ func resolveBinary(bin string, locations ...string) (string, error) {
 			return loc, nil
 		}
 	}
-	return "", fmt.Errorf("%s not found in %s; refusing to resolve it through $PATH", bin, strings.Join(locations, " "))
+	return "", fmt.Errorf("%s not found in %s", bin, strings.Join(locations, " "))
 }
 
 // preflightEnv carries the environment-derived inputs to preflight so the
@@ -410,7 +410,7 @@ func (p *Provision) checkHost(env preflightEnv) error {
 		return errors.New("install --systemd must run as root (use sudo)")
 	}
 	if !env.systemdActive {
-		return errors.New("systemd is not the active init (no /run/systemd/system); refusing to provision")
+		return errors.New("systemd is not running (missing /run/systemd/system)")
 	}
 	return nil
 }
@@ -476,7 +476,7 @@ func serviceGroupID(name string, u *user.User) (int, error) {
 		return 0, fmt.Errorf("service user gid %q is not numeric: %w", u.Gid, err)
 	}
 	if g, err := user.LookupGroupId(u.Gid); err != nil || g.Name != name {
-		return 0, fmt.Errorf("the unit runs as group %q but no such group exists; create it (groupadd --system %s) and add %s to it, or the service cannot read its configuration", name, name, name)
+		return 0, fmt.Errorf("service group %q is missing; run groupadd --system %s and add user %s to it", name, name, name)
 	}
 	return gid, nil
 }

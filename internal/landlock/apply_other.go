@@ -14,5 +14,5 @@ import (
 // required mode must treat this as a startup failure
 // (PLAN §55, §57).
 func Apply(_ int, _ sandbox.Policy) error {
-	return fmt.Errorf("landlock is a Linux-only kernel feature; it is not available on this platform")
+	return fmt.Errorf("landlock requires Linux")
 }

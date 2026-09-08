@@ -751,7 +751,7 @@ func TestServiceGroupIDMissingGroupIsAnError(t *testing.T) {
 	if err == nil {
 		t.Fatal("a missing service group was accepted")
 	}
-	if !strings.Contains(err.Error(), "no such group exists") {
+	if !strings.Contains(err.Error(), "is missing") {
 		t.Fatalf("err = %v, want it to name the missing group", err)
 	}
 }
