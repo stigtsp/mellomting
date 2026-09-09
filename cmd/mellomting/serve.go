@@ -8,7 +8,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -64,8 +63,8 @@ func listenerAddrs(lns ...net.Listener) []net.Addr {
 
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
-	usersHash       [sha256.Size]byte // last observed users-file content
-	usersReadFailed bool              // suppress repeated polling read errors
+	usersInfo       os.FileInfo // metadata of the last users file examined
+	usersReadFailed bool        // suppress repeated polling read errors
 	cfg             *config.Config
 	log             *slog.Logger
 	api             *httpapi.Server
@@ -634,7 +633,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// Before any client, router, or writer is constructed: a key set
 	// the daemon cannot serve should be reported without opening
 	// resources first.
-	data, err := securefile.Read(cfg.Auth.UsersFile, 1<<20)
+	data, usersInfo, err := readUsersSnapshot(cfg.Auth.UsersFile)
 	if err != nil {
 		return nil, fmt.Errorf("load users file: %w", err)
 	}
@@ -759,7 +758,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("no API keys configured; add one with mellomting key create")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, usersHash: sha256.Sum256(data)}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, usersInfo: usersInfo}, nil
 }
 
 // parseStore validates users-file bytes and builds the key store the daemon
@@ -794,10 +793,16 @@ func (d *daemon) reloadUsers() {
 }
 
 // refreshUsers runs on the signal loop, serializing polling with SIGHUP.
-// Hash the bounded, securely opened bytes rather than metadata so atomic
-// replacements and same-size edits are detected. Never publish invalid data.
+// Poll metadata first; read only on change or an explicit SIGHUP.
 func (d *daemon) refreshUsers(force bool) {
-	data, err := securefile.Read(d.cfg.Auth.UsersFile, 1<<20)
+	info, err := os.Lstat(d.cfg.Auth.UsersFile)
+	if err == nil && !force && !d.usersReadFailed && sameUsersFile(d.usersInfo, info) {
+		return
+	}
+	var data []byte
+	if err == nil {
+		data, info, err = readUsersSnapshot(d.cfg.Auth.UsersFile)
+	}
 	if err != nil {
 		if force || !d.usersReadFailed {
 			d.log.Error("users reload failed; keeping previous store", "error_class", "users_read")
@@ -806,13 +811,9 @@ func (d *daemon) refreshUsers(force bool) {
 		return
 	}
 	d.usersReadFailed = false
-	hash := sha256.Sum256(data)
-	if !force && hash == d.usersHash {
-		return
-	}
-	// Remember rejected content too: retry when it changes, without logging
+	// Remember rejected metadata too: retry when it changes, without logging
 	// the same malformed file every second. SIGHUP always retries explicitly.
-	d.usersHash = hash
+	d.usersInfo = info
 	store, users, err := parseStore(d.cfg, d.pepper, data)
 	if err != nil {
 		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
@@ -823,4 +824,35 @@ func (d *daemon) refreshUsers(force bool) {
 	if len(users.Keys) == 0 {
 		d.log.Warn("no API keys configured; add one with mellomting key create")
 	}
+}
+
+// sameUsersFile includes identity because key commands replace files by
+// rename, and a replacement can preserve the old timestamp and size.
+func sameUsersFile(a, b os.FileInfo) bool {
+	return a != nil && b != nil && os.SameFile(a, b) &&
+		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
+}
+
+// readUsersSnapshot pairs a bounded secure read with stable metadata. An
+// update during the read is retried on the next poll, never marked as loaded.
+func readUsersSnapshot(path string) ([]byte, os.FileInfo, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, nil, errors.New("users file must be a regular file")
+	}
+	data, err := securefile.Read(path, 1<<20)
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !sameUsersFile(before, after) {
+		return nil, nil, errors.New("users file changed while reading; retrying")
+	}
+	return data, after, nil
 }

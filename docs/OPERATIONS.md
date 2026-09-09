@@ -67,7 +67,9 @@ error. To trigger an immediate check:
 sudo systemctl reload mellomting
 ```
 
-Without systemd, send the daemon `SIGHUP`.
+Without systemd, send the daemon `SIGHUP`. Automatic checks use modification
+time, file identity, size, and permissions. If an editor changes a file in
+place while preserving all of those, use SIGHUP to force a reload.
 
 ## Installation
 

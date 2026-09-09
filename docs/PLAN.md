@@ -1386,11 +1386,12 @@ Preserve ownership safely.
 
 Keep reload deliberately narrow.
 
-The daemon MUST check the users file for content changes once per second
+The daemon MUST check the users file's modification time, identity, size,
+and permissions once per second, reading it only when metadata changes,
 and automatically reload valid changes, including atomic replacements made
-by the key CLI. Unchanged content MUST NOT rebuild the admission state.
+by the key CLI. Unchanged metadata MUST NOT rebuild the admission state.
 Invalid or unreadable updates retain the previous valid store; repeated
-polls of the same invalid content MUST NOT repeatedly log the same error.
+polls of the same invalid file metadata MUST NOT repeatedly log the same error.
 `SIGHUP` also triggers an immediate reload.
 
 Both automatic checks and `SIGHUP` reload:
