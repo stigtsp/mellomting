@@ -63,7 +63,7 @@ func listenerAddrs(lns ...net.Listener) []net.Addr {
 
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
-	usersInfo os.FileInfo // metadata of the users file as last examined; nil when absent
+	users     *usersWatcher // polls the users file for changes (PLAN §30)
 	cfg       *config.Config
 	log       *slog.Logger
 	api       *httpapi.Server
@@ -219,7 +219,7 @@ func serveCmd(args []string) int {
 			return 0
 		case sig := <-sigCh:
 			if sig == syscall.SIGHUP {
-				d.reloadUsers()
+				d.refreshUsers(true)
 				continue
 			}
 			received = sig
@@ -632,11 +632,8 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// Before any client, router, or writer is constructed: a key set
 	// the daemon cannot serve should be reported without opening
 	// resources first.
-	data, usersInfo, err := readUsersSnapshot(cfg.Auth.UsersFile)
-	for attempt := 0; errors.Is(err, errUsersFileChanged) && attempt < 3; attempt++ {
-		// A key command replaced the file mid-read; take a fresh snapshot.
-		data, usersInfo, err = readUsersSnapshot(cfg.Auth.UsersFile)
-	}
+	watcher := &usersWatcher{path: cfg.Auth.UsersFile}
+	data, err := watcher.load()
 	if err != nil {
 		return nil, fmt.Errorf("load users file: %w", err)
 	}
@@ -761,7 +758,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("no API keys configured; add one with mellomting key create")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, usersInfo: usersInfo}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher}, nil
 }
 
 // parseStore validates users-file bytes and builds the key store the daemon
@@ -784,44 +781,25 @@ func parseStore(cfg *config.Config, pepper, data []byte) (*auth.Store, *auth.Use
 	return store, users, nil
 }
 
-// reloadUsers reloads the users file and atomically swaps the running key
-// store (SIGHUP, PLAN §30). Fail closed: on any error the previous store
-// stays in effect, so a malformed edit can never widen or empty access.
-// The pepper is reused from memory, so the reload needs no file access
+// refreshUsers reloads the users file and atomically swaps the running
+// key store when the file changed (PLAN §30), or regardless when forced
+// (SIGHUP). Fail closed: on any error the previous store stays in
+// effect, so a malformed edit can never widen or empty access. The
+// pepper is reused from memory, so the reload needs no file access
 // beyond the users file's directory, the only read the Landlock policy
 // grants after startup (PLAN §58). In-flight requests are unaffected;
-// they keep serving against the store they looked up (PLAN §74).
-func (d *daemon) reloadUsers() {
-	d.refreshUsers(true)
-}
-
-// refreshUsers runs on the signal loop, serializing polling with SIGHUP.
-// Poll metadata first; read only on change or an explicit SIGHUP.
+// they keep serving against the store they looked up (PLAN §74). It
+// runs on the signal loop, which serializes the once-a-second poll
+// with SIGHUP.
 func (d *daemon) refreshUsers(force bool) {
-	seen, err := os.Lstat(d.cfg.Auth.UsersFile)
-	if !force && sameUsersFile(d.usersInfo, seen) {
-		return
-	}
-	var data []byte
-	info := seen
-	if err == nil {
-		data, info, err = readUsersSnapshot(d.cfg.Auth.UsersFile)
-	}
-	if errors.Is(err, errUsersFileChanged) {
-		// A key command replaced the file mid-read: the next poll sees
-		// the new metadata and reads the finished file.
-		return
-	}
-	// Remember the examined metadata whether the file was usable or not,
-	// so an unreadable, missing, or malformed file is retried when it
-	// changes rather than every second, and its failure is logged once.
-	// SIGHUP always retries explicitly.
+	data, changed, err := d.users.poll(force)
 	if err != nil {
-		d.usersInfo = seen
 		d.log.Error("users reload failed; keeping previous store", "error_class", "users_read", "error", err)
 		return
 	}
-	d.usersInfo = info
+	if !changed {
+		return
+	}
 	store, users, err := parseStore(d.cfg, d.pepper, data)
 	if err != nil {
 		d.log.Error("users reload failed; keeping previous store", "error_class", "configuration", "error", err)
@@ -834,6 +812,59 @@ func (d *daemon) refreshUsers(force bool) {
 	}
 }
 
+// usersWatcher polls the users file once per second and reads it only
+// when its metadata changed or on request (PLAN §30).
+type usersWatcher struct {
+	path     string
+	last     os.FileInfo // metadata as last examined; nil while the file is absent
+	examined bool        // last is meaningful: an absent file was seen absent
+}
+
+// poll returns the file's contents when its metadata changed since the
+// last poll, or regardless when forced; changed is false when there is
+// nothing to do. The examined metadata is remembered on every outcome,
+// so a missing or unreadable file (or one parsed and rejected by the
+// caller) is reported once and retried when it changes or when forced.
+// A replacement landing mid-read is not an error: nothing is returned
+// and the next poll reads the finished file.
+func (w *usersWatcher) poll(force bool) (data []byte, changed bool, err error) {
+	seen, err := os.Lstat(w.path)
+	if !force && w.examined && sameUsersFile(w.last, seen) {
+		return nil, false, nil
+	}
+	w.last, w.examined = seen, true
+	if err != nil {
+		return nil, false, err
+	}
+	data, err = securefile.Read(w.path, securefile.DefaultMaxSize)
+	if err != nil {
+		return nil, false, err
+	}
+	after, err := os.Lstat(w.path)
+	if err != nil {
+		return nil, false, err
+	}
+	if !sameUsersFile(seen, after) {
+		return nil, false, nil
+	}
+	return data, true, nil
+}
+
+// load reads the file at startup, allowing a few replacements to land
+// mid-read before giving up.
+func (w *usersWatcher) load() ([]byte, error) {
+	for range 3 {
+		data, changed, err := w.poll(true)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			return data, nil
+		}
+	}
+	return nil, errors.New("users file kept changing while reading")
+}
+
 // sameUsersFile includes identity because key commands replace files by
 // rename, and a replacement can preserve the old timestamp and size.
 func sameUsersFile(a, b os.FileInfo) bool {
@@ -842,32 +873,4 @@ func sameUsersFile(a, b os.FileInfo) bool {
 	}
 	return os.SameFile(a, b) &&
 		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
-}
-
-// errUsersFileChanged reports a replacement that landed during a read.
-// The snapshot is discarded; the caller retries rather than reporting it.
-var errUsersFileChanged = errors.New("users file changed while reading")
-
-// readUsersSnapshot pairs a bounded secure read with stable metadata. An
-// update during the read is retried on the next poll, never marked as loaded.
-func readUsersSnapshot(path string) ([]byte, os.FileInfo, error) {
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !before.Mode().IsRegular() {
-		return nil, nil, errors.New("users file must be a regular file")
-	}
-	data, err := securefile.Read(path, 1<<20)
-	if err != nil {
-		return nil, nil, err
-	}
-	after, err := os.Lstat(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !sameUsersFile(before, after) {
-		return nil, nil, errUsersFileChanged
-	}
-	return data, after, nil
 }
