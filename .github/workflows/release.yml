@@ -1,0 +1,100 @@
+name: release
+
+# A pushed release tag (0.1.0, v0.1.0, 0.2.0-rc1) becomes a GitHub release
+# carrying the artifacts `make release` and `make deb` produce: static
+# binaries for linux/amd64, linux/arm64 and darwin/arm64, the Debian
+# packages, and SHA256SUMS over all of them. The tag is the version the
+# Makefile embeds (git describe), so a release is always built from the
+# exact tagged commit. A tag with a hyphenated suffix is published as a
+# pre-release.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: quality gates on the tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format check
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test (race detector)
+        run: go test -race ./...
+
+  publish:
+    name: build artifacts and publish the release
+    runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The Makefile derives VERSION from `git describe --tags`, so
+          # the tags must be present, not just the tagged commit.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build packages and release artifacts
+        # deb first: release writes SHA256SUMS over the binaries and any
+        # packages present in dist/.
+        run: |
+          set -euo pipefail
+          make deb
+          make release
+          echo "VERSION=$(make -s version)" >> "$GITHUB_ENV"
+          cat dist/SHA256SUMS
+
+      - name: Check the embedded version matches the tag
+        # Every artifact must carry the tag, not a -dirty or post-tag
+        # describe string, which would mean the build was not made from
+        # the tagged tree.
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          test "${VERSION#v}" = "$tag" || { echo "embedded version '$VERSION' does not match tag '$GITHUB_REF_NAME'"; exit 1; }
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          prerelease=()
+          case "$tag" in *-*) prerelease=(--prerelease) ;; esac
+          # Re-running the job after a failed upload must not fail on an
+          # existing release; assets are replaced.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${prerelease[@]}"
+          fi
+          gh release upload "$tag" --clobber \
+            dist/mellomting-linux-amd64 \
+            dist/mellomting-linux-arm64 \
+            dist/mellomting-darwin-arm64 \
+            dist/mellomting_*.deb \
+            dist/SHA256SUMS

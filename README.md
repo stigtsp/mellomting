@@ -125,5 +125,6 @@ make check
 ```
 
 This runs formatting, build, vet, tests, and race checks, plus staticcheck and
-govulncheck when installed. `make release` builds release artifacts.
+govulncheck when installed. `make release` builds release artifacts; pushing a
+release tag publishes them as a GitHub release (docs/OPERATIONS.md "Releases").
 See [the design](docs/PLAN.md) and [contributor guidance](AGENTS.md).

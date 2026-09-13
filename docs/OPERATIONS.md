@@ -133,6 +133,20 @@ package stops the service and keeps `/etc/mellomting`; purging deletes the
 configuration, auth files, state, and accounting log, but keeps the service
 account.
 
+### Releases
+
+Pushing a release tag (`0.2.0`, `v0.2.0`; a suffixed tag such as `0.2.0-rc1`
+becomes a pre-release) runs `.github/workflows/release.yml`: it re-runs the
+quality gates on the tagged commit, builds `make deb` and `make release`, and
+publishes a GitHub release with the three static binaries, the Debian
+packages, and `SHA256SUMS` over all of them. The embedded version must equal
+the tag, so a release is always built from exactly the tagged tree. Verify a
+download against the published sums:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
 ## Health, logs, and usage
 
 `/healthz` and `/readyz` are available without authentication. All inference

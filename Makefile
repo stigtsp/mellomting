@@ -11,6 +11,10 @@ LDFLAGS := \
 	-X 'mellomting/internal/version.Commit=$(COMMIT)' \
 	-X 'mellomting/internal/version.Date=$(DATE)'
 
+.PHONY: version
+version: ## print the version the build embeds
+	@echo '$(VERSION)'
+
 .PHONY: build
 build: ## build bin/mellomting with build metadata embedded
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/mellomting ./cmd/mellomting
@@ -25,13 +29,16 @@ dist/mellomting-%: FORCE
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=$(word 1,$(subst -, ,$*)) GOARCH=$(word 2,$(subst -, ,$*)) $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/mellomting
 
+RELEASE_BINARIES := dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting-darwin-arm64
+
+# SHA256SUMS covers the binaries and any Debian packages already in
+# dist/, so `make deb release` checksums everything a release ships.
+# The GitHub release workflow (.github/workflows/release.yml) runs
+# exactly that on a pushed release tag.
 .PHONY: release
-release: dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting-darwin-arm64 ## cross-compile release artifacts into dist/ (linux/amd64, linux/arm64, darwin/arm64)
-	@if command -v sha256sum > /dev/null; then \
-		(cd dist && sha256sum mellomting-linux-amd64 mellomting-linux-arm64 mellomting-darwin-arm64 > SHA256SUMS); \
-	else \
-		(cd dist && shasum -a 256 mellomting-linux-amd64 mellomting-linux-arm64 mellomting-darwin-arm64 > SHA256SUMS); \
-	fi
+release: $(RELEASE_BINARIES) ## cross-compile release artifacts into dist/ (linux/amd64, linux/arm64, darwin/arm64) and write dist/SHA256SUMS
+	@cd dist && files="$(notdir $(RELEASE_BINARIES)) $$(ls mellomting_*.deb 2>/dev/null)" && \
+	if command -v sha256sum > /dev/null; then sha256sum $$files > SHA256SUMS; else shasum -a 256 $$files > SHA256SUMS; fi
 
 # Debian packages (deploy/nfpm.yaml). nfpm is installed once per pinned
 # version into dist/tools with `go install`, which needs nothing but the
