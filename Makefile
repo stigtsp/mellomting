@@ -58,6 +58,8 @@ dist/deb/mellomting.service: deploy/mellomting.service
 
 .PHONY: deb
 deb: $(DEB_ARCHES:%=dist/mellomting-linux-%) dist/deb/mellomting.service ## build dist/mellomting_<version>_<arch>.deb for linux/amd64 and linux/arm64
+	@echo '$(DEB_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || { \
+		echo "deb: VERSION '$(VERSION)' is not derived from a release tag (fetch tags, or pass VERSION=X.Y.Z)"; exit 1; }
 	@for arch in $(DEB_ARCHES); do \
 		cp dist/mellomting-linux-$$arch dist/deb/mellomting && \
 		ARCH=$$arch DEB_VERSION=$(DEB_VERSION) $(NFPM) package --config deploy/nfpm.yaml --packager deb --target dist/ || exit 1; \
