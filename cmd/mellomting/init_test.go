@@ -1525,26 +1525,6 @@ func TestInitEndToEnd(t *testing.T) {
 	})
 }
 
-// TestInitFileOwnership pins the rule init shares with
-// securefile.ReplacePreservingOwner (PLAN §29.1): a destination directory
-// whose group is not the caller's own was provisioned for a service
-// account, so the files written into it take that group and gain
-// group-read. A directory in the caller's own group keeps 0600.
-func TestInitFileOwnership(t *testing.T) {
-	t.Run("service group directory: adopt group, 0640", func(t *testing.T) {
-		gid, mode, adopt := initFileOwnership(commitFileIdentity{Gid: 1234}, 1000)
-		if !adopt || gid != 1234 || mode != 0o640 {
-			t.Fatalf("initFileOwnership = gid %d, mode %o, adopt %v; want 1234, 640, true", gid, mode, adopt)
-		}
-	})
-	t.Run("own group directory: 0600, no chown", func(t *testing.T) {
-		_, mode, adopt := initFileOwnership(commitFileIdentity{Gid: 1000}, 1000)
-		if adopt || mode != 0o600 {
-			t.Fatalf("initFileOwnership = mode %o, adopt %v; want 600, false", mode, adopt)
-		}
-	})
-}
-
 // TestCommitInitArtifactsAdoptsDirectoryGroup writes into a directory
 // group-owned by a supplementary group of the test user, the same shape
 // as root:mellomting, and checks every published file carries that
@@ -1603,9 +1583,34 @@ func TestCommitInitArtifactsAdoptsDirectoryGroup(t *testing.T) {
 		}
 	})
 
-	// A file the service account could not read must never be
-	// published: a failed chown or chmod fails the init and leaves the
-	// directory empty.
+	// A caller outside the directory's group cannot chown into it. As
+	// with key create, the files then stay 0600 in the caller's own
+	// group rather than failing the init.
+	t.Run("chown not permitted keeps 0600 in the caller's group", func(t *testing.T) {
+		dir := serviceDir(t)
+		args := commitTestArgs(t, dir, "http://127.0.0.1:8000")
+		arts := commitTestArtifacts(t, args, models)
+		ops := &scriptedCommitOps{inner: defaultCommitOps(), fail: map[string]error{"fchownFile": fmt.Errorf("chown: %w", unix.EPERM)}}
+		if err := commitInitArtifacts(args, arts, ops); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{args.ConfigPath, args.UsersPath, args.PepperPath} {
+			var st unix.Stat_t
+			if err := unix.Stat(p, &st); err != nil {
+				t.Fatalf("stat %s: %v", p, err)
+			}
+			if int(st.Gid) != os.Getegid() {
+				t.Errorf("%s gid = %d, want the caller's own group %d", p, st.Gid, os.Getegid())
+			}
+			if st.Mode&0o777 != 0o600 {
+				t.Errorf("%s mode = %o, want 600", p, st.Mode&0o777)
+			}
+		}
+	})
+
+	// Any other chown or chmod failure means a file the service account
+	// could not read would be published: it fails the init and leaves
+	// the directory empty.
 	for _, key := range []string{"fchownFile", "fchmodFile"} {
 		t.Run(key+" failure leaves no files", func(t *testing.T) {
 			dir := serviceDir(t)

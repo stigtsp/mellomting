@@ -151,6 +151,17 @@ func TestReplacePreservingOwnerKeepsGroupReadable(t *testing.T) {
 // service account could then not read the file the installer had just
 // arranged for it, and the unit failed to start. A new file adopts the
 // directory's group and becomes group-readable.
+// A directory in a group other than the caller's own was provisioned
+// for a service account; one in the caller's group was not.
+func TestServiceGroup(t *testing.T) {
+	if gid, ok := ServiceGroup(1234, 1000); !ok || gid != 1234 {
+		t.Fatalf("ServiceGroup(1234, 1000) = %d, %v; want 1234, true", gid, ok)
+	}
+	if _, ok := ServiceGroup(1000, 1000); ok {
+		t.Fatal("a directory in the caller's own group was taken for a service directory")
+	}
+}
+
 func TestReplacePreservingOwnerAdoptsDirGroupForNewFile(t *testing.T) {
 	gid, ok := otherGroup(t)
 	if !ok {
