@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"mellomting/internal/config"
 	"mellomting/internal/discovery"
-	"mellomting/internal/systemd"
 )
 
 // TestUsageHelpHasNoPlanReferences: the help text is operator-facing
@@ -95,17 +95,41 @@ func TestInitNextSteps(t *testing.T) {
 	}
 }
 
-// TestInitNextStepsSystemConfig: an init into the system configuration
-// path (a package or `install --systemd` deployment) is run by the
-// packaged unit, so the next steps name systemctl, not `serve`, and
-// need no --config because that path is the default.
+// TestInitNextStepsSystemConfig: the next steps omit --config for the
+// default configuration path, and name systemctl instead of `serve`
+// only where a unit (from the package or `install --systemd`) runs the
+// daemon; a host without one is told to run `serve`.
 func TestInitNextStepsSystemConfig(t *testing.T) {
-	var out bytes.Buffer
-	if err := printInitCompletion(&out, initArguments{ConfigPath: systemd.ConfigPath}); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		args initArguments
+		want string
+	}{
+		{
+			"default path with a unit",
+			initArguments{ConfigPath: config.DefaultConfigPath, UnitInstalled: true},
+			"initialized /etc/mellomting/config.yaml\nnext:\n  sudo mellomting key create local\n  sudo systemctl enable --now mellomting\n",
+		},
+		{
+			"default path without a unit",
+			initArguments{ConfigPath: config.DefaultConfigPath},
+			"initialized /etc/mellomting/config.yaml\nnext:\n  mellomting key create local\n  mellomting serve\n",
+		},
+		{
+			"custom path with a unit",
+			initArguments{ConfigPath: "/srv/mt/config.yaml", UnitInstalled: true},
+			"initialized /srv/mt/config.yaml\nnext:\n  sudo mellomting key create local --config /srv/mt/config.yaml\n  sudo systemctl enable --now mellomting\n",
+		},
 	}
-	want := "initialized /etc/mellomting/config.yaml\nnext:\n  sudo mellomting key create local\n  sudo systemctl enable --now mellomting\n"
-	if out.String() != want {
-		t.Fatalf("next steps for the system config path:\n%s\nwant:\n%s", out.String(), want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := printInitCompletion(&out, tc.args); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != tc.want {
+				t.Fatalf("next steps:\n%s\nwant:\n%s", out.String(), tc.want)
+			}
+		})
 	}
 }

@@ -77,6 +77,25 @@ type initArguments struct {
 	SandboxMode string
 	DryRun      bool
 	Servers     []discovery.Server
+	// UnitInstalled reports a mellomting systemd unit on this host, from
+	// the installer or the Debian package: the unit, not `serve`, runs
+	// the daemon, so the next steps point at systemctl.
+	UnitInstalled bool
+}
+
+// packagedUnitPath is where the Debian package installs the unit;
+// `install --systemd` writes systemd.UnitPath.
+const packagedUnitPath = "/lib/systemd/system/" + systemd.UnitName + ".service"
+
+// systemdUnitInstalled reports whether a mellomting unit exists on this
+// host, wherever the installer or the package puts it.
+func systemdUnitInstalled() bool {
+	for _, p := range []string{systemd.UnitPath, packagedUnitPath} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // initCmd runs `mellomting init`.
@@ -111,6 +130,7 @@ func initCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 2
 	}
+	parsed.UnitInstalled = systemdUnitInstalled()
 	if err := parsed.Sandbox.preflight(parsed.SandboxMode, sandboxSet, initSandboxCheck); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: init: %v\n", err)
 		return 1
@@ -215,18 +235,22 @@ func printInitSummary(w io.Writer, aggregate discovery.Result) error {
 }
 
 // printInitCompletion prints exactly one completion line and two next
-// commands (B9). It never prints pepper or credential contents. An init
-// into the system configuration path was made for the packaged or
-// installed systemd unit: that path is every command's default, so no
-// --config is needed, and the unit rather than `serve` runs the daemon.
+// commands (B9). It never prints pepper or credential contents. The
+// default configuration path is every command's default, so --config is
+// omitted for it; where a systemd unit is installed it runs the daemon,
+// so the second step is systemctl rather than `serve`.
 func printInitCompletion(w io.Writer, args initArguments) error {
-	if args.ConfigPath == systemd.ConfigPath {
-		_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  sudo mellomting key create local\n  sudo systemctl enable --now %s\n",
-			args.ConfigPath, systemd.UnitName)
+	configFlag := " --config " + args.ConfigPath
+	if args.ConfigPath == config.DefaultConfigPath {
+		configFlag = ""
+	}
+	if args.UnitInstalled {
+		_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  sudo mellomting key create local%s\n  sudo systemctl enable --now %s\n",
+			args.ConfigPath, configFlag, systemd.UnitName)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  mellomting key create local --config %s\n  mellomting serve --config %s\n",
-		args.ConfigPath, args.ConfigPath, args.ConfigPath)
+	_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  mellomting key create local%s\n  mellomting serve%s\n",
+		args.ConfigPath, configFlag, configFlag)
 	return err
 }
 
