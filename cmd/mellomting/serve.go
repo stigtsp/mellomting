@@ -634,6 +634,10 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	// the daemon cannot serve should be reported without opening
 	// resources first.
 	data, usersInfo, err := readUsersSnapshot(cfg.Auth.UsersFile)
+	for attempt := 0; errors.Is(err, errUsersFileChanged) && attempt < 3; attempt++ {
+		// A key command replaced the file mid-read; take a fresh snapshot.
+		data, usersInfo, err = readUsersSnapshot(cfg.Auth.UsersFile)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load users file: %w", err)
 	}
@@ -803,9 +807,14 @@ func (d *daemon) refreshUsers(force bool) {
 	if err == nil {
 		data, info, err = readUsersSnapshot(d.cfg.Auth.UsersFile)
 	}
+	if errors.Is(err, errUsersFileChanged) {
+		// A key command replaced the file mid-read: the next poll sees
+		// the new metadata and reads the finished file.
+		return
+	}
 	if err != nil {
 		if force || !d.usersReadFailed {
-			d.log.Error("users reload failed; keeping previous store", "error_class", "users_read")
+			d.log.Error("users reload failed; keeping previous store", "error_class", "users_read", "error", err)
 		}
 		d.usersReadFailed = true
 		return
@@ -833,6 +842,10 @@ func sameUsersFile(a, b os.FileInfo) bool {
 		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
 }
 
+// errUsersFileChanged reports a replacement that landed during a read.
+// The snapshot is discarded; the caller retries rather than reporting it.
+var errUsersFileChanged = errors.New("users file changed while reading")
+
 // readUsersSnapshot pairs a bounded secure read with stable metadata. An
 // update during the read is retried on the next poll, never marked as loaded.
 func readUsersSnapshot(path string) ([]byte, os.FileInfo, error) {
@@ -852,7 +865,7 @@ func readUsersSnapshot(path string) ([]byte, os.FileInfo, error) {
 		return nil, nil, err
 	}
 	if !sameUsersFile(before, after) {
-		return nil, nil, errors.New("users file changed while reading; retrying")
+		return nil, nil, errUsersFileChanged
 	}
 	return data, after, nil
 }
