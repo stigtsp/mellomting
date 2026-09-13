@@ -79,7 +79,7 @@ type daemon struct {
 // Exit codes: 0 clean shutdown, 1 startup or shutdown failure,
 // 2 usage error.
 func serveCmd(args []string) int {
-	fs := commandFlags("serve", "Run the proxy until interrupted. Configuration changes need a restart;\nkey changes apply on reload (systemctl reload, or SIGHUP).")
+	fs := commandFlags("serve", "Run the proxy until interrupted. Configuration changes need a restart;\nkey changes apply automatically; SIGHUP (systemctl reload) checks at once.")
 	var configPath string
 	fs.StringVar(&configPath, "config", "", configFlagHelp)
 	if err := parseCommandFlags(fs, args); err != nil {

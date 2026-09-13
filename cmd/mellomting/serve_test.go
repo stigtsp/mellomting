@@ -2879,7 +2879,7 @@ models:
 	}
 
 	// The operator adds a token budget by hand — the CLI has no flag for
-	// it — and applies it with `systemctl reload` instead of a restart.
+	// it — and the running daemon picks the change up on its own.
 	// The model has no output cap and no unknown_usage_reservation is
 	// set, so nothing can charge a request whose usage goes unreported.
 	err = auth.Update(usersPath, func(uf *auth.UsersFile) error {
