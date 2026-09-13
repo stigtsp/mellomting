@@ -145,12 +145,6 @@ func TestReplacePreservingOwnerKeepsGroupReadable(t *testing.T) {
 	}
 }
 
-// A privileged `key create` that writes the FIRST users file has no
-// existing owner to preserve, and used to leave a 0600 file owned by
-// root's own group in a directory set up as root:<service group>. The
-// service account could then not read the file the installer had just
-// arranged for it, and the unit failed to start. A new file adopts the
-// directory's group and becomes group-readable.
 // A directory in a group other than the caller's own was provisioned
 // for a service account; one in the caller's group was not.
 func TestServiceGroup(t *testing.T) {
@@ -162,6 +156,12 @@ func TestServiceGroup(t *testing.T) {
 	}
 }
 
+// A privileged `key create` that writes the FIRST users file has no
+// existing owner to preserve, and used to leave a 0600 file owned by
+// root's own group in a directory set up as root:<service group>. The
+// service account could then not read the file the installer had just
+// arranged for it, and the unit failed to start. A new file adopts the
+// directory's group and becomes group-readable.
 func TestReplacePreservingOwnerAdoptsDirGroupForNewFile(t *testing.T) {
 	gid, ok := otherGroup(t)
 	if !ok {
