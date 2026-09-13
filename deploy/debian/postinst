@@ -23,9 +23,9 @@ configure)
 			--home-dir /run/mellomting --shell /usr/sbin/nologin "$SERVICE_USER"
 	fi
 	# The unit runs as group mellomting. An account created elsewhere
-	# with another primary group leaves no such group; say so, as the
-	# installer does, instead of failing inside install -g below.
-	if [ "$(id -gn "$SERVICE_USER")" != "$SERVICE_USER" ]; then
+	# without that group leaves nothing for install -g below; say so, as
+	# the installer does.
+	if ! getent group "$SERVICE_USER" >/dev/null; then
 		echo "service group $SERVICE_USER is missing; run groupadd --system $SERVICE_USER and add user $SERVICE_USER to it" >&2
 		exit 1
 	fi

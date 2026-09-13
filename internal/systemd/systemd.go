@@ -415,10 +415,6 @@ func systemdActive() bool {
 	return err == nil && st.IsDir()
 }
 
-// ensureAccount ensures the unprivileged service account (and same-named
-// group) exists, creating a system account when missing. It fails closed:
-// a failed creation or a missing post-creation entry is an error, never a
-// silent fallback.
 // provisionDirs is the directory layout the service needs, for a service
 // account with the given ids. deploy/debian/postinst provisions the same
 // layout in shell (asserted in systemd_test.go).
@@ -445,6 +441,10 @@ func useraddArgs(name string) []string {
 	}
 }
 
+// ensureAccount ensures the unprivileged service account (and same-named
+// group) exists, creating a system account when missing. It fails closed:
+// a failed creation or a missing post-creation entry is an error, never a
+// silent fallback.
 func ensureAccount(name string) (*user.User, error) {
 	if u, err := user.Lookup(name); err == nil {
 		return u, nil
