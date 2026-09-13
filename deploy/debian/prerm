@@ -7,12 +7,10 @@ UNIT=mellomting.service
 
 case "$1" in
 remove)
+	# deb-systemd-invoke (init-system-helpers, Essential) honours
+	# policy-rc.d, unlike a bare systemctl.
 	if [ -d /run/systemd/system ]; then
-		if command -v deb-systemd-invoke >/dev/null 2>&1; then
-			deb-systemd-invoke stop "$UNIT" >/dev/null || true
-		else
-			systemctl stop "$UNIT" >/dev/null || true
-		fi
+		deb-systemd-invoke stop "$UNIT" >/dev/null || true
 	fi
 	;;
 upgrade | failed-upgrade | deconfigure) ;;
