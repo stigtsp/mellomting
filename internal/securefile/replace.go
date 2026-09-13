@@ -50,10 +50,23 @@ func ReplacePreservingOwner(path string, mode, clamp os.FileMode, write func(io.
 	return replace(path, mode, clamp, write)
 }
 
-// dirGroup reports the group owning dir when it differs from the
-// caller's own effective group — the signal that the directory was set
-// up for a distinct service account rather than merely inheriting the
-// caller's.
+// ServiceGroup reports the group a file created in a directory should
+// take: the directory's own group when it differs from the caller's
+// effective group, the signal that the directory was set up for a
+// distinct service account (root:mellomting by the installer and the
+// Debian package) rather than merely inheriting the caller's. Such a
+// file also gains group-read (PLAN §29.1). The chown is best-effort:
+// an unprivileged caller outside that group keeps the file in its own
+// group at the narrower mode, as ReplacePreservingOwner does. init
+// applies the same rule to the files it publishes.
+func ServiceGroup(dirGid, egid int) (gid int, ok bool) {
+	if dirGid == egid {
+		return 0, false
+	}
+	return dirGid, true
+}
+
+// dirGroup applies ServiceGroup to the directory at dir.
 func dirGroup(dir string) (int, bool) {
 	st, err := os.Stat(dir)
 	if err != nil {
@@ -63,11 +76,7 @@ func dirGroup(dir string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	gid := int(sys.Gid)
-	if gid == os.Getegid() {
-		return 0, false
-	}
-	return gid, true
+	return ServiceGroup(int(sys.Gid), os.Getegid())
 }
 
 func replace(path string, mode, clamp os.FileMode, write func(io.Writer) error) error {

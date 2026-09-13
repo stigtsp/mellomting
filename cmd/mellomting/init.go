@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"mellomting/internal/landlock"
 	"mellomting/internal/sandbox"
 	"mellomting/internal/seatbelt"
+	"mellomting/internal/securefile"
 	"mellomting/internal/systemd"
 )
 
@@ -655,21 +657,6 @@ type commitFileIdentity struct {
 	Gid  uint64
 }
 
-// initFileOwnership decides the group and mode of the files init
-// publishes into a destination directory, by the rule
-// securefile.ReplacePreservingOwner applies to files `key create`
-// writes later (PLAN §29.1): a directory whose group is not the
-// caller's own effective group was provisioned for a service account
-// (root:mellomting by the installer and the Debian package), so the
-// files take that group and gain group-read at 0640. Otherwise they
-// stay 0600 in the caller's own group and no chown is made.
-func initFileOwnership(dir commitFileIdentity, egid int) (gid int, mode uint32, adopt bool) {
-	if uint64(egid) == dir.Gid {
-		return 0, 0o600, false
-	}
-	return int(dir.Gid), 0o640, true
-}
-
 // commitOps is the filesystem seam for the D4 init transaction. The
 // production implementation is Linux-specific and directory-FD-relative.
 type commitOps interface {
@@ -767,13 +754,15 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		return fmt.Errorf("refusing to overwrite existing %s; choose another --config directory", strings.Join(existing, ", "))
 	}
 
-	// Group and mode follow the destination directory (initFileOwnership)
-	// and are applied through the descriptor before publication, so a
-	// service-readable file never exists at its final path in any other
-	// state. A chown the caller is not permitted to make fails the init:
-	// a 0600 file the service account cannot read would fail later, at
-	// daemon start, with less to go on.
-	gid, mode, adopt := initFileOwnership(dirID, os.Getegid())
+	// Group and mode follow the destination directory by the rule
+	// securefile.ReplacePreservingOwner applies to the files `key create`
+	// writes later, so both leave the same shape: the service group with
+	// group-read at 0640 where the chown succeeds, the caller's own group
+	// at 0600 where it is not permitted. Files are created at 0600 and
+	// widened through the descriptor (umask cannot clip an fchmod), all
+	// before publication, so a service-readable file never exists at its
+	// final path in any other state.
+	gid, adopt := securefile.ServiceGroup(int(dirID.Gid), os.Getegid())
 	for i := range files {
 		fd, id, err := ops.createInDir(dirFD, files[i].temp, 0o600)
 		if err != nil {
@@ -785,11 +774,15 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		if !adopt {
 			continue
 		}
-		if err := ops.fchownFile(fd, files[i].temp, gid); err != nil {
+		err = ops.fchownFile(fd, files[i].temp, gid)
+		if errors.Is(err, fs.ErrPermission) {
+			continue // not a member of the group: the file stays 0600, as key create leaves it
+		}
+		if err != nil {
 			rollbackCommitFiles(ops, dirFD, files)
 			return fmt.Errorf("give %s the group of %s (gid %d): %w", files[i].path, dir, gid, err)
 		}
-		if err := ops.fchmodFile(fd, files[i].temp, mode); err != nil {
+		if err := ops.fchmodFile(fd, files[i].temp, 0o640); err != nil {
 			rollbackCommitFiles(ops, dirFD, files)
 			return fmt.Errorf("chmod %s: %w", files[i].temp, err)
 		}
