@@ -213,7 +213,7 @@ func TestRegistryCarryOverCarriesUnchangedBucket(t *testing.T) {
 		t.Fatal("fresh burst-2 bucket must admit twice")
 	}
 
-	reg := NewRegistryCarrying(prev)
+	reg := NewRegistryCarrying(prev, nil)
 	got := reg.For(k)
 	if got.Bucket == nil {
 		t.Fatal("carried key must keep a bucket")
@@ -239,7 +239,7 @@ func TestRegistryCarryOverDerivedBurst(t *testing.T) {
 		t.Fatal("fresh bucket must admit")
 	}
 
-	reg := NewRegistryCarrying(prev)
+	reg := NewRegistryCarrying(prev, nil)
 	got := reg.For(&auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 10, Burst: 0}})
 	if got.Bucket != old.Bucket {
 		t.Fatal("burst omitted on both sides must still carry the bucket (FIX-22)")
@@ -256,7 +256,7 @@ func TestRegistryCarryOverRebuildsOnChangedLimits(t *testing.T) {
 	old.AllowRate(time.Now())
 	old.AllowRate(time.Now()) // fully drained
 
-	reg := NewRegistryCarrying(prev)
+	reg := NewRegistryCarrying(prev, nil)
 	got := reg.For(&auth.Key{ID: "K1", Limits: auth.KeyLimits{RequestsPerSecond: 5, Burst: 2}})
 	if got.Bucket == old.Bucket {
 		t.Fatal("changed rate must rebuild the bucket, not carry the old one")
@@ -272,7 +272,7 @@ func TestRegistryCarryOverRebuildsOnChangedLimits(t *testing.T) {
 	old2.AllowRate(time.Now())
 	old2.AllowRate(time.Now())
 
-	reg2 := NewRegistryCarrying(prev2)
+	reg2 := NewRegistryCarrying(prev2, nil)
 	got2 := reg2.For(&auth.Key{ID: "K2", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 5}})
 	if got2.Bucket == old2.Bucket {
 		t.Fatal("changed burst must rebuild the bucket, not carry the old one")
@@ -288,7 +288,7 @@ func TestRegistryCarryOverRebuildsOnChangedLimits(t *testing.T) {
 	old3 := prev3.For(k3)
 	old3.AllowRate(time.Now())
 
-	reg3 := NewRegistryCarrying(prev3)
+	reg3 := NewRegistryCarrying(prev3, nil)
 	got3 := reg3.For(&auth.Key{ID: "K3", Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 2}})
 	if got3.Bucket == old3.Bucket {
 		t.Fatal("derived vs explicit burst must rebuild the bucket (FIX-22)")
@@ -312,7 +312,7 @@ func TestRegistryCarryOverAcrossGenerations(t *testing.T) {
 	}
 
 	for i := range 3 {
-		next := NewRegistryCarrying(prev)
+		next := NewRegistryCarrying(prev, nil)
 		if next.Size() != 0 {
 			t.Fatalf("generation %d starts non-empty (Size=%d), want lazy", i+1, next.Size())
 		}
@@ -341,7 +341,7 @@ func TestRegistryCarriesThroughIdleGenerations(t *testing.T) {
 	}
 	defer release()
 	for range 3 {
-		r = NewRegistryCarrying(r)
+		r = NewRegistryCarrying(r, nil)
 	}
 	got := r.For(key)
 	if ok, _ := got.AllowRate(now); ok {
@@ -353,13 +353,12 @@ func TestRegistryCarriesThroughIdleGenerations(t *testing.T) {
 	}
 }
 
-func TestRegistryRetainPrunesHistoricalKeys(t *testing.T) {
+func TestRegistryCarryingPrunesRemovedKeys(t *testing.T) {
 	r := NewRegistry()
 	for _, id := range []string{"kept", "removed"} {
 		r.For(&auth.Key{ID: id, Limits: auth.KeyLimits{RequestsPerSecond: 1, Burst: 1, ConcurrentRequests: 1}})
 	}
-	r = NewRegistryCarrying(NewRegistryCarrying(r))
-	r.Retain(func(id string) bool { return id == "kept" })
+	r = NewRegistryCarrying(NewRegistryCarrying(r, nil), func(id string) bool { return id == "kept" })
 	if len(r.carry) != 1 || len(r.carryConc) != 1 || r.carry["kept"] == nil || r.carryConc["kept"] == nil {
 		t.Fatal("pruning must retain only current keys across idle generations")
 	}
@@ -387,7 +386,7 @@ func TestConcurrencyBoundCarriesAcrossReloadWhenUnchanged(t *testing.T) {
 	}
 
 	// Reload with the same limit while both slots are still held.
-	r2 := NewRegistryCarrying(r1)
+	r2 := NewRegistryCarrying(r1, nil)
 	ks2 := r2.For(&key)
 	if _, ok := ks2.AcquireConcurrency(); ok {
 		t.Fatal("the reload handed out a slot while the previous generation still held both")
@@ -403,7 +402,7 @@ func TestConcurrencyBoundCarriesAcrossReloadWhenUnchanged(t *testing.T) {
 	// A changed limit must not be carried.
 	changed := key
 	changed.Limits.ConcurrentRequests = 5
-	r3 := NewRegistryCarrying(r2)
+	r3 := NewRegistryCarrying(r2, nil)
 	ks3 := r3.For(&changed)
 	held := 0
 	for range 5 {
