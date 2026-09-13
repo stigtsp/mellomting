@@ -1,0 +1,37 @@
+#!/bin/sh
+# Mellomting Debian package: postrm.
+#
+# remove: reload systemd and mask the unit so a stale enable symlink
+#         cannot start a binary that no longer exists (the shape
+#         dh_installsystemd generates).
+# purge:  also drop the configuration, auth files, state, accounting
+#         log, and the unit's symlinks. The service account is kept,
+#         per Debian convention.
+set -e
+
+UNIT=mellomting.service
+
+case "$1" in
+remove)
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+	fi
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper mask "$UNIT" >/dev/null || true
+	fi
+	;;
+purge)
+	rm -rf /etc/mellomting /var/lib/mellomting /var/log/mellomting
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper purge "$UNIT" >/dev/null || true
+		deb-systemd-helper unmask "$UNIT" >/dev/null || true
+	fi
+	;;
+upgrade | failed-upgrade | abort-install | abort-upgrade | disappear) ;;
+*)
+	echo "postrm called with unknown argument '$1'" >&2
+	exit 1
+	;;
+esac
+
+exit 0

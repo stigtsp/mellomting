@@ -1,0 +1,54 @@
+#!/bin/sh
+# Mellomting Debian package: postinst.
+#
+# Creates the service account and directories as `mellomting install
+# --systemd` does (PLAN §64). It writes nothing into /etc/mellomting:
+# the next step, `mellomting init --config /etc/mellomting/config.yaml`,
+# creates the configuration and auth files there and refuses to
+# overwrite existing ones. The service is neither enabled nor started.
+set -e
+
+USER=mellomting
+CONF_DIR=/etc/mellomting
+LOG_DIR=/var/log/mellomting
+STATE_DIR=/var/lib/mellomting
+UNIT=mellomting.service
+
+case "$1" in
+configure)
+	# Same account shape as the installer: a system account with no
+	# home directory, its own group, and no login shell.
+	if ! getent passwd "$USER" >/dev/null; then
+		useradd --system --no-create-home --user-group \
+			--home-dir /run/mellomting --shell /usr/sbin/nologin "$USER"
+	fi
+
+	# /run/mellomting comes from the unit's RuntimeDirectory=. install -d
+	# re-asserts owner and mode on an existing directory, as the
+	# installer does. root:mellomting on the configuration directory is
+	# what makes init give its files the service group (PLAN §29.1).
+	install -d -o root -g "$USER" -m 0750 "$CONF_DIR"
+	install -d -o "$USER" -g "$USER" -m 0750 "$LOG_DIR" "$STATE_DIR"
+
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+		# $2 is the previously configured version: set on an upgrade,
+		# empty on a first install. A running service is restarted so
+		# the new binary takes effect; a stopped one stays stopped.
+		if [ -n "$2" ]; then
+			if command -v deb-systemd-invoke >/dev/null 2>&1; then
+				deb-systemd-invoke try-restart "$UNIT" >/dev/null || true
+			else
+				systemctl try-restart "$UNIT" >/dev/null || true
+			fi
+		fi
+	fi
+	;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+*)
+	echo "postinst called with unknown argument '$1'" >&2
+	exit 1
+	;;
+esac
+
+exit 0

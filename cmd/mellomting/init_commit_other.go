@@ -27,6 +27,14 @@ func (unsupportedCommitOps) createInDir(int, string, uint32) (int, commitFileIde
 	return 0, commitFileIdentity{}, errors.New("local init commit is Linux-only")
 }
 
+func (unsupportedCommitOps) fchownFile(int, string, int) error {
+	return errors.New("local init commit is Linux-only")
+}
+
+func (unsupportedCommitOps) fchmodFile(int, string, uint32) error {
+	return errors.New("local init commit is Linux-only")
+}
+
 func (unsupportedCommitOps) writeAll(int, string, []byte) error {
 	return errors.New("local init commit is Linux-only")
 }

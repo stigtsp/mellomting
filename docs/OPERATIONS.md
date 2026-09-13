@@ -102,6 +102,37 @@ configuration, a missing default auth file is created only when the
 configuration explicitly names that exact default path. Custom auth paths
 remain operator-managed.
 
+### Debian package
+
+`make deb` builds `dist/mellomting_<version>_<arch>.deb` for amd64 and arm64
+on any host with Go; it fetches nfpm through `go run`. The package installs:
+
+- `/usr/bin/mellomting`.
+- The service unit at `/lib/systemd/system/mellomting.service`, identical to
+  `deploy/mellomting.service` except for the binary path.
+- The logrotate policy at `/etc/logrotate.d/mellomting`, as a conffile.
+- The configuration example at `/usr/share/mellomting/config.yaml.example`.
+
+On install it creates the `mellomting` service account and the configuration,
+log, and state directories with the same owners and modes as
+`install --systemd`. It writes nothing into `/etc/mellomting` and neither
+enables nor starts the service. Generate the configuration and auth files in
+place, create a key, then start the service:
+
+```sh
+sudo apt install ./mellomting_<version>_<arch>.deb
+sudo mellomting init --server http://127.0.0.1:8000 --config /etc/mellomting/config.yaml
+sudo mellomting key create production
+sudo systemctl enable --now mellomting
+```
+
+Because `/etc/mellomting` is owned by `root:mellomting`, `init` writes its files
+with that group and mode `0640`, so the service can read them. On upgrade a
+running service is restarted so the new binary takes effect. Removing the
+package stops the service and keeps `/etc/mellomting`; purging deletes the
+configuration, auth files, state, and accounting log, but keeps the service
+account.
+
 ## Health, logs, and usage
 
 `/healthz` and `/readyz` are available without authentication. All inference

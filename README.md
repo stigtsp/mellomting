@@ -66,6 +66,17 @@ The installer prepares the service account, configuration, auth files, unit,
 and log rotation. Existing configuration and auth files are preserved.
 See [Operations](docs/OPERATIONS.md) for installation options and maintenance.
 
+Alternatively, `make deb` builds a Debian package that installs the binary,
+unit, service account, and directories. `init` then creates the configuration
+and auth files in place:
+
+```sh
+sudo apt install ./dist/mellomting_<version>_<arch>.deb
+sudo mellomting init --server http://127.0.0.1:8000 --config /etc/mellomting/config.yaml
+sudo mellomting key create production
+sudo systemctl enable --now mellomting
+```
+
 ## Configuration
 
 The sandbox defaults to `best-effort`: Mellomting applies it when available

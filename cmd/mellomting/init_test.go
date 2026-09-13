@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"mellomting/internal/testsupport"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -885,6 +887,18 @@ func (s *scriptedCommitOps) fstatFile(fd int, name string) (commitFileIdentity, 
 	return id, err
 }
 
+func (s *scriptedCommitOps) fchownFile(fd int, name string, gid int) error {
+	return s.run([]string{"fchownFile", "fchownFile:" + name}, func() error {
+		return s.inner.fchownFile(fd, name, gid)
+	})
+}
+
+func (s *scriptedCommitOps) fchmodFile(fd int, name string, mode uint32) error {
+	return s.run([]string{"fchmodFile", "fchmodFile:" + name}, func() error {
+		return s.inner.fchmodFile(fd, name, mode)
+	})
+}
+
 func (s *scriptedCommitOps) closeFile(fd int, name string) error {
 	return s.run([]string{"closeFile", "closeFile:" + name}, func() error {
 		return s.inner.closeFile(fd, name)
@@ -1509,4 +1523,100 @@ func TestInitEndToEnd(t *testing.T) {
 			t.Fatalf("stdout exceeded 20 rows:\n%s", stdout)
 		}
 	})
+}
+
+// TestInitFileOwnership pins the rule init shares with
+// securefile.ReplacePreservingOwner (PLAN §29.1): a destination directory
+// whose group is not the caller's own was provisioned for a service
+// account, so the files written into it take that group and gain
+// group-read. A directory in the caller's own group keeps 0600.
+func TestInitFileOwnership(t *testing.T) {
+	t.Run("service group directory: adopt group, 0640", func(t *testing.T) {
+		gid, mode, adopt := initFileOwnership(commitFileIdentity{Gid: 1234}, 1000)
+		if !adopt || gid != 1234 || mode != 0o640 {
+			t.Fatalf("initFileOwnership = gid %d, mode %o, adopt %v; want 1234, 640, true", gid, mode, adopt)
+		}
+	})
+	t.Run("own group directory: 0600, no chown", func(t *testing.T) {
+		_, mode, adopt := initFileOwnership(commitFileIdentity{Gid: 1000}, 1000)
+		if adopt || mode != 0o600 {
+			t.Fatalf("initFileOwnership = mode %o, adopt %v; want 600, false", mode, adopt)
+		}
+	})
+}
+
+// TestCommitInitArtifactsAdoptsDirectoryGroup writes into a directory
+// group-owned by a supplementary group of the test user, the same shape
+// as root:mellomting, and checks every published file carries that
+// group at 0640 so the service account can read what init wrote.
+func TestCommitInitArtifactsAdoptsDirectoryGroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("init commit is Linux-only")
+	}
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gids, err := u.GroupIds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := -1
+	for _, g := range gids {
+		gid, err := strconv.Atoi(g)
+		if err == nil && gid != os.Getegid() {
+			other = gid
+			break
+		}
+	}
+	if other < 0 {
+		t.Skip("test user has no supplementary group to chgrp the directory to")
+	}
+
+	models := map[string][]string{"m": {"local"}}
+	serviceDir := func(t *testing.T) string {
+		dir := newCommitDir(t)
+		if err := os.Chown(dir, -1, other); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	t.Run("published files carry the group at 0640", func(t *testing.T) {
+		dir := serviceDir(t)
+		args := commitTestArgs(t, dir, "http://127.0.0.1:8000")
+		arts := commitTestArtifacts(t, args, models)
+		if err := commitInitArtifacts(args, arts, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{args.ConfigPath, args.UsersPath, args.PepperPath} {
+			var st unix.Stat_t
+			if err := unix.Stat(p, &st); err != nil {
+				t.Fatalf("stat %s: %v", p, err)
+			}
+			if int(st.Gid) != other {
+				t.Errorf("%s gid = %d, want the directory's group %d", p, st.Gid, other)
+			}
+			if st.Mode&0o777 != 0o640 {
+				t.Errorf("%s mode = %o, want 640", p, st.Mode&0o777)
+			}
+		}
+	})
+
+	// A file the service account could not read must never be
+	// published: a failed chown or chmod fails the init and leaves the
+	// directory empty.
+	for _, key := range []string{"fchownFile", "fchmodFile"} {
+		t.Run(key+" failure leaves no files", func(t *testing.T) {
+			dir := serviceDir(t)
+			args := commitTestArgs(t, dir, "http://127.0.0.1:8000")
+			arts := commitTestArtifacts(t, args, models)
+			ops := &scriptedCommitOps{inner: defaultCommitOps(), failOnce: map[string]bool{key: true}}
+			err := commitInitArtifacts(args, arts, ops)
+			if err == nil || !strings.Contains(err.Error(), "injected "+key) {
+				t.Fatalf("err = %v", err)
+			}
+			requireDirEmpty(t, dir)
+		})
+	}
 }

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Mellomting Debian package: prerm. Stops the service before its binary
+# is removed. On upgrade it keeps running until postinst restarts it.
+set -e
+
+UNIT=mellomting.service
+
+case "$1" in
+remove)
+	if [ -d /run/systemd/system ]; then
+		if command -v deb-systemd-invoke >/dev/null 2>&1; then
+			deb-systemd-invoke stop "$UNIT" >/dev/null || true
+		else
+			systemctl stop "$UNIT" >/dev/null || true
+		fi
+	fi
+	;;
+upgrade | failed-upgrade | deconfigure) ;;
+*)
+	echo "prerm called with unknown argument '$1'" >&2
+	exit 1
+	;;
+esac
+
+exit 0

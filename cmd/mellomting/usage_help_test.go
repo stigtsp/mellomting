@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"mellomting/internal/discovery"
+	"mellomting/internal/systemd"
 )
 
 // TestUsageHelpHasNoPlanReferences: the help text is operator-facing
@@ -88,5 +89,20 @@ func TestInitNextSteps(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "key create local --config /tmp/config.yaml") {
 		t.Fatalf("next command must create a key with a valid username: %s", out.String())
+	}
+}
+
+// TestInitNextStepsSystemConfig: an init into the system configuration
+// path (a package or `install --systemd` deployment) is run by the
+// packaged unit, so the next steps name systemctl, not `serve`, and
+// need no --config because that path is the default.
+func TestInitNextStepsSystemConfig(t *testing.T) {
+	var out bytes.Buffer
+	if err := printInitCompletion(&out, initArguments{ConfigPath: systemd.ConfigPath}); err != nil {
+		t.Fatal(err)
+	}
+	want := "initialized /etc/mellomting/config.yaml\nnext:\n  sudo mellomting key create local\n  sudo systemctl enable --now mellomting\n"
+	if out.String() != want {
+		t.Fatalf("next steps for the system config path:\n%s\nwant:\n%s", out.String(), want)
 	}
 }

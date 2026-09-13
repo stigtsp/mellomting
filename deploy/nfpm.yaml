@@ -1,0 +1,49 @@
+# Debian package definition for `make deb`, which supplies ARCH and
+# DEB_VERSION and stages the two dist/deb/ inputs. The maintainer
+# scripts in deploy/debian/ provision the service account and
+# directories; `mellomting init` is the operator's next step
+# (docs/OPERATIONS.md, "Debian package").
+name: mellomting
+arch: ${ARCH}
+platform: linux
+version: ${DEB_VERSION}
+version_schema: none
+section: net
+priority: optional
+maintainer: Stig <git@stig.io>
+homepage: https://github.com/stigtsp/mellomting
+description: |
+  Authenticated OpenAI-compatible LLM inference proxy.
+  A small, security-conscious router that authenticates clients with
+  opaque bearer keys, applies per-key policy and rate limits, routes
+  public model names to local inference backends, streams SSE
+  responses, accounts token usage into JSONL, and confines itself with
+  Landlock after startup.
+depends:
+  - passwd
+recommends:
+  - logrotate
+contents:
+  # nfpm expands ${VAR} in package fields but not in file sources, so
+  # the Makefile stages each architecture's binary at this fixed path.
+  - src: dist/deb/mellomting
+    dst: /usr/bin/mellomting
+    file_info:
+      mode: 0755
+  - src: dist/deb/mellomting.service
+    dst: /lib/systemd/system/mellomting.service
+    file_info:
+      mode: 0644
+  - src: deploy/mellomting.logrotate
+    dst: /etc/logrotate.d/mellomting
+    type: config
+    file_info:
+      mode: 0644
+  - src: deploy/mellomting-config.yaml.example
+    dst: /usr/share/mellomting/config.yaml.example
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: deploy/debian/postinst
+  preremove: deploy/debian/prerm
+  postremove: deploy/debian/postrm

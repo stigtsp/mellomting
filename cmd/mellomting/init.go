@@ -25,6 +25,7 @@ import (
 	"mellomting/internal/landlock"
 	"mellomting/internal/sandbox"
 	"mellomting/internal/seatbelt"
+	"mellomting/internal/systemd"
 )
 
 // initSandboxCheck is the production capability probe for this
@@ -214,8 +215,16 @@ func printInitSummary(w io.Writer, aggregate discovery.Result) error {
 }
 
 // printInitCompletion prints exactly one completion line and two next
-// commands (B9). It never prints pepper or credential contents.
+// commands (B9). It never prints pepper or credential contents. An init
+// into the system configuration path was made for the packaged or
+// installed systemd unit: that path is every command's default, so no
+// --config is needed, and the unit rather than `serve` runs the daemon.
 func printInitCompletion(w io.Writer, args initArguments) error {
+	if args.ConfigPath == systemd.ConfigPath {
+		_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  sudo mellomting key create local\n  sudo systemctl enable --now %s\n",
+			args.ConfigPath, systemd.UnitName)
+		return err
+	}
 	_, err := fmt.Fprintf(w, "initialized %s\nnext:\n  mellomting key create local --config %s\n  mellomting serve --config %s\n",
 		args.ConfigPath, args.ConfigPath, args.ConfigPath)
 	return err
@@ -619,6 +628,22 @@ type commitFileIdentity struct {
 	Ino  uint64
 	Mode uint64
 	Uid  uint64
+	Gid  uint64
+}
+
+// initFileOwnership decides the group and mode of the files init
+// publishes into a destination directory, by the rule
+// securefile.ReplacePreservingOwner applies to files `key create`
+// writes later (PLAN §29.1): a directory whose group is not the
+// caller's own effective group was provisioned for a service account
+// (root:mellomting by the installer and the Debian package), so the
+// files take that group and gain group-read at 0640. Otherwise they
+// stay 0600 in the caller's own group and no chown is made.
+func initFileOwnership(dir commitFileIdentity, egid int) (gid int, mode uint32, adopt bool) {
+	if uint64(egid) == dir.Gid {
+		return 0, 0o600, false
+	}
+	return int(dir.Gid), 0o640, true
 }
 
 // commitOps is the filesystem seam for the D4 init transaction. The
@@ -628,6 +653,8 @@ type commitOps interface {
 	fstatParent(fd int) (commitFileIdentity, error)
 	lstatInDir(fd int, name string) (commitFileIdentity, error)
 	createInDir(fd int, name string, mode uint32) (fileFD int, id commitFileIdentity, err error)
+	fchownFile(fd int, name string, gid int) error
+	fchmodFile(fd int, name string, mode uint32) error
 	writeAll(fd int, name string, data []byte) error
 	fsyncFile(fd int, name string) error
 	fstatFile(fd int, name string) (commitFileIdentity, error)
@@ -716,6 +743,13 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		return fmt.Errorf("refusing to overwrite existing %s; choose another --config directory", strings.Join(existing, ", "))
 	}
 
+	// Group and mode follow the destination directory (initFileOwnership)
+	// and are applied through the descriptor before publication, so a
+	// service-readable file never exists at its final path in any other
+	// state. A chown the caller is not permitted to make fails the init:
+	// a 0600 file the service account cannot read would fail later, at
+	// daemon start, with less to go on.
+	gid, mode, adopt := initFileOwnership(dirID, os.Getegid())
 	for i := range files {
 		fd, id, err := ops.createInDir(dirFD, files[i].temp, 0o600)
 		if err != nil {
@@ -724,6 +758,17 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		}
 		files[i].fd = fd
 		files[i].id = id
+		if !adopt {
+			continue
+		}
+		if err := ops.fchownFile(fd, files[i].temp, gid); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("give %s the group of %s (gid %d): %w", files[i].path, dir, gid, err)
+		}
+		if err := ops.fchmodFile(fd, files[i].temp, mode); err != nil {
+			rollbackCommitFiles(ops, dirFD, files)
+			return fmt.Errorf("chmod %s: %w", files[i].temp, err)
+		}
 	}
 
 	for i := range files {
