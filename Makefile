@@ -15,18 +15,15 @@ LDFLAGS := \
 build: ## build bin/mellomting with build metadata embedded
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/mellomting ./cmd/mellomting
 
-# Cross-compiled binaries. FORCE hands the up-to-date check to the Go
-# build cache instead of make.
+# Cross-compiled binaries: dist/mellomting-<GOOS>-<GOARCH>, one rule for
+# every pair. FORCE hands the up-to-date check to the Go build cache
+# instead of make.
 .PHONY: FORCE
 FORCE:
 
-dist/mellomting-linux-%: FORCE
+dist/mellomting-%: FORCE
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=$* $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/mellomting
-
-dist/mellomting-darwin-arm64: FORCE
-	mkdir -p dist
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/mellomting
+	CGO_ENABLED=0 GOOS=$(word 1,$(subst -, ,$*)) GOARCH=$(word 2,$(subst -, ,$*)) $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $@ ./cmd/mellomting
 
 .PHONY: release
 release: dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting-darwin-arm64 ## cross-compile release artifacts into dist/ (linux/amd64, linux/arm64, darwin/arm64)
