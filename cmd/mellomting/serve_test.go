@@ -2926,6 +2926,27 @@ models:
 	if logBuf.String() != out {
 		t.Fatal("unchanged valid content was reloaded")
 	}
+	// An unreadable file is reported once, with the reason, and is not
+	// re-read every second: it is retried when its metadata changes.
+	if err := os.Chmod(usersPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshUsers(false)
+	out = logBuf.String()
+	if !strings.Contains(out, "users_read") || !strings.Contains(out, "too permissive") {
+		t.Fatalf("unreadable users file was not reported with its reason: %q", out)
+	}
+	d.refreshUsers(false)
+	if logBuf.String() != out {
+		t.Fatalf("an unchanged unreadable file was reported again: %q", logBuf.String())
+	}
+	if err := os.Chmod(usersPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshUsers(false)
+	if strings.Count(logBuf.String(), "users reloaded") != strings.Count(out, "users reloaded")+1 {
+		t.Fatalf("readable again, the file was not reloaded: %q", logBuf.String())
+	}
 }
 
 // The sandbox must grant the directory holding the users file, not only

@@ -63,16 +63,15 @@ func listenerAddrs(lns ...net.Listener) []net.Addr {
 
 // daemon holds the fully-wired components of one Mellomting instance.
 type daemon struct {
-	usersInfo       os.FileInfo // metadata of the last users file examined
-	usersReadFailed bool        // suppress repeated polling read errors
-	cfg             *config.Config
-	log             *slog.Logger
-	api             *httpapi.Server
-	proxy           *proxy.Proxy
-	acc             *accounting.Writer // usage JSONL writer; nil when disabled
-	live            *inflight.Registry // in-flight requests, for `mellomting top`
-	pepper          []byte             // HMAC pepper, loaded once at startup (PLAN §27)
-	tlsConfig       *tls.Config        // static listener TLS (PLAN §67); nil when absent
+	usersInfo os.FileInfo // metadata of the users file as last examined; nil when absent
+	cfg       *config.Config
+	log       *slog.Logger
+	api       *httpapi.Server
+	proxy     *proxy.Proxy
+	acc       *accounting.Writer // usage JSONL writer; nil when disabled
+	live      *inflight.Registry // in-flight requests, for `mellomting top`
+	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
+	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
 }
 
 // serveCmd runs the proxy daemon.
@@ -799,11 +798,12 @@ func (d *daemon) reloadUsers() {
 // refreshUsers runs on the signal loop, serializing polling with SIGHUP.
 // Poll metadata first; read only on change or an explicit SIGHUP.
 func (d *daemon) refreshUsers(force bool) {
-	info, err := os.Lstat(d.cfg.Auth.UsersFile)
-	if err == nil && !force && !d.usersReadFailed && sameUsersFile(d.usersInfo, info) {
+	seen, err := os.Lstat(d.cfg.Auth.UsersFile)
+	if !force && sameUsersFile(d.usersInfo, seen) {
 		return
 	}
 	var data []byte
+	info := seen
 	if err == nil {
 		data, info, err = readUsersSnapshot(d.cfg.Auth.UsersFile)
 	}
@@ -812,16 +812,15 @@ func (d *daemon) refreshUsers(force bool) {
 		// the new metadata and reads the finished file.
 		return
 	}
+	// Remember the examined metadata whether the file was usable or not,
+	// so an unreadable, missing, or malformed file is retried when it
+	// changes rather than every second, and its failure is logged once.
+	// SIGHUP always retries explicitly.
 	if err != nil {
-		if force || !d.usersReadFailed {
-			d.log.Error("users reload failed; keeping previous store", "error_class", "users_read", "error", err)
-		}
-		d.usersReadFailed = true
+		d.usersInfo = seen
+		d.log.Error("users reload failed; keeping previous store", "error_class", "users_read", "error", err)
 		return
 	}
-	d.usersReadFailed = false
-	// Remember rejected metadata too: retry when it changes, without logging
-	// the same malformed file every second. SIGHUP always retries explicitly.
 	d.usersInfo = info
 	store, users, err := parseStore(d.cfg, d.pepper, data)
 	if err != nil {
@@ -838,7 +837,10 @@ func (d *daemon) refreshUsers(force bool) {
 // sameUsersFile includes identity because key commands replace files by
 // rename, and a replacement can preserve the old timestamp and size.
 func sameUsersFile(a, b os.FileInfo) bool {
-	return a != nil && b != nil && os.SameFile(a, b) &&
+	if a == nil || b == nil {
+		return a == nil && b == nil // an absent file is unchanged while it stays absent
+	}
+	return os.SameFile(a, b) &&
 		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
 }
 
