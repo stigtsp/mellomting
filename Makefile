@@ -47,12 +47,14 @@ DEB_VERSION = $(shell echo '$(VERSION)' | sed -E -e 's/^v//' -e 's/-dirty$$/.dir
 DEB_ARCHES := amd64 arm64
 
 # The package installs the binary in /usr/bin (Debian policy forbids
-# /usr/local), so the unit's ExecStart is rewritten; the grep fails the
-# build if the line in deploy/ changed shape and the rewrite missed.
-dist/deb/mellomting.service: deploy/mellomting.service
+# /usr/local), so the unit is rendered from the template `install
+# --systemd` renders, with that path in place of its @BINARY_PATH@
+# placeholder; the grep fails the build if a placeholder survived.
+dist/deb/mellomting.service: internal/systemd/mellomting.service.tmpl
 	mkdir -p dist/deb
-	sed 's#^ExecStart=/usr/local/bin/mellomting #ExecStart=/usr/bin/mellomting #' $< > $@
-	@grep -q '^ExecStart=/usr/bin/mellomting ' $@ || { echo "ExecStart rewrite failed in $@"; exit 1; }
+	sed 's#@BINARY_PATH@#/usr/bin/mellomting#g' $< > $@
+	@! grep -q '@BINARY_PATH@' $@ || { echo "unrendered placeholder in $@"; exit 1; }
+	@grep -q '^ExecStart=/usr/bin/mellomting ' $@ || { echo "ExecStart missing from $@"; exit 1; }
 
 .PHONY: deb
 deb: $(DEB_ARCHES:%=dist/mellomting-linux-%) dist/deb/mellomting.service ## build dist/mellomting_<version>_<arch>.deb for linux/amd64 and linux/arm64
