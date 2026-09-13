@@ -3,6 +3,7 @@ package systemd
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -43,6 +44,52 @@ func TestSyncEmbeddedMatchesDeploy(t *testing.T) {
 	}
 	if string(ConfigTemplate()) != string(scaffold) {
 		t.Errorf("embedded config scaffold differs from deploy/mellomting-config.yaml.example")
+	}
+}
+
+// TestDebianPostinstMatchesProvisioning pins the shell copy of the
+// provisioning in deploy/debian/postinst — the account's useradd flags
+// and the directories' owners and modes — to what install --systemd
+// does, so the two cannot drift apart.
+func TestDebianPostinstMatchesProvisioning(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "debian", "postinst"))
+	if err != nil {
+		t.Fatalf("read deploy/debian/postinst: %v", err)
+	}
+	// Collapse line continuations and indentation so a wrapped command
+	// compares as one line.
+	script := strings.Join(strings.Fields(strings.ReplaceAll(string(raw), "\\\n", " ")), " ")
+
+	dirs := map[string]dirSpec{}
+	for _, d := range provisionDirs(1, 2) {
+		dirs[d.path] = d
+	}
+	owner := func(d dirSpec) string {
+		if d.uid == 0 {
+			return "root"
+		}
+		return `"$SERVICE_USER"`
+	}
+	if dirs[LogDir].mode != dirs[StateDir].mode || dirs[LogDir].uid != dirs[StateDir].uid {
+		t.Fatalf("postinst provisions the log and state directories in one install call, but they differ: %+v %+v", dirs[LogDir], dirs[StateDir])
+	}
+	for _, want := range []string{
+		"SERVICE_USER=" + DefaultServiceUser,
+		"CONF_DIR=" + ConfigDir,
+		"LOG_DIR=" + LogDir,
+		"STATE_DIR=" + StateDir,
+		"useradd " + strings.Join(useraddArgs(`"$SERVICE_USER"`), " "),
+		fmt.Sprintf(`install -d -o %s -g "$SERVICE_USER" -m %04o "$CONF_DIR"`, owner(dirs[ConfigDir]), dirs[ConfigDir].mode),
+		fmt.Sprintf(`install -d -o %s -g "$SERVICE_USER" -m %04o "$LOG_DIR" "$STATE_DIR"`, owner(dirs[LogDir]), dirs[LogDir].mode),
+		// The missing-group guidance matches serviceGroupID's.
+		"run groupadd --system $SERVICE_USER and add user $SERVICE_USER to it",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("deploy/debian/postinst lacks %q", want)
+		}
+	}
+	if strings.Contains(script, RunDir+`"`) {
+		t.Errorf("postinst provisions %s, which the unit's RuntimeDirectory= owns", RunDir)
 	}
 }
 

@@ -126,13 +126,7 @@ func (p *Provision) Run() (r Report, err error) {
 		return Report{}, err
 	}
 
-	dirs := []dirSpec{
-		{path: ConfigDir, mode: 0o750, uid: 0, gid: gid}, // root:mellomting, group-readable (pepper 0640, HARDENING)
-		{path: LogDir, mode: 0o750, uid: uid, gid: gid},
-		{path: StateDir, mode: 0o750, uid: uid, gid: gid},
-		{path: RunDir, mode: 0o750, uid: uid, gid: gid},
-	}
-	for _, d := range dirs {
+	for _, d := range provisionDirs(uid, gid) {
 		if err := ensureDir(d.path, d.mode, d.uid, d.gid); err != nil {
 			return Report{}, err
 		}
@@ -425,11 +419,23 @@ func systemdActive() bool {
 // group) exists, creating a system account when missing. It fails closed:
 // a failed creation or a missing post-creation entry is an error, never a
 // silent fallback.
-func ensureAccount(name string) (*user.User, error) {
-	if u, err := user.Lookup(name); err == nil {
-		return u, nil
+// provisionDirs is the directory layout the service needs, for a service
+// account with the given ids. deploy/debian/postinst provisions the same
+// layout in shell (asserted in systemd_test.go).
+func provisionDirs(uid, gid int) []dirSpec {
+	return []dirSpec{
+		{path: ConfigDir, mode: 0o750, uid: 0, gid: gid}, // root:mellomting, group-readable (pepper 0640, HARDENING)
+		{path: LogDir, mode: 0o750, uid: uid, gid: gid},
+		{path: StateDir, mode: 0o750, uid: uid, gid: gid},
+		{path: RunDir, mode: 0o750, uid: uid, gid: gid},
 	}
-	args := []string{
+}
+
+// useraddArgs creates the service account: a system account with no
+// home directory, its own group, and no login shell. The Debian
+// package's postinst uses the same flags (asserted in systemd_test.go).
+func useraddArgs(name string) []string {
+	return []string{
 		"--system",
 		"--no-create-home",
 		"--user-group",
@@ -437,6 +443,13 @@ func ensureAccount(name string) (*user.User, error) {
 		"--shell", "/usr/sbin/nologin",
 		name,
 	}
+}
+
+func ensureAccount(name string) (*user.User, error) {
+	if u, err := user.Lookup(name); err == nil {
+		return u, nil
+	}
+	args := useraddArgs(name)
 	useraddPath, err := resolveBinary("useradd", "/usr/sbin/useradd", "/sbin/useradd")
 	if err != nil {
 		return nil, err
