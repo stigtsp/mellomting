@@ -30,6 +30,21 @@ configure)
 	install -d -o root -g "$USER" -m 0750 "$CONF_DIR"
 	install -d -o "$USER" -g "$USER" -m 0750 "$LOG_DIR" "$STATE_DIR"
 
+	# The unit is shipped by the package but never enabled here: that is
+	# the operator's step after init. Lift the mask postrm applies on
+	# removal so a reinstalled package can be enabled again, and record
+	# the unit's [Install] links so postrm purge removes the ones
+	# `systemctl enable` creates (the dh_installsystemd --no-enable shape).
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		if deb-systemd-helper debian-installed "$UNIT"; then
+			deb-systemd-helper unmask "$UNIT" >/dev/null || true
+			if deb-systemd-helper --quiet was-enabled "$UNIT"; then
+				deb-systemd-helper enable "$UNIT" >/dev/null || true
+			fi
+		fi
+		deb-systemd-helper update-state "$UNIT" >/dev/null || true
+	fi
+
 	if [ -d /run/systemd/system ]; then
 		systemctl --system daemon-reload >/dev/null || true
 		# $2 is the previously configured version: set on an upgrade,
