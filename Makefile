@@ -33,8 +33,10 @@ release: dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting
 		(cd dist && shasum -a 256 mellomting-linux-amd64 mellomting-linux-arm64 mellomting-darwin-arm64 > SHA256SUMS); \
 	fi
 
-# Debian packages (deploy/nfpm.yaml). nfpm runs through `go run`, so Go
-# is the only build dependency and the packages build on macOS too.
+# Debian packages (deploy/nfpm.yaml). nfpm is installed once per pinned
+# version into dist/tools with `go install`, which needs nothing but the
+# Go toolchain, leaves go.mod untouched, and lets the packages build on
+# macOS too.
 #
 # DEB_VERSION maps `git describe` output onto dpkg ordering: a leading v
 # is dropped, a post-tag suffix -3-g8bb19d1 becomes +3.g8bb19d1 (after
@@ -42,7 +44,7 @@ release: dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting
 # (before the tag). It is expanded lazily, so only the deb target pays
 # for the extra git describe.
 NFPM_VERSION ?= v2.47.0
-NFPM := $(GO) run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
+NFPM := dist/tools/nfpm-$(NFPM_VERSION)
 DEB_VERSION = $(shell echo '$(VERSION)' | sed -E -e 's/^v//' -e 's/-dirty$$/.dirty/' -e 's/-([0-9]+)-g([0-9a-f]+)/+\1.g\2/' -e 's/-/~/g')
 DEB_ARCHES := amd64 arm64
 
@@ -56,8 +58,13 @@ dist/deb/mellomting.service: internal/systemd/mellomting.service.tmpl
 	@! grep -q '@BINARY_PATH@' $@ || { echo "unrendered placeholder in $@"; exit 1; }
 	@grep -q '^ExecStart=/usr/bin/mellomting ' $@ || { echo "ExecStart missing from $@"; exit 1; }
 
+$(NFPM):
+	mkdir -p dist/tools
+	GOBIN=$(abspath dist/tools) $(GO) install github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
+	mv dist/tools/nfpm $@
+
 .PHONY: deb
-deb: $(DEB_ARCHES:%=dist/mellomting-linux-%) dist/deb/mellomting.service ## build dist/mellomting_<version>_<arch>.deb for linux/amd64 and linux/arm64
+deb: $(DEB_ARCHES:%=dist/mellomting-linux-%) dist/deb/mellomting.service $(NFPM) ## build dist/mellomting_<version>_<arch>.deb for linux/amd64 and linux/arm64
 	@echo '$(DEB_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || { \
 		echo "deb: VERSION '$(VERSION)' is not derived from a release tag (fetch tags, or pass VERSION=X.Y.Z)"; exit 1; }
 	@for arch in $(DEB_ARCHES); do \
