@@ -17,6 +17,7 @@ package limiter
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -163,60 +164,37 @@ func NewRegistry() *Registry {
 // Only the carryable buckets are retained, as an immutable snapshot; the
 // previous Registry itself is deliberately not referenced, so a chain of
 // SIGHUPs never accumulates a linked list of dead generations (R3,
-// FIX-22 eval).
-func NewRegistryCarrying(prev *Registry) *Registry {
+// FIX-22 eval). State is carried only for keys keep accepts (nil keeps
+// every key), so repeated rotations stay bounded by the current key set
+// rather than retaining every historical key.
+func NewRegistryCarrying(prev *Registry, keep func(string) bool) *Registry {
 	var carry map[string]*Bucket
 	var carryConc map[string]*Concurrency
 	if prev != nil {
 		prev.mu.Lock()
 		carry = make(map[string]*Bucket, len(prev.carry)+len(prev.keys))
 		carryConc = make(map[string]*Concurrency, len(prev.carryConc)+len(prev.keys))
-		for id, b := range prev.carry {
-			carry[id] = b
-		}
-		for id, c := range prev.carryConc {
-			carryConc[id] = c
-		}
-		if len(prev.keys) > 0 {
-			for id, ks := range prev.keys {
-				// Materialized state supersedes older carried settings,
-				// including a rate limit that has since been removed.
-				delete(carry, id)
-				delete(carryConc, id)
-				if ks.Bucket != nil {
-					carry[id] = ks.Bucket
-				}
-				if ks.Concur != nil {
-					carryConc[id] = ks.Concur
-				}
+		maps.Copy(carry, prev.carry)
+		maps.Copy(carryConc, prev.carryConc)
+		for id, ks := range prev.keys {
+			// Materialized state supersedes older carried settings,
+			// including a rate limit that has since been removed.
+			delete(carry, id)
+			delete(carryConc, id)
+			if ks.Bucket != nil {
+				carry[id] = ks.Bucket
+			}
+			if ks.Concur != nil {
+				carryConc[id] = ks.Concur
 			}
 		}
 		prev.mu.Unlock()
+		if keep != nil {
+			maps.DeleteFunc(carry, func(id string, _ *Bucket) bool { return !keep(id) })
+			maps.DeleteFunc(carryConc, func(id string, _ *Concurrency) bool { return !keep(id) })
+		}
 	}
 	return &Registry{keys: make(map[string]*KeyState), carry: carry, carryConc: carryConc}
-}
-
-// Retain drops state for keys removed from the current store. Call before
-// publishing a reloaded registry so repeated rotations remain bounded by
-// the current key set rather than retaining every historical key.
-func (r *Registry) Retain(keep func(string) bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for id := range r.carry {
-		if !keep(id) {
-			delete(r.carry, id)
-		}
-	}
-	for id := range r.carryConc {
-		if !keep(id) {
-			delete(r.carryConc, id)
-		}
-	}
-	for id := range r.keys {
-		if !keep(id) {
-			delete(r.keys, id)
-		}
-	}
 }
 
 // For returns the limit state of a key, creating it on first use.
