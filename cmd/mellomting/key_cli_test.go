@@ -230,8 +230,8 @@ func TestKeyRevokeLastKey(t *testing.T) {
 // "required" the policy granted the users file by pathname, every
 // mutation renamed a new inode over it, and the reload was denied — so
 // the instruction said "restart" and was forbidden from mentioning
-// SIGHUP. The policy now grants the directory, so a reload applies key
-// rotation and revocation under every mode.
+// SIGHUP. The policy now grants the directory, so key rotation and
+// revocation apply automatically under every mode.
 func TestKeyMutationApplyInstruction(t *testing.T) {
 	bin, dir := keyCLIFixture(t)
 	cfg := filepath.Join(dir, "config.yaml")

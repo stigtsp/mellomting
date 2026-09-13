@@ -40,6 +40,9 @@ func TestCommandHelp(t *testing.T) {
 			if command == "serve" && !strings.Contains(out, "--config PATH") {
 				t.Fatalf("flag spelling missing: %q", out)
 			}
+			if command == "serve" && (!strings.Contains(out, "key changes apply automatically") || strings.Contains(out, "apply on reload")) {
+				t.Fatalf("serve help must describe automatic key reloads: %q", out)
+			}
 		})
 	}
 }
