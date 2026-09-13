@@ -21,6 +21,7 @@ func commitIdentity(st *unix.Stat_t) commitFileIdentity {
 		Ino:  uint64(st.Ino),
 		Mode: uint64(st.Mode),
 		Uid:  uint64(st.Uid),
+		Gid:  uint64(st.Gid),
 	}
 }
 
@@ -64,6 +65,20 @@ func (productionCommitOps) createInDir(fd int, name string, mode uint32) (int, c
 		return 0, commitFileIdentity{}, err
 	}
 	return f, commitIdentity(&st), nil
+}
+
+func (productionCommitOps) fchownFile(fd int, name string, gid int) error {
+	if err := unix.Fchown(fd, -1, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", name, err)
+	}
+	return nil
+}
+
+func (productionCommitOps) fchmodFile(fd int, name string, mode uint32) error {
+	if err := unix.Fchmod(fd, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", name, err)
+	}
+	return nil
 }
 
 func (productionCommitOps) writeAll(fd int, name string, data []byte) error {
