@@ -25,6 +25,13 @@ import (
 // tracker and an on-disk JSONL writer.
 func newAccountingProxy(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writer *accounting.Writer) *Proxy {
 	t.Helper()
+	return newAccountingProxyLogging(t, f, quota, writer, testsupport.DiscardLogger())
+}
+
+// newAccountingProxyLogging is newAccountingProxy with the proxy's own
+// logger supplied, for tests that assert on the request log line.
+func newAccountingProxyLogging(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writer *accounting.Writer, log *slog.Logger) *Proxy {
+	t.Helper()
 	cfg := testConfig(f.server.URL)
 	cfg.Accounting.Enabled = true
 	cfg.Accounting.EnsureStreamUsage = new(true)
@@ -42,7 +49,7 @@ func newAccountingProxy(t *testing.T, f *fakeVLLM, quota *accounting.Quota, writ
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), quota, writer, nil)
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, log, quota, writer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +108,8 @@ func TestResponsesReadsDoNotRepeatUsage(t *testing.T) {
 	})
 	quota := accounting.NewQuota()
 	writer, path := tmpWriter(t)
-	p := newAccountingProxy(t, f, quota, writer)
+	var logBuf bytes.Buffer
+	p := newAccountingProxyLogging(t, f, quota, writer, slog.New(slog.NewJSONHandler(&logBuf, nil)))
 	key := testKey()
 	for _, req := range []struct{ method, path, body string }{
 		{http.MethodPost, "/v1/responses", `{"model":"gen-1"}`},
@@ -112,6 +120,27 @@ func TestResponsesReadsDoNotRepeatUsage(t *testing.T) {
 		w := run(t, p, req.method, req.path, req.body, key)
 		if w.Code != http.StatusOK || w.Body.String() != response {
 			t.Fatalf("%s %s: status=%d body=%s", req.method, req.path, w.Code, w.Body.String())
+		}
+	}
+	// The request log agrees with the usage record: only the generating
+	// request reports the tokens, retrieval and cancellation none.
+	var logged []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(logBuf.String()), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err == nil && m["msg"] == "request" {
+			logged = append(logged, m)
+		}
+	}
+	if len(logged) != 4 {
+		t.Fatalf("got %d request log lines, want 4:\n%s", len(logged), logBuf.String())
+	}
+	for i, m := range logged {
+		wantTotal, wantStatus := float64(0), "unknown"
+		if i == 0 {
+			wantTotal, wantStatus = 10, "exact"
+		}
+		if m["tokens_total"] != wantTotal || m["usage_status"] != wantStatus {
+			t.Fatalf("request log %d: tokens_total=%v usage_status=%v, want %v %v", i, m["tokens_total"], m["usage_status"], wantTotal, wantStatus)
 		}
 	}
 	if err := writer.Close(); err != nil {

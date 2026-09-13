@@ -77,6 +77,13 @@ type operation struct {
 // carries an output cap (PLAN §36).
 func (o operation) generative() bool { return o.capField != "" }
 
+// consumesUsage reports whether the usage block in a response counts
+// tokens this request consumed. Retrieval and cancellation return an
+// existing response's cumulative usage, which was logged and accounted
+// when it was generated, so for them no usage is extracted at all: the
+// request log, the usage record, and quota replay then agree.
+func (o operation) consumesUsage() bool { return o.route == routeByModel }
+
 var (
 	opChat       = operation{path: "/v1/chat/completions", method: "POST", route: routeByModel, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
 	opLegacy     = operation{path: "/v1/completions", method: "POST", route: routeByModel, endpoint: "completions", capField: "max_tokens"}
@@ -445,9 +452,11 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.class = "ok"
 		out.bytesOut = len(res.BodyBytes)
 
-		usage := accounting.ParseUsage(res.BodyBytes, o.endpoint)
-		out.usage, out.usageStatus = usage, accounting.StatusOf(usage)
-		out.reservation = reservation
+		if o.consumesUsage() {
+			usage := accounting.ParseUsage(res.BodyBytes, o.endpoint)
+			out.usage, out.usageStatus = usage, accounting.StatusOf(usage)
+			out.reservation = reservation
+		}
 		ct := "application/json"
 		if v := res.Header.Get("Content-Type"); v != "" {
 			ct = v
@@ -1340,14 +1349,6 @@ func windowLimits(l auth.KeyLimits) accounting.WindowLimit {
 func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 	if p.quota == nil && p.acc == nil {
 		return
-	}
-	// Retrieval and cancellation return an existing response's cumulative
-	// usage, not tokens consumed by this request. Keep the access record,
-	// but omit that usage so reports and quota replay cannot count it again.
-	if o.route == routeByResponseID {
-		out.usage = accounting.Usage{}
-		out.usageStatus = accounting.UsageUnknown
-		out.reservation = 0
 	}
 	total := out.usage.Total
 	if out.usageStatus == accounting.UsageUnknown {
