@@ -39,10 +39,11 @@ release: dist/mellomting-linux-amd64 dist/mellomting-linux-arm64 dist/mellomting
 # DEB_VERSION maps `git describe` output onto dpkg ordering: a leading v
 # is dropped, a post-tag suffix -3-g8bb19d1 becomes +3.g8bb19d1 (after
 # the tag), and any other hyphenated suffix such as -rc1 becomes ~rc1
-# (before the tag).
+# (before the tag). It is expanded lazily, so only the deb target pays
+# for the extra git describe.
 NFPM_VERSION ?= v2.47.0
 NFPM := $(GO) run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
-DEB_VERSION := $(shell echo '$(VERSION)' | sed -E -e 's/^v//' -e 's/-dirty$$/.dirty/' -e 's/-([0-9]+)-g([0-9a-f]+)/+\1.g\2/' -e 's/-/~/g')
+DEB_VERSION = $(shell echo '$(VERSION)' | sed -E -e 's/^v//' -e 's/-dirty$$/.dirty/' -e 's/-([0-9]+)-g([0-9a-f]+)/+\1.g\2/' -e 's/-/~/g')
 DEB_ARCHES := amd64 arm64
 
 # The package installs the binary in /usr/bin (Debian policy forbids
