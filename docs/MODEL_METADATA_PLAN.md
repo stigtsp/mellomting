@@ -187,6 +187,22 @@ agent needs a `capabilities.tools: true` entry under that provider's `models`
 map. A new model therefore appears automatically but is not immediately
 tool-capable. This is the reason §5 exists.
 
+Tool calling is a property of the backend, not of Mellomting: vLLM only emits
+structured `tool_calls` when launched with `--enable-auto-tool-choice` and
+`--tool-call-parser`, and without them a request carrying `tool_choice: "auto"`
+is rejected upstream. Mellomting forwards the `tools` array unchanged and
+cannot observe whether those flags were passed, so it cannot answer the
+question opencode is being conservative about. Adding a `policy.tools` field
+would not help under this mode either: opencode's vLLM discovery reads only
+`max_model_len` from the card and would ignore it. Only §5 removes the
+per-model line.
+
+**Open question for the spike:** whether a `models` entry overriding
+`capabilities` *merges with* the discovered card or *replaces* it. If it
+replaces, the same line also discards the discovered `limit.context`, the
+operator is back to hand-writing context windows, and most of §4's value is
+lost — which would promote §5 from deferred to required.
+
 ## 5. Deferred: a first-party plugin
 
 An `opencode-mellomting` plugin would register each server as a provider via
@@ -269,8 +285,10 @@ reason to revisit §5, not to add a value.
 
 1. Spike: point a real opencode v2 at a hand-faked `/v1/models` carrying
    `owned_by: "vllm"` and `max_model_len`, with two provider instances and
-   `/connect`. Confirm discovery, limits, credentials, and observe exactly
-   what the tools gap looks like. Throwaway.
+   `/connect`. Confirm discovery, limits and credentials; then add a
+   `capabilities.tools: true` override and check whether the discovered
+   `limit.context` survives it. A replace, rather than a merge, promotes §5
+   from deferred to required. Throwaway.
 2. `ParseModels` and `Aggregate` capture and reconcile the window (§1).
 3. `ModelPolicy.context_length`, validation, `init` rendering (§2).
 4. `handleModels` emits both fields (§3).
