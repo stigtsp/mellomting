@@ -8,18 +8,19 @@ A user given a base URL and an API key gets every model that Mellomting
 serves, with correct context and output limits, without editing a model list.
 Adding a model to Mellomting makes it appear in their client.
 
-The reference client is opencode v2. Sections 1–3 are client-agnostic; §4 is
-an opt-in compatibility mode that lets opencode discover Mellomting with no
-software shipped from this repo.
+The reference client is opencode v2. Sections 1–3 and 5 are client-agnostic;
+§4 is an opt-in compatibility mode that lets opencode discover Mellomting with
+no software shipped from this repo.
 
 ## Non-goals
 
-- Tool-calling, vision, reasoning or cost metadata. Mellomting cannot observe
-  tool support, and declaring it per model is config that must be kept true by
-  hand.
+- Tool-calling, vision, reasoning or cost *metadata* on `/v1/models`.
+  Mellomting cannot observe tool support, and declaring capabilities per model
+  is config that must be kept true by hand. Request *defaults* are different
+  and are in scope (§5).
 - Clients other than opencode. The `/v1/models` fields follow the convention
   other clients are converging on, but no other client is targeted or tested.
-- Shipping an npm package. Deferred, with the trigger recorded in §5.
+- Shipping an npm package. Deferred, with the trigger recorded in §6.
 
 ## Current state
 
@@ -61,6 +62,7 @@ software shipped from this repo.
 | Metadata scope | Limits only | Capabilities; full models.dev card |
 | Replica disagreement | Minimum of known values | Fail init; omit |
 | Credentials | opencode's `/connect` store; nothing in `opencode.json` or the environment | Env vars; a key in the config file |
+| Reasoning and other request options | Client-side variants documented; server-side `policy.body` aliases | Variants emitted for a plugin to forward (noted in §6) |
 
 The compatibility mode is opt-in because `owned_by: "vllm"` is not true in
 general: Mellomting fronts whatever the operator configures, which need not be
@@ -225,7 +227,7 @@ $ opencode
 arrive with tools disabled, so each model a user wants to drive as a coding
 agent needs a `capabilities.tools: true` entry under that provider's `models`
 map. A new model therefore appears automatically but is not immediately
-tool-capable. This is the reason §5 exists.
+tool-capable. This is the reason §6 exists.
 
 Tool calling is a property of the backend, not of Mellomting: vLLM only emits
 structured `tool_calls` when launched with `--enable-auto-tool-choice` and
@@ -234,7 +236,7 @@ is rejected upstream. Mellomting forwards the `tools` array unchanged and
 cannot observe whether those flags were passed, so it cannot answer the
 question opencode is being conservative about. Adding a `policy.tools` field
 would not help under this mode either: opencode's vLLM discovery reads only
-`max_model_len` from the card and would ignore it. Only §5 removes the
+`max_model_len` from the card and would ignore it. Only §6 removes the
 per-model line.
 
 **Open questions for the spike**, any of which can sink §4:
@@ -251,17 +253,98 @@ per-model line.
   unknown, so omitted): skip the model, apply a default, or fail.
 - Whether the `/health` probe checks only the status. vLLM answers an empty
   200; `writeHealth` answers JSON.
+- Whether the vLLM package's `variants(model)` returns anything for a
+  discovered model. Expected: nothing, as Mistral's did before opencode
+  added entries in its own source. Informational; §5 does not depend on it.
 
-A bad answer to the first two promotes §5 from deferred to required.
+A bad answer to the first two promotes §6 from deferred to required.
 
-## 5. Deferred: a first-party plugin
+## 5. Request defaults: variants without client config
+
+### What clients do
+
+opencode exposes per-model **variants**: named bundles of request options
+chosen with `#name` or ctrl+t. Each carries `settings` (options the provider
+package translates, such as `reasoningEffort`), `body` (raw fields merged into
+the request) and `headers`. Default variants come from a `variants(model)`
+function in each provider package's source; a self-hosted server cannot add
+to it, and the vLLM package is expected to return none. Under §4 a variant is
+therefore one more per-model block in `opencode.json`.
+
+Mellomting already forwards these unchanged: `shallowParse` (`proxy.go`)
+preserves unknown fields verbatim, so a variant setting
+`chat_template_kwargs` reaches vLLM as sent. For DeepSeek-V4 on vLLM the
+reasoning controls live there rather than in a top-level `reasoning_effort`:
+
+```jsonc
+"deepseek-v4-flash": { "variants": [
+  { "id": "think",     "body": { "chat_template_kwargs": { "thinking": true } } },
+  { "id": "think-max", "body": { "chat_template_kwargs": { "thinking": true, "reasoning_effort": "max" } } }
+]}
+```
+
+This costs no server work and is documented in step 7.
+
+### Server-side aliases
+
+Every public model is already an alias — `upstream_model` rewrites the name
+per backend — and `prepareOutbound` already injects fields into the outbound
+body (the output cap, `stream_options.include_usage`). `ModelPolicy` gains
+`body`, a mapping merged into the request the same way:
+
+```yaml
+models:
+  deepseek-v4-flash:
+    type: generation
+    servers: [local]
+  deepseek-v4-flash-think:
+    type: generation
+    servers: [local]             # same server, same upstream model
+    policy:
+      body:
+        chat_template_kwargs: { thinking: true }
+```
+
+Both aliases appear on `/v1/models`, and so in any client through any
+discovery path, with nothing configured on the client. The trade is that a
+variant is a model switch rather than a toggle, and N variants are N aliases.
+
+Semantics:
+
+- **Inject when absent, never override.** A top-level key the client sent is
+  left exactly as sent, including its nested content. This is the output
+  cap's existing rule — never silently change what the client asked for —
+  and it keeps the alias honest: it supplies defaults, not policy.
+- Shallow merge at the top level of the JSON object, for every route-by-model
+  operation. The operator is responsible for the fields being valid for the
+  backend and endpoint they route to; `chat_template_kwargs` is vLLM's, and
+  an alias carrying it must route to vLLM.
+- `prepareOutbound` currently returns early when neither the cap nor usage
+  injection applies (embeddings, usage injection off). Body injection must
+  run before that return.
+
+Validation, at config load:
+
+- `policy.body` must be a mapping. Values are arbitrary JSON.
+- Keys Mellomting owns are rejected: `model`, `stream`, `stream_options`,
+  and the cap fields (`max_tokens`, `max_completion_tokens`,
+  `max_output_tokens`). Letting config set these would silently break
+  routing, accounting or the cap.
+- Serialized size is bounded (4 KiB). This is a defaults map, not a prompt.
+
+`config show-effective` renders it. Nothing about it is emitted on
+`/v1/models`: it is request policy, not model metadata.
+
+## 6. Deferred: a first-party plugin
 
 An `opencode-mellomting` plugin would register each server as a provider via
 `ctx.provider.transform`, resolve credentials through
 `ctx.integration.connection`, and **omit** the capabilities block — which
 triggers opencode's assume-tools fallback and removes the per-model edit that
 §4 requires. It would also drop the dependence on another provider's
-`owned_by` filter and give the providers real names.
+`owned_by` filter, give the providers real names, and could register proper
+variants — toggled with ctrl+t rather than switched as aliases — from a hint
+Mellomting emits, which no discovery path can carry.
 
 It is deferred because it costs a TypeScript package published from a Go repo,
 against a v2 plugin API that is new and whose auth flow this design could not
@@ -273,6 +356,8 @@ Revisit when either holds:
   users hit it without understanding why a model will not call tools.
 - opencode changes the `owned_by` filter, the `/health` probe, or the
   `max_model_len` mapping, breaking §4.
+- Alias-per-variant (§5) proves too clumsy, and users want the ctrl+t toggle
+  badly enough to justify the package.
 
 ## Data flow
 
@@ -281,11 +366,14 @@ vLLM /v1/models (max_model_len)
   -> discovery.ParseModels      bounded parse, per server
   -> discovery.Aggregate        min across replicas
   -> mellomting init            writes policy.context_length
-  -> config                     operator may override
+  -> config                     operator may override; policy.body per alias
   -> handleModels               context_length + max_output_tokens, ACL-filtered
                                 (+ max_model_len, owned_by: vllm under compat)
   -> opencode vllm provider     limit.context, per provider
   -> /models                    user picks a model
+  -> request                    client variant body, or nothing
+  -> prepareOutbound            policy.body injected where absent
+  -> backend
 ```
 
 ## Error handling
@@ -298,6 +386,8 @@ vLLM /v1/models (max_model_len)
 | `config discover` cannot reach a server | Non-zero exit naming the server; nothing printed |
 | `max_output_tokens` > `context_length` | Config validation error |
 | `models_compat` set to an unknown value | Config validation error |
+| `policy.body` names a Mellomting-owned key, is not a mapping, or exceeds 4 KiB | Config validation error |
+| Client sends a key `policy.body` also sets | Client value forwarded untouched |
 | Client unauthenticated at `/v1/models` | Unchanged: 401, no model list |
 | Mellomting unreachable from opencode | That provider contributes no models |
 
@@ -319,6 +409,12 @@ vLLM /v1/models (max_model_len)
   matches `context_length`.
 - Routing: `/health` is 404 by default, 200 under compat, 405 on POST under
   compat, and never counts against inflight admission.
+- `prepareOutbound`: `policy.body` keys injected when absent; a client-sent
+  key, including a nested object under it, forwarded byte-for-byte; injection
+  runs for embeddings and with usage injection off; nothing injected when
+  `policy.body` is unset.
+- `validateModels`: `policy.body` rejects a non-mapping, each owned key, and
+  an oversized map; `config show-effective` renders it.
 - One end-to-end check: opencode v2 against a running `mellomting serve` with
   compat on, confirming models and limits arrive.
 
@@ -328,29 +424,31 @@ vLLM /v1/models (max_model_len)
 `/health` probe and the `max_model_len` mapping are opencode implementation
 details, not a published contract, and can change in any release. Step 1 of
 implementation verifies them against a real opencode before the knob is built;
-§5 is the escape hatch if they move.
+§6 is the escape hatch if they move.
 
 **The tools gap may make §4 unsatisfying in practice.** It is accepted
-deliberately, and §5 records what to do about it.
+deliberately, and §6 records what to do about it.
 
 **`models_compat` invites growth.** It is one enum with one value, not a
 general compatibility framework. A second client wanting a third dialect is a
-reason to revisit §5, not to add a value.
+reason to revisit §6, not to add a value.
 
 ## Implementation order
 
 1. Spike: point a real opencode v2 at a hand-faked `/v1/models` that
    requires a bearer key and carries `owned_by: "vllm"` and `max_model_len`,
    with two provider instances and `/connect`. Answer the four open questions
-   in §4 in order; the first two decide between §4 and §5. Throwaway.
+   in §4 in order; the first two decide between §4 and §6. Throwaway.
 2. `ParseModels` and `Aggregate` capture and reconcile the window (§1).
 3. `ModelPolicy.context_length`, validation, `init` rendering, and
    `config discover` (§2).
 4. `handleModels` emits both fields (§3).
 5. `server.models_compat` and the `/health` alias (§4).
-6. Documentation: `docs/CONFIGURATION.md` for both new fields and the
-   subcommand, `README.md` and `docs/OPERATIONS.md` for the opencode setup
-   including the tools caveat.
+6. `ModelPolicy.body` injection and validation (§5).
+7. Documentation: `docs/CONFIGURATION.md` for the new fields and the
+   subcommand; `README.md` and `docs/OPERATIONS.md` for the opencode setup,
+   the tools caveat, client-side variants with the DeepSeek example, and
+   alias-per-variant.
 
-Steps 2–4 are useful on their own: they make the context window visible in
+Steps 2–4 and 6 are useful on their own: they make the context window visible in
 `config show-effective` and to any client, whether or not step 5 ships.
