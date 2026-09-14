@@ -102,12 +102,11 @@ ProtectProc=invisible
 # The daemon uses no SysV IPC or POSIX message queues.
 RemoveIPC=yes
 
-# Network: only the families Mellomting needs, and only to localhost
-# (the backends). Landlock adds port-level connect restrictions on top
-# of this (PLAN §60).
+# Network: only the address families Mellomting needs. No IPAddress
+# filter: it cannot see security.backend_network, and its denial is a
+# silent packet drop that makes a blocked backend look like an upstream
+# outage. Egress is enforced at dial time instead (PLAN §16, §60).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-IPAddressDeny=any
-IPAddressAllow=localhost
 
 [Install]
 WantedBy=multi-user.target

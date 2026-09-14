@@ -94,6 +94,12 @@ Use the supplied systemd unit to run the proxy as an unprivileged service.
 Keep inference servers under separate unprivileged users and disable their
 admin and development endpoints.
 
+The unit sets no `IPAddressDeny`/`IPAddressAllow` filter: it cannot see
+`security.backend_network`, and its denial is a silent packet drop that makes a
+blocked backend look like an upstream outage. Egress is enforced at dial time
+instead. To add an address filter anyway, use `systemctl edit mellomting`
+rather than editing the packaged unit.
+
 Release builds use `CGO_ENABLED=0` and `-trimpath`, with version and commit
 metadata embedded. Primary targets are `linux/amd64` and `linux/arm64`.
 

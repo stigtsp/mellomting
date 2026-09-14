@@ -2488,9 +2488,6 @@ MemoryDenyWriteExecute=yes
 
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
-IPAddressDeny=any
-IPAddressAllow=localhost
-
 ReadOnlyPaths=/etc/mellomting
 ReadWritePaths=/var/log/mellomting /var/lib/mellomting
 ```
@@ -2498,6 +2495,11 @@ ReadWritePaths=/var/log/mellomting /var/lib/mellomting
 Test each directive on supported distributions.
 
 If a directive must be removed, document exactly why.
+
+IPAddressDeny/IPAddressAllow were removed: a static unit cannot see the
+destination policy in §16, and their denial is a silent packet drop that makes
+a blocked backend look like an upstream outage. Egress is enforced by
+security.backend_network (§16) and Landlock connect ports (§60).
 
 ---
 
