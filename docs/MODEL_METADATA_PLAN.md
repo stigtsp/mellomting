@@ -31,6 +31,8 @@ software shipped from this repo.
   records a context window.
 - Health is `/healthz` and `/readyz` (`internal/httpapi/server.go`),
   unauthenticated and exempt from inflight limits.
+- `mellomting init` is create-only (`cmd/mellomting/init.go`) and nothing
+  else runs discovery. A model added after init is a hand-written YAML block.
 
 ## What opencode v2 provides
 
@@ -55,9 +57,10 @@ software shipped from this repo.
 |---|---|---|
 | How opencode learns the models | Opt-in vLLM-dialect compatibility | Ship a plugin now; third-party discovery plugin; masquerade unconditionally |
 | Context window source | Capture at discovery, config overrides | Hand-written only; live passthrough per request |
+| Discovery after init | Read-only `config discover` prints the block | Init-only capture; a command that edits the config |
 | Metadata scope | Limits only | Capabilities; full models.dev card |
 | Replica disagreement | Minimum of known values | Fail init; omit |
-| Credentials | opencode's `/connect` store | `apiKeyEnv`; `apiKeyFile`; inline key |
+| Credentials | opencode's `/connect` store; nothing in `opencode.json` or the environment | Env vars; a key in the config file |
 
 The compatibility mode is opt-in because `owned_by: "vllm"` is not true in
 general: Mellomting fronts whatever the operator configures, which need not be
@@ -79,15 +82,18 @@ type Model struct {
 The card's `max_model_len` supplies it, falling back to `context_length` for
 servers following the OpenRouter and LiteLLM spelling. The value is parsed
 under the same fail-closed discipline as the ID, because the server answering
-discovery is not trusted: accept only a JSON integer in `[1, 1<<32)`, and
+discovery is not trusted: accept only a JSON integer in `[1, 1<<31)`, and
 reject a float, a string, a negative or an out-of-range value as a malformed
 response rather than coercing it. An absent field is unknown, not an error —
 not every backend reports one.
 
 `Aggregate` reconciles a model served by several backends by taking the
 **minimum of the known values**, because a request may be routed to any
-replica and must fit on all of them. When no replica reports a window the
-model carries none. A replica that reports nothing does not veto the others;
+replica and must fit on all of them. The asymmetry matters: a window set too
+high produces a backend 400 on an oversized request, which maps to
+`errUpstreamRejected` and is not retried, while a window set too low only
+makes the client compact early. When no replica reports a window the model
+carries none. A replica that reports nothing does not veto the others;
 the recorded value is the best available information, not a guarantee, and an
 operator who needs certainty sets the field explicitly.
 
@@ -117,6 +123,24 @@ models:
 `mellomting init` writes what discovery reconciled; an explicit value always
 wins, and nothing rewrites an existing config.
 
+Init runs once, so on its own the capture would help exactly once. A new
+read-only subcommand covers every model added afterwards:
+
+```
+$ mellomting config discover local=http://10.17.160.10:8000
+models:
+  deepseek-v4-flash:
+    type: generation
+    policy:
+      context_length: 196608
+    servers: [local]
+```
+
+It runs the same discovery and aggregation as init against the servers named
+on the command line, prints the `models:` block, and writes nothing — the
+operator pastes what they want. It shares init's server-argument parsing and
+its derived backend-network policy, and adds no new network behaviour.
+
 Validation: `context_length` must be non-negative, and `max_output_tokens`
 must not exceed it when both are set. The two fields are unrelated today, so a
 config claiming more output than context passes silently.
@@ -139,6 +163,12 @@ not know. `context_length` and `max_output_tokens` are the spelling OpenRouter
 uses, LiteLLM added to its own `/v1/models`, and agentgateway#3345 proposes as
 the convention.
 
+`max_output_tokens` is Mellomting's policy cap, not a claim about the model:
+`proxy.prepare` rejects a request asking for more with `output_limit_exceeded`.
+From the client's side that coincides with what OpenRouter and LiteLLM mean —
+the most it may request — which is why the name is reused. It is omitted for
+`type: embedding` models, where no output limit applies.
+
 The ACL filter is unchanged, and the endpoint still exposes no backend URL,
 backend name, or upstream model ID. Fields vLLM returns that Mellomting will
 not forward under any mode: `root` (leaks the backend's filesystem layout,
@@ -155,7 +185,9 @@ server:
 The only accepted values are `""` and `vllm`. When set to `vllm`, three things
 change:
 
-- `/v1/models` cards report `owned_by: "vllm"` instead of `"mellomting"`.
+- `type: generation` cards report `owned_by: "vllm"` instead of
+  `"mellomting"`. Embedding models keep `"mellomting"`, so opencode's filter
+  drops them instead of registering them as chat models.
 - Each card carries `max_model_len` alongside `context_length`, with the same
   value.
 - `GET /health` is served as an alias of `/healthz`: unauthenticated, exempt
@@ -163,7 +195,15 @@ change:
   wrong method still answers 405 rather than 404.
 
 Nothing else changes. The mode adds no field carrying information that
-`context_length` does not already carry, and exposes no backend detail.
+`context_length` does not already carry. It does disclose one thing the
+default mode does not: `owned_by: "vllm"` tells the client which engine the
+operator claims to run. That claim is the operator's, made by turning the
+knob on, and it names an engine rather than a host, path or model revision.
+
+`/v1/models` stays authenticated and ACL-filtered under this mode. Discovery
+is therefore per user: opencode fetches the list with the key from `/connect`,
+and each person sees exactly the models their key allows, with no separate
+list to maintain on the client side.
 
 A user then needs no plugin and no shipped software:
 
@@ -197,11 +237,22 @@ would not help under this mode either: opencode's vLLM discovery reads only
 `max_model_len` from the card and would ignore it. Only §5 removes the
 per-model line.
 
-**Open question for the spike:** whether a `models` entry overriding
-`capabilities` *merges with* the discovered card or *replaces* it. If it
-replaces, the same line also discards the discovered `limit.context`, the
-operator is back to hand-writing context windows, and most of §4's value is
-lost — which would promote §5 from deferred to required.
+**Open questions for the spike**, any of which can sink §4:
+
+- Whether the vLLM discovery sends the `/connect` credential as a bearer
+  token **on the `/v1/models` fetch itself**, not only on completions.
+  vLLM's own listing is normally open; Mellomting's answers 401 without a
+  key. If discovery fetches anonymously, §4 cannot work at all.
+- Whether a `models` entry overriding `capabilities` *merges with* the
+  discovered card or *replaces* it. If it replaces, the same line also
+  discards the discovered `limit.context`, the operator is back to
+  hand-writing context windows, and most of §4's value is lost.
+- What discovery does with a card that has no `max_model_len` (context
+  unknown, so omitted): skip the model, apply a default, or fail.
+- Whether the `/health` probe checks only the status. vLLM answers an empty
+  200; `writeHealth` answers JSON.
+
+A bad answer to the first two promotes §5 from deferred to required.
 
 ## 5. Deferred: a first-party plugin
 
@@ -244,6 +295,7 @@ vLLM /v1/models (max_model_len)
 | Backend omits the field at discovery | Model recorded without a window |
 | Backend sends a malformed value | That server's discovery fails, naming the server |
 | Replicas disagree | Minimum of known values recorded |
+| `config discover` cannot reach a server | Non-zero exit naming the server; nothing printed |
 | `max_output_tokens` > `context_length` | Config validation error |
 | `models_compat` set to an unknown value | Config validation error |
 | Client unauthenticated at `/v1/models` | Unchanged: 401, no model list |
@@ -256,11 +308,15 @@ vLLM /v1/models (max_model_len)
 - `Aggregate`: minimum across disagreeing replicas; all-unknown omits; one
   unknown does not veto the rest.
 - `renderInitConfig`: golden config carrying `context_length`.
+- `config discover`: prints the same block init would write, writes no file,
+  and fails with the server name when one server is unreachable.
 - `validateModels`: negative rejected; output exceeding context rejected.
 - `validateServer`: `models_compat` accepts unset and `vllm`, rejects others.
-- `handleModels`: both fields present; each omitted when zero; ACL filtering
-  unchanged; no `root`/`permission`/`parent`; under compat, `owned_by` is
-  `vllm` and `max_model_len` matches `context_length`.
+- `handleModels`: both fields present; each omitted when zero;
+  `max_output_tokens` omitted for embedding models; ACL filtering unchanged;
+  no `root`/`permission`/`parent`; under compat, generation models report
+  `owned_by: vllm`, embedding models keep `mellomting`, and `max_model_len`
+  matches `context_length`.
 - Routing: `/health` is 404 by default, 200 under compat, 405 on POST under
   compat, and never counts against inflight admission.
 - One end-to-end check: opencode v2 against a running `mellomting serve` with
@@ -283,18 +339,18 @@ reason to revisit §5, not to add a value.
 
 ## Implementation order
 
-1. Spike: point a real opencode v2 at a hand-faked `/v1/models` carrying
-   `owned_by: "vllm"` and `max_model_len`, with two provider instances and
-   `/connect`. Confirm discovery, limits and credentials; then add a
-   `capabilities.tools: true` override and check whether the discovered
-   `limit.context` survives it. A replace, rather than a merge, promotes §5
-   from deferred to required. Throwaway.
+1. Spike: point a real opencode v2 at a hand-faked `/v1/models` that
+   requires a bearer key and carries `owned_by: "vllm"` and `max_model_len`,
+   with two provider instances and `/connect`. Answer the four open questions
+   in §4 in order; the first two decide between §4 and §5. Throwaway.
 2. `ParseModels` and `Aggregate` capture and reconcile the window (§1).
-3. `ModelPolicy.context_length`, validation, `init` rendering (§2).
+3. `ModelPolicy.context_length`, validation, `init` rendering, and
+   `config discover` (§2).
 4. `handleModels` emits both fields (§3).
 5. `server.models_compat` and the `/health` alias (§4).
-6. Documentation: `docs/CONFIGURATION.md` for both new fields, `README.md` and
-   `docs/OPERATIONS.md` for the opencode setup including the tools caveat.
+6. Documentation: `docs/CONFIGURATION.md` for both new fields and the
+   subcommand, `README.md` and `docs/OPERATIONS.md` for the opencode setup
+   including the tools caveat.
 
 Steps 2–4 are useful on their own: they make the context window visible in
 `config show-effective` and to any client, whether or not step 5 ships.
