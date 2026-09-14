@@ -130,6 +130,34 @@ daemon would really apply even where applying is refused.
   learning in v1.
 - Match the style of neighbouring code; no vendored frameworks.
 
+## Writing: comments, docs, commit messages
+
+Prose in this repo is held to the same bar as the code. The test for any
+sentence is whether a reader loses information when it is cut.
+
+- Comments explain why, not what. A comment that restates the line below it is
+  noise; a comment that records a constraint, a trap, or a rejected
+  alternative earns its space. `SystemCallFilter` in the systemd unit is long
+  because the @sandbox interaction is genuinely non-obvious — that is the bar,
+  not a length limit.
+- Scale the explanation to the decision. A one-line change does not need a
+  paragraph justifying it.
+- Cut throat-clearing and filler: "It's important to note that", "Note that",
+  "Essentially", "Basically", "simply", "In order to" (use "to").
+- No marketing adjectives (robust, seamless, powerful, comprehensive,
+  blazingly fast) and no rule-of-three padding ("simple, clean, and
+  maintainable").
+- Do not announce what you are about to say, and do not append a summary of
+  what you just said. No "In summary" / "Overall" tails on documents.
+- No emoji, and no attribution or generated-by trailers in commit messages.
+- Do not restate a value that lives in code or config; it will drift. Point at
+  the source instead.
+- Delete dead code rather than commenting it out; git has the history.
+- Commit messages: imperative mood, lower case subject, say what changed and
+  why it was needed.
+- When editing existing prose, match the surrounding density. Do not rewrite a
+  terse file into a verbose one as a side effect of touching it.
+
 ## Current status
 
 Phase 0 and Phase 1 (PLAN §91–92) are complete and pass the quality gates:
