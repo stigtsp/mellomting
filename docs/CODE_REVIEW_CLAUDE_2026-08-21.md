@@ -1,5 +1,13 @@
 # Mellomting — security, stability, and code-quality review
 
+> **Historical document — every finding below is fixed.** All 14 `T-X` findings were
+> remediated in `b4beec4..11debd2`; `docs/FIXES_PLAN.md` carries the per-finding tasking
+> and `docs/FIX_PLAN_2026-08-22.md` the follow-up round (all items `[x]`). The
+> reproductions here describe commit `62aa81d` and do **not** apply to current `main` —
+> e.g. T-X1's `singlePossibleBackend` fallback no longer exists; the Responses
+> retrieve/cancel path now fails closed (`internal/proxy/proxy.go`, fixed in `b4beec4`).
+> Kept for provenance. This is not a live disclosure.
+
 **Status: complete.** Four rounds were run: security by boundary slice (12 reviewers), stability and
 concurrency, spec conformance and code quality, and adversarial verification in which two reviewers were
 tasked with *refuting* the accumulated findings rather than confirming them. Several findings were

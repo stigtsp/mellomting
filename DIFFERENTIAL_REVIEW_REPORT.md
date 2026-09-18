@@ -12,6 +12,11 @@
 **Overall risk:** Medium  
 **Recommendation:** Conditional approval
 
+> **Status: resolved.** The single Medium finding was fixed in `b3d5bd1` — an existing
+> config's auth paths are now honoured rather than overwritten, per the `D15`
+> auth-artifact contract in `internal/systemd/systemd.go`. The conditions attached to
+> the approval above have been met; this report is retained as history.
+
 The generated pepper and empty users store are cryptographically and
 permission-wise sound for the default scaffold. The blocking correctness gap
 is that re-provisioning preserves an existing config but ignores the auth paths
