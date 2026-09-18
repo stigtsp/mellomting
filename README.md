@@ -4,6 +4,8 @@ Mellomting is a small OpenAI-compatible proxy for inference servers such as
 vLLM. It manages API keys, routes requests, and applies limits. It runs as one
 binary, without a database or telemetry.
 
+> **Early version.** Under active development; expect some breaking changes.
+
 ## Quick start
 
 You need Linux, Go, and a running inference server. This example uses a server
