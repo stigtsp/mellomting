@@ -148,12 +148,19 @@ func (p *Proxy) logUpstreamDetail(requestID, backendName string, err error) {
 // The status, type, and code are untouched. Clients switch on those, so
 // they stay Mellomting's own vocabulary whatever an operator trusts a
 // backend with; only the human-readable message grows.
+//
+// Only a 4xx is relayed. The relay exists to tell a client what its
+// request got wrong, which a 5xx by definition is not; and a backend's
+// 5xx text is where a traceback or a model path would appear, the one
+// thing PLAN §72 keeps out of a client response. An operator who needs
+// the 5xx text has the debug log, which is not restricted this way
+// because it does not leave the host.
 func (p *Proxy) relayUpstreamDetail(e apiError, backendName string, err error) apiError {
 	if !p.cfg.Backends[backendName].RelayUpstreamErrors {
 		return e
 	}
 	up, ok := errors.AsType[*backend.Upstream](err)
-	if !ok || up.Detail.Message == "" {
+	if !ok || up.Status < 400 || up.Status >= 500 || up.Detail.Message == "" {
 		return e
 	}
 	e.msg += ": " + up.Detail.Message

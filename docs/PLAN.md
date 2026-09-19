@@ -1854,7 +1854,9 @@ of the body, the request body, the backend URL, or a filesystem path. Because
 a rejection message can quote the request that caused it, this MUST NOT
 appear at the default level, and relaying it to a client MUST be an explicit
 per-server opt-in (`relay_upstream_errors`) that leaves the response status,
-`type`, and `code` unchanged.
+`type`, and `code` unchanged. Only a 4xx MAY be relayed: a 5xx is not a
+statement about the client's request, and its text is where a traceback or a
+path would appear.
 
 Map backend failures into sanitized error classes such as:
 

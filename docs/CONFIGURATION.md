@@ -67,9 +67,11 @@ servers:
     relay_upstream_errors: true
 ```
 
-Only the message grows; the status and error code do not change. Leave it off
-unless the server and every client routed to it are equally trusted, because a
-rejection message can quote the request that caused it. See [Operations](OPERATIONS.md) for the operator-only alternative.
+Only the message grows; the status and error code do not change, and only a
+client error (4xx) is relayed — a server error's text is the operator's
+business. Leave it off unless the server and every client routed to it are
+equally trusted, because a rejection message can quote the request that caused
+it. See [Operations](OPERATIONS.md) for the operator-only alternative.
 
 ## Listener and TLS
 

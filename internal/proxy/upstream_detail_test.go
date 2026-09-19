@@ -371,3 +371,47 @@ func TestRelayKeepsUpstreamRetryAfter(t *testing.T) {
 		t.Fatalf("relayed message missing: %s", rec.Body.String())
 	}
 }
+
+// TestRelayRefusesUpstream5xx: the opt-in relays what a client got
+// wrong, not what broke inside the backend. A 5xx message is where a
+// traceback or a model path appears, so it stays operator-only however
+// the backend is configured — the debug log still carries it.
+func TestRelayRefusesUpstream5xx(t *testing.T) {
+	t.Parallel()
+
+	const internal = "Traceback: /opt/models/qwen/config.json missing"
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"` + internal + `"}}`))
+	})
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.RelayUpstreamErrors = true
+	cfg.Backends["b1"] = b
+	var buf bytes.Buffer
+	p := newProxyLogged(t, cfg, &buf, slog.LevelDebug)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), internal) {
+		t.Fatalf("a backend 5xx message reached the client: %s", rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Message != errUpstream5xx.msg {
+		t.Fatalf("message = %q, want the unchanged %q", body.Error.Message, errUpstream5xx.msg)
+	}
+	// The operator still gets it.
+	if line := detailLine(t, &buf); line == nil || line["upstream_message"] != internal {
+		t.Fatalf("the 5xx message did not reach the debug log: %v", line)
+	}
+}

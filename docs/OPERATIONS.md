@@ -206,8 +206,11 @@ that can safely be repeated.
 To hand the same message to the client instead of only the operator, set
 `relay_upstream_errors: true` on that server's entry under `servers:` (see
 [Configuration](CONFIGURATION.md)). The message is appended to the sanitized
-error; its status, `type`, and `code` do not change. Setting it says the
-server and every client routed to it are equally trusted.
+error; its status, `type`, and `code` do not change. Only a 4xx is relayed:
+a 5xx says the server broke rather than that the request was wrong, and its
+text is where a traceback or a model path would appear. The debug log above
+carries those either way. Setting it says the server and every client routed
+to it are equally trusted.
 
 With accounting enabled, `mellomting usage report` reports per-key token and
 request totals. Use the supplied logrotate policy for the JSONL file; it uses
