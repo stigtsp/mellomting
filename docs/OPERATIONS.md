@@ -181,6 +181,28 @@ unknown. To read only the access log:
 sudo journalctl -u mellomting -o cat | jq 'select(.msg == "request")'
 ```
 
+`error_class` says which kind of failure occurred, not which request was
+malformed. When a backend rejects requests and the class alone is not enough
+to tell a chat-template mismatch from a tool-schema, output-limit, or
+context-window failure, raise `logging.level` to `debug`. Each failed attempt
+then also writes what the backend itself said:
+
+```json
+{"time":"...","level":"DEBUG","msg":"backend error detail","request_id":"...",
+ "backend":"a","status":400,"upstream_type":"BadRequestError",
+ "upstream_code":"400","upstream_message":"only one system message is allowed"}
+```
+
+Only the `type`, `code`, and `message` members of an OpenAI-shaped error body
+are read, each bounded and stripped of control characters; everything else in
+the body is discarded unparsed. It is off by default because a rejection
+message can quote the request that caused it.
+
+To hand the same message to the client instead of only the operator, set
+`relay_upstream_errors: true` on that backend. The message is appended to the
+sanitized error; its status, `type`, and `code` do not change. Setting it says
+the backend and every client routed to it are equally trusted.
+
 With accounting enabled, `mellomting usage report` reports per-key token and
 request totals. Use the supplied logrotate policy for the JSONL file; it uses
 `copytruncate` because the sandbox retains access to the open file. Renaming

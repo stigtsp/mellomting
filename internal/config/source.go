@@ -18,6 +18,12 @@ import (
 type sourceServer struct {
 	URL        string `yaml:"url"`
 	APIKeyFile string `yaml:"api_key_file"`
+	// RelayUpstreamErrors opts this server's sanitized error message
+	// into the client-facing error (see Backend.RelayUpstreamErrors).
+	// It is the one per-server trust decision an operator makes, so it
+	// belongs in the source schema rather than among the admission and
+	// timeout settings, which are static defaults.
+	RelayUpstreamErrors bool `yaml:"relay_upstream_errors,omitempty"`
 }
 
 // sourceModel is one compact public model in the source schema (D11). The
@@ -125,9 +131,10 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				continue
 			}
 			cfg.Backends[name] = Backend{
-				BaseURL:       s.URL,
-				UpstreamModel: upstream,
-				APIKeyFile:    s.APIKeyFile,
+				BaseURL:             s.URL,
+				UpstreamModel:       upstream,
+				APIKeyFile:          s.APIKeyFile,
+				RelayUpstreamErrors: s.RelayUpstreamErrors,
 			}
 			refs = append(refs, BackendRef{Name: name, Weight: 1})
 			referenced[server] = true
@@ -162,8 +169,9 @@ func sortedModelKeys(models map[string]sourceModel) []string {
 // server for `config show-effective` (D11). It carries the credential path
 // but never the credential contents.
 type effectiveServer struct {
-	URL        string `yaml:"url"`
-	APIKeyFile string `yaml:"api_key_file,omitempty"`
+	URL                 string `yaml:"url"`
+	APIKeyFile          string `yaml:"api_key_file,omitempty"`
+	RelayUpstreamErrors bool   `yaml:"relay_upstream_errors,omitempty"`
 }
 
 // effectiveModel is the fully defaulted operator-facing projection of one

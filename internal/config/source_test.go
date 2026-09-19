@@ -404,3 +404,42 @@ models:
 		t.Fatalf("defaulted configs differ:\nminimal = %+v\nexplicit = %+v", min, expl)
 	}
 }
+
+// TestSourceRelayUpstreamErrors pins the one per-server trust flag
+// through the whole path an operator uses: the source schema accepts it,
+// normalization carries it onto every backend generated for that server,
+// and a server that does not set it stays off. Without the source-schema
+// half, the flag would parse nowhere and the feature would be
+// unreachable from a real configuration file.
+func TestSourceRelayUpstreamErrors(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(`
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+servers:
+  trusted:
+    url: http://127.0.0.1:8001
+    relay_upstream_errors: true
+  plain:
+    url: http://127.0.0.1:8002
+models:
+  m1:
+    servers: [trusted, plain]
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	relay := cfg.Backends[defaultBackendName("m1", "trusted")]
+	if !relay.RelayUpstreamErrors {
+		t.Fatalf("relay_upstream_errors did not reach the backend: %+v", relay)
+	}
+	plain := cfg.Backends[defaultBackendName("m1", "plain")]
+	if plain.RelayUpstreamErrors {
+		t.Fatalf("a server that did not opt in relays anyway: %+v", plain)
+	}
+}

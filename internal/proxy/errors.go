@@ -110,3 +110,51 @@ func classifyBackendError(err error) backendFailure {
 		return backendFailure{resp: errUpstream5xx}
 	}
 }
+
+// logUpstreamDetail records what the backend itself said about a failed
+// attempt: the bounded, scalar-only triple from its error body, keyed by
+// this request's ID and the backend name.
+//
+// It is debug level because a rejection message can quote the request it
+// rejected, and prompts stay out of the default operational log
+// (PLAN §24, §43). The request line's error_class remains what an
+// operator alerts on; this is what they turn on to tell a chat-template
+// mismatch from an output-limit, tool-schema, or context-window failure,
+// which error_class alone cannot distinguish.
+// The line is emitted whenever the backend answered at all, even when
+// nothing could be extracted from its body. Empty fields are themselves
+// the answer — the backend rejected the request and said nothing this
+// can parse — and suppressing the line would leave an operator who
+// turned debug on unable to tell that from the feature not working.
+func (p *Proxy) logUpstreamDetail(requestID, backendName string, err error) {
+	up, ok := errors.AsType[*backend.Upstream](err)
+	if !ok {
+		return
+	}
+	p.log.Debug("backend error detail",
+		"request_id", requestID,
+		"backend", backendName,
+		"status", up.Status,
+		"upstream_type", up.Detail.Type,
+		"upstream_code", up.Detail.Code,
+		"upstream_message", up.Detail.Message,
+	)
+}
+
+// relayUpstreamDetail appends the backend's sanitized message to the
+// client-facing error, for a backend configured to relay it.
+//
+// The status, type, and code are untouched. Clients switch on those, so
+// they stay Mellomting's own vocabulary whatever an operator trusts a
+// backend with; only the human-readable message grows.
+func (p *Proxy) relayUpstreamDetail(e apiError, backendName string, err error) apiError {
+	if !p.cfg.Backends[backendName].RelayUpstreamErrors {
+		return e
+	}
+	up, ok := errors.AsType[*backend.Upstream](err)
+	if !ok || up.Detail.Message == "" {
+		return e
+	}
+	e.msg += ": " + up.Detail.Message
+	return e
+}

@@ -266,6 +266,15 @@ type Backend struct {
 	MaxConcurrency    int      `yaml:"max_concurrency"`
 	QueueSize         int      `yaml:"queue_size"`
 	QueueTimeout      Duration `yaml:"queue_timeout"`
+	// RelayUpstreamErrors appends this backend's own sanitized error
+	// message to the client-facing error it produces (PLAN §43, §72).
+	// Off by default, and deliberately per backend: a rejection message
+	// can quote the request it rejected, so relaying one is a statement
+	// that this backend and the clients routed to it are equally
+	// trusted. The envelope — status, type, code — never changes, and
+	// what is appended is the same bounded, scalar-only diagnostic the
+	// debug log carries.
+	RelayUpstreamErrors bool `yaml:"relay_upstream_errors,omitempty"`
 }
 
 // Model is one public model alias (PLAN §13, §19).

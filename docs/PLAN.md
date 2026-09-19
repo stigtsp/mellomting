@@ -1834,6 +1834,16 @@ qualifier_action
 
 Do not log raw errors from an upstream if they can contain response bodies or secrets.
 
+A bounded, structurally extracted diagnostic is not a raw error and MAY be
+logged at `debug`: parse an OpenAI-shaped error body under a size bound,
+accept only the scalar `error.type`, `error.code`, and `error.message`, cap
+each field, and strip control characters. Never parse or log any other member
+of the body, the request body, the backend URL, or a filesystem path. Because
+a rejection message can quote the request that caused it, this MUST NOT
+appear at the default level, and relaying it to a client MUST be an explicit
+per-backend opt-in (`relay_upstream_errors`) that leaves the response status,
+`type`, and `code` unchanged.
+
 Map backend failures into sanitized error classes such as:
 
 ```text
