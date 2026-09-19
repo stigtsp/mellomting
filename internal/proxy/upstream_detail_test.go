@@ -65,7 +65,7 @@ func detailLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("log line is not JSON: %q: %v", line, err)
 		}
-		if rec["msg"] == "backend error detail" {
+		if rec["msg"] == "backend attempt failed" {
 			return rec
 		}
 	}
@@ -501,5 +501,44 @@ func TestRelayIsRecordedAtTheLevelItIsDisclosed(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), upstreamRejectMessage) {
 		t.Fatalf("the log does not say what was disclosed: %s", buf.String())
+	}
+}
+
+// TestHeaderTimeoutIsDiagnosable: the failure this branch exists for
+// carries no body at all. An operator who turns debug on after a wave of
+// 504s must still learn which backend timed out, or the diagnostic is
+// silent in exactly the case it was built for.
+func TestHeaderTimeoutIsDiagnosable(t *testing.T) {
+	t.Parallel()
+
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.HeaderTimeout = config.Duration(100 * time.Millisecond)
+	cfg.Backends["b1"] = b
+	var buf bytes.Buffer
+	p := newProxyLogged(t, cfg, &buf, slog.LevelDebug)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true}`, testKey())
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504", rec.Code)
+	}
+	line := detailLine(t, &buf)
+	if line == nil {
+		t.Fatalf("no diagnostic line for a header timeout: %s", buf.String())
+	}
+	if got := line["error_class"]; got != "backend_timeout" {
+		t.Fatalf("error_class = %v, want backend_timeout", got)
+	}
+	if got := line["backend"]; got != "b1" {
+		t.Fatalf("backend = %v, want b1", got)
+	}
+	// No response arrived, so there is nothing to report about a body.
+	if _, ok := line["upstream_message"]; ok {
+		t.Fatalf("a bodiless failure reported an upstream message: %v", line)
 	}
 }

@@ -414,7 +414,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 			lastErr = err
 			lastFailed = backendName
-			p.logUpstreamDetail(q.RequestID, backendName, err)
+			p.logBackendFailure(q.RequestID, backendName, err)
 			// Remember the upstream Retry-After only when this attempt
 			// is the rate limit it belongs to, and forget any earlier
 			// one (T-Q12). It is consumed against the FINAL error's

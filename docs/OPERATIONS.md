@@ -182,28 +182,37 @@ sudo journalctl -u mellomting -o cat | jq 'select(.msg == "request")'
 ```
 
 `error_class` says which kind of failure occurred, not which request was
-malformed. When a backend rejects requests and the class alone is not enough
-to tell a chat-template mismatch from a tool-schema, output-limit, or
-context-window failure, raise `logging.level` to `debug`. Each failed attempt
-then also writes what the backend itself said:
+malformed. When the class alone is not enough — to tell a chat-template
+mismatch from a tool-schema, output-limit, or context-window failure, or to
+see which backend timed out during a wave of `504`s — raise `logging.level`
+to `debug`. Every failed attempt then writes a line of its own, carrying what
+the backend said when it answered at all:
 
 ```json
-{"time":"...","level":"DEBUG","msg":"backend error detail","request_id":"...",
- "backend":"a","status":400,"upstream_type":"BadRequestError",
- "upstream_code":"400","upstream_message":"only one system message is allowed"}
+{"time":"...","level":"DEBUG","msg":"backend attempt failed","request_id":"...",
+ "backend":"a","error_class":"backend_4xx","status":400,
+ "upstream_type":"BadRequestError","upstream_code":"400",
+ "upstream_message":"only one system message is allowed"}
 ```
+
+A failure with no response at all — a header timeout, a refused connection, a
+full queue — carries the class and the backend but no `status` or
+`upstream_*` fields, because there was nothing to read.
 
 Only the `type`, `code`, and `message` members of an OpenAI-shaped error body
 are read, each bounded and stripped of control characters; everything else in
 the body is discarded unparsed. It is off by default because a rejection
 message can quote the request that caused it.
 
-The line appears for every backend rejection that arrives as a response
-status, including those whose body is not parsable JSON or is too large to
-parse; its `upstream_*` fields are then empty. It does not cover a backend
-that reports a failure inside a stream it has already answered 200 to — that
-is relayed to the client as stream content and logged as `backend_stream_error`
-or `ok`, not as a rejection.
+When the backend answered with a status but a body this cannot read — not
+JSON, or past the parse bound — the `upstream_*` fields are present and
+empty. That is the answer: the backend refused the request and said nothing
+that can safely be repeated. A body past `max_response_bytes` is a different
+failure (`backend_5xx`) and never reaches this point.
+
+None of this covers a backend that reports a failure inside a stream it has
+already answered `200` to: that reaches the client as stream content and is
+logged as `backend_stream_error` or `ok`, not as a rejection.
 
 Both the nested `{"error": {...}}` shape and the flat `{"object": "error",
 ...}` shape are read; SGLang uses the flat one on chat completions and the
