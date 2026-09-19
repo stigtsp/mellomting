@@ -7,7 +7,7 @@ import (
 	"unicode"
 )
 
-// Bounds on the extracted diagnostic. MaxDetailBytes is the whole
+// Bounds on the extracted diagnostic. maxDetailBytes is the whole
 // budget; the per-field caps sum to it, so the total needs no second
 // truncation pass. Message gets the largest share because it is the
 // only field that carries an operator-actionable sentence.
@@ -16,11 +16,13 @@ const (
 	maxDetailCode    = 64
 	maxDetailMessage = 256
 
-	// MaxDetailBytes is how much text a backend can add to anything
-	// Mellomting writes about it. It is exported because the proxy may
-	// append a Detail to a client-facing error, and that growth needs a
-	// stated ceiling.
-	MaxDetailBytes = maxDetailType + maxDetailCode + maxDetailMessage
+	// MaxMessageBytes is the most text a relayed backend message can
+	// add to a client-facing error. It is the one bound that leaves
+	// this package: the proxy appends a Detail's message to its own,
+	// and that growth needs a stated ceiling.
+	MaxMessageBytes = maxDetailMessage
+
+	maxDetailBytes = maxDetailType + maxDetailCode + maxDetailMessage
 
 	// maxDetailParseBytes bounds what is handed to the JSON decoder.
 	// Error bodies are already capped by max_response_bytes, which is

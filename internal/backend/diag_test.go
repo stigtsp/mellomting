@@ -185,8 +185,8 @@ func TestUpstreamDetailFieldsAreBounded(t *testing.T) {
 			len(got.Type), len(got.Code), len(got.Message),
 			maxDetailType, maxDetailCode, maxDetailMessage)
 	}
-	if total := len(got.Type) + len(got.Code) + len(got.Message); total > MaxDetailBytes {
-		t.Fatalf("total diagnostic = %d bytes, exceeds %d", total, MaxDetailBytes)
+	if total := len(got.Type) + len(got.Code) + len(got.Message); total > maxDetailBytes {
+		t.Fatalf("total diagnostic = %d bytes, exceeds %d", total, maxDetailBytes)
 	}
 }
 
@@ -242,8 +242,8 @@ func FuzzUpstreamDetail(f *testing.F) {
 		if len(d.Type) > maxDetailType || len(d.Code) > maxDetailCode || len(d.Message) > maxDetailMessage {
 			t.Fatalf("unbounded field: %#v", d)
 		}
-		if total := len(d.Type) + len(d.Code) + len(d.Message); total > MaxDetailBytes {
-			t.Fatalf("total diagnostic = %d bytes, exceeds %d", total, MaxDetailBytes)
+		if total := len(d.Type) + len(d.Code) + len(d.Message); total > maxDetailBytes {
+			t.Fatalf("total diagnostic = %d bytes, exceeds %d", total, maxDetailBytes)
 		}
 	})
 }

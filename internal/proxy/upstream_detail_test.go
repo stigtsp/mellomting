@@ -269,9 +269,17 @@ func TestBackendRejectionRelayIsBounded(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if grown := len(body.Error.Message) - len(errUpstreamRejected.msg); grown > backend.MaxDetailBytes {
-		t.Fatalf("relayed message grew by %d bytes, exceeds the %d-byte diagnostic budget",
-			grown, backend.MaxDetailBytes)
+	grown := len(body.Error.Message) - len(errUpstreamRejected.msg)
+	// Without this the test passes when nothing is relayed at all, so
+	// it would stay green if the opt-in silently broke.
+	if grown <= 0 {
+		t.Fatalf("nothing was relayed, so no bound was exercised: %q", body.Error.Message)
+	}
+	// The relay appends one message plus its ": " separator. Naming the
+	// whole three-field budget here would not catch the message cap
+	// alone being raised.
+	if want := backend.MaxMessageBytes + len(": "); grown > want {
+		t.Fatalf("relayed message grew by %d bytes, exceeds the %d-byte budget", grown, want)
 	}
 }
 
@@ -312,8 +320,11 @@ func TestRelayDoesNotMutateTheSharedError(t *testing.T) {
 func TestRelayIgnoresFailuresWithoutABody(t *testing.T) {
 	t.Parallel()
 
-	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(time.Second)
+	// Wait on the request context, not the clock: the proxy abandons
+	// this at header_timeout, and a fixed sleep would then block
+	// httptest's Close for the rest of it.
+	f := newFakeVLLM(t, func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
 	})
 	cfg := testConfig(f.server.URL)
 	b := cfg.Backends["b1"]
