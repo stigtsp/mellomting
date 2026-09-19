@@ -886,7 +886,9 @@ func TestOutputCapCannotBeBypassed(t *testing.T) {
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
+					f.mu.Lock()
 					f.lastBody = nil
+					f.mu.Unlock()
 					w := run(t, p, http.MethodPost, endpoint, tc.body, testKey())
 					if w.Code != tc.want {
 						t.Fatalf("status = %d, want %d (body %s)", w.Code, tc.want, w.Body.String())

@@ -26,6 +26,10 @@ type slowStream struct {
 	active       atomic.Int64
 	peak         atomic.Int64
 	served       atomic.Int64
+	// barrier, when set, holds each request in the handler until this
+	// many are inside it. Overlap is then a fact of the test rather
+	// than an assumption about how fast the machine schedules.
+	barrier int64
 }
 
 func (s *slowStream) handler(w http.ResponseWriter, _ *http.Request) {
@@ -39,6 +43,12 @@ func (s *slowStream) handler(w http.ResponseWriter, _ *http.Request) {
 	defer s.active.Add(-1)
 	s.served.Add(1)
 
+	if s.barrier > 0 {
+		deadline := time.Now().Add(2 * time.Second)
+		for s.active.Load() < s.barrier && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
 	time.Sleep(s.prefillDelay)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
@@ -86,7 +96,7 @@ func TestBackendConcurrencyBoundsUpstreamRequests(t *testing.T) {
 	for _, conc := range []int{1, 2} {
 		t.Run(fmt.Sprintf("concurrency=%d", conc), func(t *testing.T) {
 			t.Parallel()
-			s := &slowStream{prefillDelay: 100 * time.Millisecond}
+			s := &slowStream{prefillDelay: 100 * time.Millisecond, barrier: int64(conc)}
 			f := newFakeVLLM(t, s.handler)
 			cfg := admissionConfig(f.server.URL, conc, 8, 10*time.Second, 5*time.Second)
 			p := newProxyCfg(t, cfg)
@@ -100,8 +110,17 @@ func TestBackendConcurrencyBoundsUpstreamRequests(t *testing.T) {
 			if got := s.served.Load(); got != requests {
 				t.Fatalf("backend served %d requests, want %d", got, requests)
 			}
+			// The safety property: never more than the cap. This is
+			// the assertion that fails when admission over-admits.
+			if got := s.peak.Load(); got > int64(conc) {
+				t.Fatalf("peak upstream concurrency = %d, exceeds max_concurrency (%d)", got, conc)
+			}
+			// The liveness property: the cap is reached, so a cap that
+			// silently admitted only one at a time would not pass for
+			// a working one. The handler barrier makes this a fact
+			// about admission rather than about scheduling luck.
 			if got := s.peak.Load(); got != int64(conc) {
-				t.Fatalf("peak upstream concurrency = %d, want exactly max_concurrency (%d)", got, conc)
+				t.Fatalf("peak upstream concurrency = %d, never reached max_concurrency (%d)", got, conc)
 			}
 		})
 	}
