@@ -28,8 +28,14 @@ import (
 )
 
 // fakeVLLM is a minimal OpenAI-shaped backend (PLAN §84 patterns).
+//
+// The last* fields record the most recent request. mu orders the
+// handler's writes against each other for tests that drive several
+// requests at once; reading them is safe once every request a test
+// issued has returned, which is when tests read them.
 type fakeVLLM struct {
 	server    *httptest.Server
+	mu        sync.Mutex
 	lastModel string
 	lastPath  string
 	lastBody  []byte
@@ -41,13 +47,13 @@ func newFakeVLLM(t *testing.T, behaviour http.HandlerFunc) *fakeVLLM {
 	f := &fakeVLLM{behaviour: behaviour}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		f.lastBody = body
-		f.lastPath = r.URL.Path
 		var env struct {
 			Model string `json:"model"`
 		}
 		_ = json.Unmarshal(body, &env)
-		f.lastModel = env.Model
+		f.mu.Lock()
+		f.lastBody, f.lastPath, f.lastModel = body, r.URL.Path, env.Model
+		f.mu.Unlock()
 		behaviour(w, r)
 	}))
 	t.Cleanup(f.server.Close)
