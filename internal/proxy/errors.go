@@ -121,6 +121,7 @@ func classifyBackendError(err error) backendFailure {
 // operator alerts on; this is what they turn on to tell a chat-template
 // mismatch from an output-limit, tool-schema, or context-window failure,
 // which error_class alone cannot distinguish.
+//
 // The line is emitted whenever the backend answered at all, even when
 // nothing could be extracted from its body. Empty fields are themselves
 // the answer — the backend rejected the request and said nothing this

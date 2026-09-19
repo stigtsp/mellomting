@@ -1853,7 +1853,7 @@ each field, and strip control characters. Never parse or log any other member
 of the body, the request body, the backend URL, or a filesystem path. Because
 a rejection message can quote the request that caused it, this MUST NOT
 appear at the default level, and relaying it to a client MUST be an explicit
-per-backend opt-in (`relay_upstream_errors`) that leaves the response status,
+per-server opt-in (`relay_upstream_errors`) that leaves the response status,
 `type`, and `code` unchanged.
 
 Map backend failures into sanitized error classes such as:

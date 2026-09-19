@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -302,5 +303,71 @@ func TestRelayDoesNotMutateTheSharedError(t *testing.T) {
 	// previous result.
 	if again := p.relayUpstreamDetail(errUpstreamRejected, "b1", err); again != got {
 		t.Fatalf("message accumulated across requests: %q then %q", got.msg, again.msg)
+	}
+}
+
+// TestRelayIgnoresFailuresWithoutABody: relay speaks only for a backend
+// that answered. A connection failure or a timeout has no error body, so
+// the client gets the sanitized class and nothing invented around it.
+func TestRelayIgnoresFailuresWithoutABody(t *testing.T) {
+	t.Parallel()
+
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(time.Second)
+	})
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.RelayUpstreamErrors = true
+	b.HeaderTimeout = config.Duration(100 * time.Millisecond)
+	cfg.Backends["b1"] = b
+	p := newProxyCfg(t, cfg)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","stream":true}`, testKey())
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Message != errUpstreamTimeout.msg {
+		t.Fatalf("message = %q, want the unchanged %q", body.Error.Message, errUpstreamTimeout.msg)
+	}
+}
+
+// TestRelayKeepsUpstreamRetryAfter pins the ordering on the terminal
+// path: the 429 branch recognizes the rate-limit response by value, so
+// it has to run before relay rewrites the message. Reversing the two
+// would silently drop the backend's own Retry-After.
+func TestRelayKeepsUpstreamRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"KV cache is full"}}`))
+	})
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.RelayUpstreamErrors = true
+	cfg.Backends["b1"] = b
+	p := newProxyCfg(t, cfg)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "42" {
+		t.Fatalf("Retry-After = %q, want the upstream's 42", got)
+	}
+	if !strings.Contains(rec.Body.String(), "KV cache is full") {
+		t.Fatalf("relayed message missing: %s", rec.Body.String())
 	}
 }

@@ -198,10 +198,16 @@ are read, each bounded and stripped of control characters; everything else in
 the body is discarded unparsed. It is off by default because a rejection
 message can quote the request that caused it.
 
+The line appears for every backend rejection, including those whose body is
+not parsable JSON or is too large to parse. Its `upstream_*` fields are then
+empty, which is the answer: the backend refused the request and said nothing
+that can safely be repeated.
+
 To hand the same message to the client instead of only the operator, set
-`relay_upstream_errors: true` on that backend. The message is appended to the
-sanitized error; its status, `type`, and `code` do not change. Setting it says
-the backend and every client routed to it are equally trusted.
+`relay_upstream_errors: true` on that server's entry under `servers:` (see
+[Configuration](CONFIGURATION.md)). The message is appended to the sanitized
+error; its status, `type`, and `code` do not change. Setting it says the
+server and every client routed to it are equally trusted.
 
 With accounting enabled, `mellomting usage report` reports per-key token and
 request totals. Use the supplied logrotate policy for the JSONL file; it uses

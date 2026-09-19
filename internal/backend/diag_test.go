@@ -110,7 +110,7 @@ func TestUpstreamDetailOversizedBodyIsNotParsed(t *testing.T) {
 	if len(body) <= maxDetailParseBytes {
 		t.Fatalf("test body (%d bytes) does not exceed the parse bound (%d)", len(body), maxDetailParseBytes)
 	}
-	if got := upstreamDetail(body); !got.Empty() {
+	if got := upstreamDetail(body); got != (Detail{}) {
 		t.Fatalf("oversized body produced a diagnostic: %#v", got)
 	}
 

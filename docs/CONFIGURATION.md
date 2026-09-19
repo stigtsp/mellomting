@@ -56,6 +56,21 @@ If a server requires authentication, add `api_key_file` to its entry, pointing
 to a protected file containing its credential. Client credentials are stripped
 before forwarding; server credentials come from configuration only.
 
+A server that rejects a request answers with its own error message, which
+Mellomting replaces with a sanitized one. To pass that message through to the
+client as well:
+
+```yaml
+servers:
+  a:
+    url: http://127.0.0.1:8000
+    relay_upstream_errors: true
+```
+
+Only the message grows; the status and error code do not change. Leave it off
+unless the server and every client routed to it are equally trusted, because a
+rejection message can quote the request that caused it. See [Operations](OPERATIONS.md) for the operator-only alternative.
+
 ## Listener and TLS
 
 Local `init` defaults to `127.0.0.1:8080`. Use `--listen` during initialization

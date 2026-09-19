@@ -47,9 +47,6 @@ type Detail struct {
 	Message string
 }
 
-// Empty reports whether nothing was extracted.
-func (d Detail) Empty() bool { return d == Detail{} }
-
 // upstreamDetail extracts the sanitized diagnostic from a backend error
 // body. Everything about it fails closed: a body that is not JSON, is
 // not an object, carries no `error` object, or is larger than the parse
