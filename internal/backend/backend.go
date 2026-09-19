@@ -65,9 +65,18 @@ var (
 )
 
 // Upstream is a non-2xx response from the backend. The body is buffered
-// by the client and is never forwarded to the client verbatim.
-type Upstream struct{ Status int }
+// by the client and is never forwarded to the client verbatim; Detail
+// carries the bounded, sanitized part of it that is safe to diagnose
+// with.
+type Upstream struct {
+	Status int
+	Detail Detail
+}
 
+// Error deliberately omits Detail. An error string is wrapped and
+// re-logged by callers that know nothing of its provenance, so the
+// diagnostic stays a field the proxy reads on purpose rather than text
+// that rides along into any log line (PLAN §43).
 func (e *Upstream) Error() string { return fmt.Sprintf("upstream status %d", e.Status) }
 
 // Policy is the backend egress policy (PLAN §16).
@@ -680,7 +689,7 @@ func (c *Client) Forward(ctx context.Context, req Request) (*Result, error) {
 		// as a success body (X3).
 		if resp.StatusCode >= 300 {
 			h.release()
-			return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, &Upstream{Status: resp.StatusCode}
+			return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, &Upstream{Status: resp.StatusCode, Detail: upstreamDetail(data)}
 		}
 		h.release()
 		return &Result{Status: resp.StatusCode, Header: resp.Header, BodyBytes: data}, nil
