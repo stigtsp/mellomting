@@ -1076,7 +1076,7 @@ Example:
 ```yaml
 max_concurrency: 8
 queue_size: 32
-queue_timeout: 600s
+queue_timeout: 120s
 ```
 
 `max_concurrency` SHOULD approximate what the backend's scheduler runs at
@@ -1095,6 +1095,12 @@ If capacity is unavailable:
 
 1. select another eligible backend if routing allows;
 2. otherwise return a controlled overload response.
+
+"Unavailable" means admission was refused — the queue is full, or the wait
+timed out. A request that takes a queue slot is waiting for the backend it
+was already routed to, and does not reconsider the choice while it waits, so
+`queue_timeout` bounds how long a routing decision can outlive the conditions
+that produced it.
 
 Never create one goroutine per unbounded queued request.
 

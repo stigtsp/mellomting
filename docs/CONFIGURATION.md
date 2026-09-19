@@ -161,19 +161,28 @@ configured policy. See [Hardening](../HARDENING.md).
 | Request body / response size | 16 MiB / 64 MiB |
 | Global in-flight requests | 64 |
 | Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s |
-| Backend admission | 8 in flight, queue 32, queue wait 600s |
+| Backend admission | 8 in flight, queue 32, queue wait 120s |
 | Retry attempts | 1 |
 
 Backend timeouts and admission are static: they assume a local inference
 server and are not per-server settings. A large request waits tens of
 seconds on scheduler admission and prefill before its first response byte,
 so the header bound covers that wait instead of reporting it as a backend
-failure. Work beyond `max_concurrency` waits in Mellomting's queue, where
-`queue_size` bounds it and a client disconnect drains it, rather than in the
-inference server's own queue, where neither is true. A queued request keeps
-its global and per-key in-flight slots until it is admitted or its client
-hangs up, so the queue wait is also how long one stalled server can hold
-them.
+failure. They have no configuration key, so `config show-effective` does not
+show them; the daemon logs each backend's bounds in a `backend admission`
+line at startup.
+
+Whichever in-flight limit is lowest decides when work starts queueing. A
+key's own `concurrent_requests` is 8 by default, the same as a backend's
+in-flight cap, so a single key is refused with `429` at the per-key gate
+rather than queued; raise `concurrent_requests` for a deployment where one
+key should be able to queue behind itself. Above that point, excess work
+waits in Mellomting's queue, where `queue_size` bounds it and a client
+disconnect drains it, rather than in the inference server's own queue, where
+neither is true. A queued request keeps its global and per-key in-flight
+slots until it is admitted or its client hangs up, so the queue wait is also
+how long one stalled server can hold them — size `max_inflight_requests`
+against that.
 
 Use `mellomting config show-effective --config ./config.yaml` to inspect all
 effective settings. The [design reference](PLAN.md) describes the complete

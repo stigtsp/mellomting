@@ -51,8 +51,13 @@ const (
 	defaultHeaderTimeout    = 300 * time.Second
 	defaultRequestTimeout   = 30 * time.Minute
 	defaultBackendQueueSize = 32
-	defaultQueueTimeout     = 600 * time.Second
-	defaultMaxConcurrency   = 8
+	// No agent client waits ten minutes to be forwarded, so the back
+	// half of the wait the incident report proposed would hold global
+	// and per-key in-flight slots for requests nobody will read. Two
+	// minutes still absorbs bursts far beyond the 5s that caused the
+	// 504 wave, while bounding what one wedged backend can hold.
+	defaultQueueTimeout   = 120 * time.Second
+	defaultMaxConcurrency = 8
 
 	// defaultMaxConnections bounds concurrently accepted connections at
 	// the listener (T-L15, PLAN §9.1).

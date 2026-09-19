@@ -100,7 +100,7 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 		b.HeaderTimeout.Duration() != 300*time.Second ||
 		b.RequestTimeout.Duration() != 30*time.Minute ||
 		b.StreamIdleTimeout.Duration() != 120*time.Second ||
-		b.MaxConcurrency != 8 || b.QueueSize != 32 || b.QueueTimeout.Duration() != 600*time.Second {
+		b.MaxConcurrency != 8 || b.QueueSize != 32 || b.QueueTimeout.Duration() != 120*time.Second {
 		t.Fatalf("backend defaults wrong: %+v", b)
 	}
 
