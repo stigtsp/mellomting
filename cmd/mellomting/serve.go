@@ -685,6 +685,22 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		if err != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, err)
 		}
+		// The timeout and admission bounds have no configuration key
+		// and cannot appear in `config show-effective`, whose output
+		// must stay a valid configuration file. This line is where an
+		// operator reads what a backend is actually being served under
+		// — above all the header bound, which decides whether a long
+		// prefill returns or is reported as a backend failure.
+		log.Info("backend admission",
+			"backend", name,
+			"connect_timeout", b.ConnectTimeout.Duration().String(),
+			"header_timeout", b.HeaderTimeout.Duration().String(),
+			"request_timeout", b.RequestTimeout.Duration().String(),
+			"stream_idle_timeout", b.StreamIdleTimeout.Duration().String(),
+			"max_concurrency", b.MaxConcurrency,
+			"queue_size", b.QueueSize,
+			"queue_timeout", b.QueueTimeout.Duration().String(),
+		)
 		clients[name] = client
 	}
 
