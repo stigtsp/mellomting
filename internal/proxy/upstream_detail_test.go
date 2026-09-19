@@ -292,7 +292,7 @@ func TestRelayDoesNotMutateTheSharedError(t *testing.T) {
 	before := errUpstreamRejected
 	err := &backend.Upstream{Status: 400, Detail: backend.Detail{Message: "first"}}
 
-	got := p.relayUpstreamDetail(errUpstreamRejected, "b1", err)
+	got := p.relayUpstreamDetail(errUpstreamRejected, "req_test", "b1", err)
 	if got.msg == before.msg {
 		t.Fatal("relay did not append the backend message")
 	}
@@ -301,7 +301,7 @@ func TestRelayDoesNotMutateTheSharedError(t *testing.T) {
 	}
 	// The next request must start from the same base, not from the
 	// previous result.
-	if again := p.relayUpstreamDetail(errUpstreamRejected, "b1", err); again != got {
+	if again := p.relayUpstreamDetail(errUpstreamRejected, "req_test", "b1", err); again != got {
 		t.Fatalf("message accumulated across requests: %q then %q", got.msg, again.msg)
 	}
 }
@@ -413,5 +413,93 @@ func TestRelayRefusesUpstream5xx(t *testing.T) {
 	// The operator still gets it.
 	if line := detailLine(t, &buf); line == nil || line["upstream_message"] != internal {
 		t.Fatalf("the 5xx message did not reach the debug log: %v", line)
+	}
+}
+
+// TestRelayRefusesNonRequestStatuses is the complement of the opt-in: a
+// 4xx that is not about the client's request carries exactly the things
+// PLAN §72 keeps out of a client response — the credential Mellomting
+// injected, and the backend's own model path, which routing rewrites so
+// a client never learns it.
+func TestRelayRefusesNonRequestStatuses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		status  int
+		message string
+		want    apiError
+	}{{
+		name:    "401 quotes the injected credential",
+		status:  http.StatusUnauthorized,
+		message: "Incorrect API key provided: sk-proj-ab***XYZ",
+		want:    errUpstreamRejected,
+	}, {
+		name:    "403 is about the proxy's own credential",
+		status:  http.StatusForbidden,
+		message: "key does not have access to this model",
+		want:    errUpstreamRejected,
+	}, {
+		name:    "404 names the backend's model path",
+		status:  http.StatusNotFound,
+		message: "The model `/srv/models/qwen3-27b` does not exist",
+		want:    errUpstreamRejected,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeVLLM(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"` + tc.message + `"}}`))
+			})
+			cfg := testConfig(f.server.URL)
+			b := cfg.Backends["b1"]
+			b.RelayUpstreamErrors = true
+			cfg.Backends["b1"] = b
+			p := newProxyCfg(t, cfg)
+
+			rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+
+			if strings.Contains(rec.Body.String(), tc.message) {
+				t.Fatalf("a %d message reached the client: %s", tc.status, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Message != tc.want.msg {
+				t.Fatalf("message = %q, want the unchanged %q", body.Error.Message, tc.want.msg)
+			}
+		})
+	}
+}
+
+// TestRelayIsRecordedAtTheLevelItIsDisclosed: the debug line is the
+// operator's to enable, but text already handed to a client has to be in
+// the log whatever the level — otherwise nothing says what was given out.
+func TestRelayIsRecordedAtTheLevelItIsDisclosed(t *testing.T) {
+	t.Parallel()
+
+	f := newFakeVLLM(t, upstreamRejectsWithDetail)
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.RelayUpstreamErrors = true
+	cfg.Backends["b1"] = b
+	var buf bytes.Buffer
+	p := newProxyLogged(t, cfg, &buf, slog.LevelInfo)
+
+	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+
+	if !strings.Contains(rec.Body.String(), upstreamRejectMessage) {
+		t.Fatalf("relay did not reach the client: %s", rec.Body.String())
+	}
+	if !strings.Contains(buf.String(), `"msg":"relayed backend error detail"`) {
+		t.Fatalf("a disclosure to the client was not recorded at info: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), upstreamRejectMessage) {
+		t.Fatalf("the log does not say what was disclosed: %s", buf.String())
 	}
 }

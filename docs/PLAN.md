@@ -1847,16 +1847,23 @@ qualifier_action
 Do not log raw errors from an upstream if they can contain response bodies or secrets.
 
 A bounded, structurally extracted diagnostic is not a raw error and MAY be
-logged at `debug`: parse an OpenAI-shaped error body under a size bound,
-accept only the scalar `error.type`, `error.code`, and `error.message`, cap
-each field, and strip control characters. Never parse or log any other member
-of the body, the request body, the backend URL, or a filesystem path. Because
-a rejection message can quote the request that caused it, this MUST NOT
-appear at the default level, and relaying it to a client MUST be an explicit
-per-server opt-in (`relay_upstream_errors`) that leaves the response status,
-`type`, and `code` unchanged. Only a 4xx MAY be relayed: a 5xx is not a
-statement about the client's request, and its text is where a traceback or a
-path would appear.
+logged at `debug`: parse a backend error body under a size bound, accept only
+the scalar `type`, `code`, and `message`, cap each field, and strip control
+and format characters. Both shapes in the field are read — the triple nested
+under `error`, and the flat form beside `object: "error"` — and the marker is
+what licenses the flat one, so the three keys are never claimed from an
+arbitrary object. Never parse or log any other member of the body, the
+request body, the backend URL, or a filesystem path.
+
+Because a rejection message can quote the request that caused it, this MUST
+NOT appear at the default level, and relaying it to a client MUST be an
+explicit per-server opt-in (`relay_upstream_errors`) that leaves the response
+status, `type`, and `code` unchanged. Only statuses that describe the client's
+request MAY be relayed (400, 413, 422, 429). A 5xx says the backend broke, and
+its text is where a traceback appears; a 401 or 403 is about the credential
+the proxy injected, which gateways quote; a 404 names the backend's own model,
+which routing rewrites so a client never learns it. Whatever is relayed MUST
+be logged regardless of level: nothing else records what was disclosed.
 
 Map backend failures into sanitized error classes such as:
 

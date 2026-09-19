@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"net/http"
 
 	"mellomting/internal/backend"
 )
@@ -144,6 +145,23 @@ func (p *Proxy) logUpstreamDetail(requestID, backendName string, err error) {
 	)
 }
 
+// relayableUpstreamStatus lists the backend statuses whose message is
+// about the client's request and so may be relayed to it.
+//
+// The complement is what matters. A 401 or 403 is about the credential
+// Mellomting injected from api_key_file, and gateways quote the key they
+// rejected. A 404 names the backend's own model — the upstream name
+// routing rewrites precisely so a client never learns it — and vLLM
+// spells it as a filesystem path. None of those is a statement about the
+// request the client sent, and all of them are what PLAN §72 keeps out
+// of a client response.
+var relayableUpstreamStatus = map[int]bool{
+	http.StatusBadRequest:            true, // 400
+	http.StatusRequestEntityTooLarge: true, // 413
+	http.StatusUnprocessableEntity:   true, // 422, FastAPI validation
+	http.StatusTooManyRequests:       true, // 429
+}
+
 // relayUpstreamDetail appends the backend's sanitized message to the
 // client-facing error, for a backend configured to relay it.
 //
@@ -151,20 +169,24 @@ func (p *Proxy) logUpstreamDetail(requestID, backendName string, err error) {
 // they stay Mellomting's own vocabulary whatever an operator trusts a
 // backend with; only the human-readable message grows.
 //
-// Only a 4xx is relayed. The relay exists to tell a client what its
-// request got wrong, which a 5xx by definition is not; and a backend's
-// 5xx text is where a traceback or a model path would appear, the one
-// thing PLAN §72 keeps out of a client response. An operator who needs
-// the 5xx text has the debug log, which is not restricted this way
-// because it does not leave the host.
-func (p *Proxy) relayUpstreamDetail(e apiError, backendName string, err error) apiError {
+// Disclosure is recorded at the level it is disclosed. The debug line is
+// for the operator and can stay off; text that has already reached a
+// client must appear in the log whatever the level, or nothing says what
+// was handed out.
+func (p *Proxy) relayUpstreamDetail(e apiError, requestID, backendName string, err error) apiError {
 	if !p.cfg.Backends[backendName].RelayUpstreamErrors {
 		return e
 	}
 	up, ok := errors.AsType[*backend.Upstream](err)
-	if !ok || up.Status < 400 || up.Status >= 500 || up.Detail.Message == "" {
+	if !ok || !relayableUpstreamStatus[up.Status] || up.Detail.Message == "" {
 		return e
 	}
 	e.msg += ": " + up.Detail.Message
+	p.log.Info("relayed backend error detail",
+		"request_id", requestID,
+		"backend", backendName,
+		"status", up.Status,
+		"upstream_message", up.Detail.Message,
+	)
 	return e
 }

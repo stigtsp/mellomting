@@ -198,10 +198,16 @@ are read, each bounded and stripped of control characters; everything else in
 the body is discarded unparsed. It is off by default because a rejection
 message can quote the request that caused it.
 
-The line appears for every backend rejection, including those whose body is
-not parsable JSON or is too large to parse. Its `upstream_*` fields are then
-empty, which is the answer: the backend refused the request and said nothing
-that can safely be repeated.
+The line appears for every backend rejection that arrives as a response
+status, including those whose body is not parsable JSON or is too large to
+parse; its `upstream_*` fields are then empty. It does not cover a backend
+that reports a failure inside a stream it has already answered 200 to — that
+is relayed to the client as stream content and logged as `backend_stream_error`
+or `ok`, not as a rejection.
+
+Both the nested `{"error": {...}}` shape and the flat `{"object": "error",
+...}` shape are read; SGLang uses the flat one on chat completions and the
+nested one on `/v1/responses`.
 
 To hand the same message to the client instead of only the operator, set
 `relay_upstream_errors: true` on that server's entry under `servers:` (see

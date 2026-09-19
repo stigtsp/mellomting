@@ -498,7 +498,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			// conservative default when it sent none (T-Q12).
 			q.W.Header().Set("Retry-After", lastRetryAfter)
 		}
-		fail(p.relayUpstreamDetail(f.resp, lastFailed, lastErr))
+		fail(p.relayUpstreamDetail(f.resp, q.RequestID, lastFailed, lastErr))
 	}
 }
 
