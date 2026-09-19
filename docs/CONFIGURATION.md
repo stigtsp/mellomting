@@ -111,7 +111,10 @@ retry:
 ```
 
 Retries are disabled by default. Only eligible failures are retried, and no
-request is retried after response bytes reach the client.
+request is retried after response bytes reach the client. Fallback to another
+replica happens when a backend refuses admission, so it waits out the queue
+first: with several replicas and retries enabled, a request that has taken a
+queue slot on a busy backend waits there rather than moving to an idle one.
 
 Per-key limits are set when creating a key:
 
@@ -140,9 +143,20 @@ configured policy. See [Hardening](../HARDENING.md).
 | Global rate | 100 requests/s, burst 200 |
 | Request body / response size | 16 MiB / 64 MiB |
 | Global in-flight requests | 64 |
-| Backend timeouts | Connect 3s, headers 30s, request 20m, stream idle 120s |
-| Backend admission | 4 in flight, queue 8, queue wait 5s |
+| Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s |
+| Backend admission | 8 in flight, queue 32, queue wait 600s |
 | Retry attempts | 1 |
+
+Backend timeouts and admission are static: they assume a local inference
+server and are not per-server settings. A large request waits tens of
+seconds on scheduler admission and prefill before its first response byte,
+so the header bound covers that wait instead of reporting it as a backend
+failure. Work beyond `max_concurrency` waits in Mellomting's queue, where
+`queue_size` bounds it and a client disconnect drains it, rather than in the
+inference server's own queue, where neither is true. A queued request keeps
+its global and per-key in-flight slots until it is admitted or its client
+hangs up, so the queue wait is also how long one stalled server can hold
+them.
 
 Use `mellomting config show-effective --config ./config.yaml` to inspect all
 effective settings. The [design reference](PLAN.md) describes the complete

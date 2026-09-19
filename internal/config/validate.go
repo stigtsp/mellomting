@@ -33,12 +33,26 @@ const (
 	defaultStreamIdleTimeout  = 120 * time.Second
 	defaultStreamWriteTimeout = 30 * time.Second
 
+	// Backend defaults are sized for a local inference server, not for
+	// an ordinary HTTP service. A healthy single-GPU model spends tens
+	// of seconds on admission and long-context prefill before it can
+	// emit a response header, so the header bound has to cover queueing
+	// plus prefill; a 30s bound turned healthy 40-160 KB agent requests
+	// into 504s at exactly 30.0s while the backend was still making
+	// progress, and the retries that provoked deepened the overload.
+	//
+	// The header bound is what those 504s were about, not the
+	// concurrency. A continuous-batching server runs many sequences at
+	// once, so max_concurrency stays high enough to let it batch;
+	// whatever it cannot take waits in the local queue, which
+	// queue_size bounds and a client disconnect drains, rather than in
+	// the backend's private queue where neither is true.
 	defaultConnectTimeout   = 3 * time.Second
-	defaultHeaderTimeout    = 30 * time.Second
-	defaultRequestTimeout   = 20 * time.Minute
-	defaultBackendQueueSize = 8
-	defaultQueueTimeout     = 5 * time.Second
-	defaultMaxConcurrency   = 4
+	defaultHeaderTimeout    = 300 * time.Second
+	defaultRequestTimeout   = 30 * time.Minute
+	defaultBackendQueueSize = 32
+	defaultQueueTimeout     = 600 * time.Second
+	defaultMaxConcurrency   = 8
 
 	// defaultMaxConnections bounds concurrently accepted connections at
 	// the listener (T-L15, PLAN §9.1).

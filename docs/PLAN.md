@@ -1074,10 +1074,22 @@ queue timeout
 Example:
 
 ```yaml
-max_concurrency: 4
-queue_size: 8
-queue_timeout: 5s
+max_concurrency: 8
+queue_size: 32
+queue_timeout: 600s
 ```
+
+`max_concurrency` SHOULD approximate what the backend's scheduler runs at
+once; the default assumes a continuous-batching inference server, which runs
+many sequences concurrently. Forwarding well beyond that adds no throughput:
+it moves the wait into the backend's private queue, where `queue_size` does
+not bound it and a client disconnect does not drain it.
+
+`header_timeout` MUST be large enough to cover admission and long-context
+prefill at the backend, which for a local inference server is tens of
+seconds, not the seconds an ordinary HTTP service needs. Whatever queueing
+remains — at either end — is charged against it, and a bound sized for an
+HTTP service reports a healthy backend as a failure.
 
 If capacity is unavailable:
 

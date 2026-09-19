@@ -97,10 +97,10 @@ func TestParseMinimalConfigAppliesDefaults(t *testing.T) {
 
 	b := cfg.Backends[defaultBackendName("qwen-coder", "qwen-a")]
 	if b.ConnectTimeout.Duration() != 3*time.Second ||
-		b.HeaderTimeout.Duration() != 30*time.Second ||
-		b.RequestTimeout.Duration() != 20*time.Minute ||
+		b.HeaderTimeout.Duration() != 300*time.Second ||
+		b.RequestTimeout.Duration() != 30*time.Minute ||
 		b.StreamIdleTimeout.Duration() != 120*time.Second ||
-		b.MaxConcurrency != 4 || b.QueueSize != 8 || b.QueueTimeout.Duration() != 5*time.Second {
+		b.MaxConcurrency != 8 || b.QueueSize != 32 || b.QueueTimeout.Duration() != 600*time.Second {
 		t.Fatalf("backend defaults wrong: %+v", b)
 	}
 
