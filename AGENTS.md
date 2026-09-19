@@ -48,7 +48,10 @@ written in RFC 2119 terms (MUST / MUST NOT / SHOULD / MAY).
 - Never log API keys, prompts, responses, tool arguments, backend
   credentials, or raw backend error bodies (PLAN §24, §41, §43). Operational
   logs are structured JSON to stdout/stderr; backend failures map to
-  sanitized error classes.
+  sanitized error classes. The one carve-out is PLAN §43's bounded
+  diagnostic: a backend's own `error.type`/`error.code`/`error.message`,
+  scalar-only and length-capped, at debug level. It is not a raw body and is
+  not a licence to widen what is logged — before changing it, read §43.
 - Client API keys are stored only as `HMAC-SHA-256(pepper, key)` hashes and
   compared with `subtle.ConstantTimeCompare` (PLAN §25–27).
 - Client `Authorization` / `Proxy-Authorization` / `X-Api-Key` headers and
