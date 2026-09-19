@@ -148,8 +148,16 @@ func (p *Proxy) ensureStreamUsage(k *auth.Key) bool {
 }
 
 // BeginDraining makes the proxy reject new inferences during graceful
-// shutdown (PLAN §74 step 2).
-func (p *Proxy) BeginDraining() { p.draining.Store(true) }
+// shutdown (PLAN §74 step 2), and releases the requests already waiting
+// for backend admission. The flag alone only stops new arrivals; a
+// request parked on queue_timeout would still outlast the grace period
+// and be severed unaccounted.
+func (p *Proxy) BeginDraining() {
+	p.draining.Store(true)
+	for _, c := range p.clients {
+		c.Drain()
+	}
+}
 
 // Draining reports whether new inferences are rejected.
 func (p *Proxy) Draining() bool { return p.draining.Load() }

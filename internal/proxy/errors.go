@@ -98,6 +98,8 @@ func classifyBackendError(err error) backendFailure {
 		return backendFailure{retryable: true, poisonsHealth: true, resp: errUpstreamConnect}
 	case errors.Is(err, backend.ErrDialTimeout):
 		return backendFailure{retryable: true, poisonsHealth: true, resp: errUpstreamTimeout}
+	case errors.Is(err, backend.ErrDraining):
+		return backendFailure{resp: errDraining}
 	case errors.Is(err, backend.ErrQueueFull):
 		return backendFailure{retryable: true, resp: errQueueFull}
 	case errors.Is(err, backend.ErrHeaderTimeout), errors.Is(err, backend.ErrTimeout):

@@ -295,3 +295,54 @@ func hasClass(t *testing.T, buf *bytes.Buffer, class string) bool {
 	}
 	return false
 }
+
+// TestDrainReleasesQueuedRequests: queue_timeout is far longer than the
+// shutdown grace period, so a queued request that shutdown does not
+// release is severed mid-wait — its handler never reaches the deferred
+// accounting call, and its client gets a connection reset instead of the
+// sanitized 503 draining exists to produce.
+func TestDrainReleasesQueuedRequests(t *testing.T) {
+	t.Parallel()
+
+	s := &slowStream{prefillDelay: time.Second}
+	f := newFakeVLLM(t, s.handler)
+	// A queue wait no test would sit through: only the drain can end it.
+	cfg := admissionConfig(f.server.URL, 1, 8, time.Hour, 5*time.Second)
+	var buf bytes.Buffer
+	p := newProxyLogged(t, cfg, &buf, slog.LevelInfo)
+
+	var holder sync.WaitGroup
+	holder.Go(func() {
+		run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1","stream":true}`, testKey())
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for s.active.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the holding request never reached the backend")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	queued := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		queued <- run(t, p, http.MethodPost, "/v1/chat/completions",
+			`{"model":"gen-1","stream":true}`, testKey())
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	p.BeginDraining()
+
+	select {
+	case rec := <-queued:
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("drained request: status = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("draining did not release the queued request; it is still waiting out queue_timeout")
+	}
+	holder.Wait()
+
+	if !hasClass(t, &buf, "overload") {
+		t.Fatalf("the drained request was not accounted as a drain: %s", buf.String())
+	}
+}

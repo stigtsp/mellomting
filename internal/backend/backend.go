@@ -60,6 +60,7 @@ var (
 	ErrHeaderTimeout = errors.New("backend_header_timeout")
 	ErrTimeout       = errors.New("backend_timeout")
 	ErrQueueFull     = errors.New("backend_queue_full")
+	ErrDraining      = errors.New("backend_draining")
 	ErrPolicy        = errors.New("backend_network_policy")
 	ErrTooLarge      = errors.New("backend_response_too_large")
 )
@@ -155,6 +156,22 @@ type Client struct {
 	queue        chan struct{}
 	conc         chan struct{}
 	queueTimeout time.Duration
+	// drain is closed once the daemon starts shutting down, releasing
+	// every request parked in acquire. queue_timeout is far longer than
+	// the shutdown grace period, so without this a restart under load
+	// would sever queued requests mid-wait: their handlers never reach
+	// the deferred accounting call, and their clients get a connection
+	// reset instead of the sanitized 503 the drain exists to produce.
+	drain     chan struct{}
+	drainOnce sync.Once
+}
+
+// Drain releases every request waiting for admission and makes later
+// waits fail immediately (PLAN §74.2). Requests already forwarded are
+// untouched: they are the ones the grace period is for. It is
+// idempotent.
+func (c *Client) Drain() {
+	c.drainOnce.Do(func() { close(c.drain) })
 }
 
 // maxBackendResponseHeaderBytes bounds the backend response header size
@@ -277,6 +294,7 @@ func New(o Options) (*Client, error) {
 		queue:        make(chan struct{}, queueSize),
 		conc:         make(chan struct{}, maxConc),
 		queueTimeout: o.Cfg.QueueTimeout.Duration(),
+		drain:        make(chan struct{}),
 	}, nil
 }
 
@@ -515,6 +533,11 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 	// Fast path: a concurrency slot is free right now — admit without
 	// touching the queue.
 	select {
+	case <-c.drain:
+		return nil, ErrDraining
+	default:
+	}
+	select {
 	case c.conc <- struct{}{}:
 		return &hold{c: c}, nil
 	case <-ctx.Done():
@@ -551,6 +574,8 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 		return &hold{c: c}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-c.drain:
+		return nil, ErrDraining
 	case <-timer.C:
 		// The timer (queue_full) and a client disconnect can fire in
 		// the same instant; Go's select picks randomly among ready
