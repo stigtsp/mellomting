@@ -3360,6 +3360,7 @@ streaming usage extraction
 Responses response-ID extraction
 qualifier structured verdict parser
 OpenAI-style error rewriting
+backend error diagnostic extraction
 ```
 
 Fuzz with arbitrary bytes.

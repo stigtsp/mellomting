@@ -47,29 +47,50 @@ type Detail struct {
 	Message string
 }
 
+// errorFields is the scalar triple, wherever it sits. Only these three
+// keys are decoded; every other member of the object is skipped by the
+// decoder and never materialized.
+type errorFields struct {
+	Type    json.RawMessage `json:"type"`
+	Code    json.RawMessage `json:"code"`
+	Message json.RawMessage `json:"message"`
+}
+
 // upstreamDetail extracts the sanitized diagnostic from a backend error
 // body. Everything about it fails closed: a body that is not JSON, is
-// not an object, carries no `error` object, or is larger than the parse
-// bound yields the zero Detail. Only the three named keys are read, so
-// unrelated response fields — including secret-shaped ones a backend
-// might echo — cannot reach a log or a client by construction.
+// not an object, carries neither recognized shape, or is larger than the
+// parse bound yields the zero Detail. Only the three named keys are
+// decoded, so unrelated response fields — including secret-shaped ones a
+// backend might echo — cannot reach a log or a client by construction.
+//
+// Two shapes are recognized. OpenAI nests the triple under `error`.
+// vLLM and SGLang have also shipped a flat ErrorResponse whose triple
+// sits at the top level next to `object: "error"`; that marker is what
+// makes the flat form safe to read, since without it the three keys
+// would be claimed from any JSON object a backend happened to return.
 func upstreamDetail(body []byte) Detail {
 	if len(body) == 0 || len(body) > maxDetailParseBytes {
 		return Detail{}
 	}
-	// A map, not a struct: the `error` value must be an object for any
-	// field to be read. A string, array, or number there fails the
-	// decode and yields nothing.
 	var envelope struct {
-		Error map[string]json.RawMessage `json:"error"`
+		Object string       `json:"object"`
+		Error  *errorFields `json:"error"`
+		errorFields
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return Detail{}
 	}
+	f := envelope.Error
+	if f == nil {
+		if envelope.Object != "error" {
+			return Detail{}
+		}
+		f = &envelope.errorFields
+	}
 	return Detail{
-		Type:    scalarField(envelope.Error["type"], maxDetailType),
-		Code:    scalarField(envelope.Error["code"], maxDetailCode),
-		Message: scalarField(envelope.Error["message"], maxDetailMessage),
+		Type:    scalarField(f.Type, maxDetailType),
+		Code:    scalarField(f.Code, maxDetailCode),
+		Message: scalarField(f.Message, maxDetailMessage),
 	}
 }
 
@@ -78,26 +99,42 @@ func upstreamDetail(body []byte) Detail {
 // ways (SGLang sends the HTTP status as a number where OpenAI sends a
 // string). Objects, arrays, and null yield "": a nested structure is
 // exactly the arbitrary backend JSON that must not be relayed.
+//
+// The dispatch is on the first byte rather than on a decoded value, so
+// a nested structure in a scalar slot is rejected without ever being
+// materialized — a backend must not be able to make the diagnostic
+// allocate its whole body to decide it is unusable. A number is carried
+// through as the text the backend wrote: re-formatting a float64 turns
+// 1e300 into 301 digits that then truncate into a different number.
 func scalarField(raw json.RawMessage, limit int) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	switch raw[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return sanitizeDetailText(s, limit)
+	case 't', 'f':
+		var b bool
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return ""
+		}
+		return strconv.FormatBool(b)
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		// Already validated as a JSON number by the outer decode, so
+		// the raw text needs only bounding. A number long enough to
+		// need truncating would truncate into a different number, so
+		// it is dropped instead.
+		if len(raw) > limit {
+			return ""
+		}
+		return string(raw)
+	default: // null, object, array
 		return ""
 	}
-	var s string
-	switch t := v.(type) {
-	case string:
-		s = t
-	case float64:
-		s = strconv.FormatFloat(t, 'f', -1, 64)
-	case bool:
-		s = strconv.FormatBool(t)
-	default:
-		return ""
-	}
-	return sanitizeDetailText(s, limit)
 }
 
 // sanitizeDetailText reduces a backend's text to one printable line,
@@ -114,8 +151,10 @@ func scalarField(raw json.RawMessage, limit int) string {
 func sanitizeDetailText(s string, limit int) string {
 	s = strings.Map(func(c rune) rune {
 		switch {
-		case c == '\t' || c == '\n' || c == '\r',
-			unicode.Is(unicode.Zl, c), unicode.Is(unicode.Zp, c):
+		case c == '\t', c == '\n', c == '\r', c == '\v', c == '\f', c == 0x85:
+			// Separators become a space rather than vanishing: a
+			// backend that form-feeds between two sentences must not
+			// hand the operator one glued-together word.
 			return ' '
 		case unicode.IsControl(c), unicode.Is(unicode.Cf, c):
 			return -1

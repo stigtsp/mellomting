@@ -44,7 +44,32 @@ func TestUpstreamDetailExtraction(t *testing.T) {
 		body: `{"error":"plain text failure"}`,
 		want: Detail{},
 	}, {
-		name: "no error member yields nothing",
+		// SGLang's ErrorResponse, which its chat and completions
+		// endpoints have emitted in every release: the triple sits at
+		// the top level beside object:"error". Its /v1/responses
+		// endpoint nests, so one server emits both shapes.
+		name: "sglang flat error response",
+		body: `{"object":"error","message":"only one system message is allowed","type":"BadRequestError","param":null,"code":400}`,
+		want: Detail{Type: "BadRequestError", Code: "400", Message: "only one system message is allowed"},
+	}, {
+		// vLLM nests from v0.10.1 on.
+		name: "vllm nested error response",
+		body: `{"error":{"message":"This model's maximum context length is 32768 tokens","type":"BadRequestError","param":null,"code":400}}`,
+		want: Detail{Type: "BadRequestError", Code: "400", Message: "This model's maximum context length is 32768 tokens"},
+	}, {
+		// The interim vLLM shape that wrapped only the message.
+		name: "hybrid error response carries the message alone",
+		body: `{"object":"error","error":{"message":"invalid tool schema"},"type":"BadRequestError","code":400}`,
+		want: Detail{Message: "invalid tool schema"},
+	}, {
+		// object:"error" is what licenses reading the top level. A
+		// body without it keeps its fields to itself however they are
+		// named.
+		name: "flat fields without the error marker yield nothing",
+		body: `{"message":"internal detail","type":"t","code":500}`,
+		want: Detail{},
+	}, {
+		name: "error marker without any scalar field yields nothing",
 		body: `{"detail":"validation failed","object":"error"}`,
 		want: Detail{},
 	}, {
@@ -78,6 +103,23 @@ func TestUpstreamDetailExtraction(t *testing.T) {
 		name: "bidi and zero-width characters are stripped",
 		body: "{\"error\":{\"message\":\"safe\u202etxet neddih\u202c\u200bhidden\ufeff\"}}",
 		want: Detail{Message: "safetxet neddihhidden"},
+	}, {
+		// Carried as written. Re-formatting it as a float64 expanded
+		// 1e300 to 301 digits, which then truncated into a different
+		// number that an operator would read as 1e63.
+		name: "an exponent code keeps the form the backend wrote",
+		body: `{"error":{"code":1e300,"message":"x"}}`,
+		want: Detail{Code: "1e300", Message: "x"},
+	}, {
+		// Too long to carry, and truncating digits would report a
+		// different number, so it is dropped.
+		name: "an over-long numeric code is dropped, not truncated",
+		body: `{"error":{"code":` + strings.Repeat("9", maxDetailCode+1) + `,"message":"x"}}`,
+		want: Detail{Message: "x"},
+	}, {
+		name: "vertical tab and form feed separate rather than glue",
+		body: `{"error":{"message":"only one system message\u000bis allowed\u000chere"}}`,
+		want: Detail{Message: "only one system message is allowed here"},
 	}, {
 		name: "line and paragraph separators become spaces",
 		body: "{\"error\":{\"message\":\"a\u2028b\u2029c\"}}",
