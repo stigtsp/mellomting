@@ -407,12 +407,18 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			lastErr = err
 			lastFailed = backendName
 			p.logUpstreamDetail(q.RequestID, backendName, err)
-			// Remember any upstream-provided Retry-After so a terminal
-			// 429 can forward it (T-Q12). The 429 branch only fires
-			// when lastErr is that 429, whose result is this res.
+			// Remember the upstream Retry-After only when this attempt
+			// is the rate limit it belongs to, and forget any earlier
+			// one (T-Q12). It is consumed against the FINAL error's
+			// class, so a value carried forward from an earlier
+			// attempt would let one backend's 503 set the Retry-After
+			// on a different backend's terminal 429 — an hour of
+			// client backoff on the strength of an unrelated reply.
+			lastRetryAfter = ""
 			if res != nil {
-				if ra := res.Header.Get("Retry-After"); ra != "" {
-					lastRetryAfter = ra
+				if up, ok := errors.AsType[*backend.Upstream](err); ok &&
+					up.Status == http.StatusTooManyRequests {
+					lastRetryAfter = res.Header.Get("Retry-After")
 				}
 			}
 			if f := classifyBackendError(err); f.retryable {
