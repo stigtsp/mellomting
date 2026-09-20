@@ -1030,7 +1030,25 @@ func encodeOutbound(fields map[string]json.RawMessage, upstream string) ([]byte,
 		return nil, err
 	}
 	fields["model"] = enc
-	return json.Marshal(fields)
+	// json.Marshal escapes <, > and & even inside a json.RawMessage, so
+	// the default encoder does not pass a body through unchanged
+	// (PLAN §12): it rewrites every angle bracket in a prompt to
+	// \u003c. The decoded string is identical, so a backend's chat
+	// template sees the same text either way — but the bytes are not,
+	// and on the markup- and code-heavy prompts coding agents send the
+	// body nearly doubles, which the backend then has to read and parse
+	// before it can start the prefill this proxy is waiting on.
+	//
+	// The escaping exists to make JSON safe to embed in HTML. This body
+	// goes to an inference API, never to a browser.
+	var buf bytes.Buffer
+	out := json.NewEncoder(&buf)
+	out.SetEscapeHTML(false)
+	if err := out.Encode(fields); err != nil {
+		return nil, err
+	}
+	// Encode appends exactly one newline after the value.
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // isValidResponseID restricts a response ID to a safe alphabet and

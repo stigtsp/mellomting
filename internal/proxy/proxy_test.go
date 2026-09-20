@@ -1957,3 +1957,52 @@ func TestStreamReaderDoesNotLeak(t *testing.T) {
 		}
 	})
 }
+
+// TestMessagesReachTheBackendByteIdentical pins the half of the chat
+// template incident that belongs to this proxy.
+//
+// A backend's chat template can reject a request on the exact shape of
+// the message list — Qwen's requires a single leading system message,
+// and the reported failure was a later system reminder appended by the
+// client. Whatever a proxy in the path does to that list, it must not be
+// the cause: the shallow parse re-encodes the body from a map, and a
+// map that decoded messages into anything but raw bytes would reorder
+// keys, restyle numbers, or re-escape strings, changing what the
+// template sees while every field still looks present.
+func TestMessagesReachTheBackendByteIdentical(t *testing.T) {
+	t.Parallel()
+	f := newFakeVLLM(t, okJSON)
+	p := newProxy(t, f)
+
+	// Key order inside each message is deliberately not alphabetical,
+	// and the content carries escapes and non-ASCII: all of it survives
+	// only if these bytes are never decoded and re-encoded.
+	const messages = `[{"content":"Du er en hjelpsom assistent.","role":"system"},` +
+		`{"role":"user","content":"hei å \"sitat\"\n\tlinje"},` +
+		`{"content":"<system-reminder>later</system-reminder>","role":"system"}]`
+
+	w := run(t, p, http.MethodPost, "/v1/chat/completions",
+		`{"model":"gen-1","messages":`+messages+`,"temperature":0.10}`, testKey())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	f.mu.Lock()
+	got := f.lastBody
+	f.mu.Unlock()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(got, &fields); err != nil {
+		t.Fatalf("outbound body is not a JSON object: %v", err)
+	}
+	if string(fields["messages"]) != messages {
+		t.Fatalf("messages were rewritten in transit:\n sent %s\n got  %s", messages, fields["messages"])
+	}
+	// The one field the proxy is allowed to change, still changed.
+	if string(fields["model"]) != `"Upstream/Model"` {
+		t.Fatalf("model = %s, want the rewritten upstream name", fields["model"])
+	}
+	// A number the proxy does not touch keeps the client's own spelling.
+	if string(fields["temperature"]) != "0.10" {
+		t.Fatalf("temperature = %s, want the verbatim 0.10", fields["temperature"])
+	}
+}
