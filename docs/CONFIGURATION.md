@@ -161,7 +161,7 @@ configured policy. See [Hardening](../HARDENING.md).
 | Request body / response size | 16 MiB / 64 MiB |
 | Global in-flight requests | 64 |
 | Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s |
-| Backend admission | 8 in flight, queue 32, queue wait 120s |
+| Backend admission (per server) | 8 in flight, queue 32, queue wait 120s |
 | Retry attempts | 1 |
 
 Backend timeouts and admission are static: they assume a local inference
@@ -171,6 +171,10 @@ so the header bound covers that wait instead of reporting it as a backend
 failure. They have no configuration key, so `config show-effective` does not
 show them; the daemon logs each backend's bounds in a `backend admission`
 line at startup.
+
+Admission belongs to the server, not the model: every model listed under
+one server shares its in-flight cap and queue, so two models on one vLLM
+instance forward at most 8 requests to it between them.
 
 Whichever in-flight limit is lowest decides when work starts queueing. A
 key's own `concurrent_requests` is 8 by default, the same as a backend's

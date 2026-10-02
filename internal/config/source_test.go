@@ -443,3 +443,26 @@ models:
 		t.Fatalf("a server that did not opt in relays anyway: %+v", plain)
 	}
 }
+
+// TestSourceBackendsRecordTheirServer: every backend generated from one
+// server names it, so the daemon can give them one admission. A server
+// is one inference engine however many public models it serves, and its
+// capacity is the engine's, not each model's.
+func TestSourceBackendsRecordTheirServer(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(sourceHappyYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, tc := range []struct{ model, server string }{
+		{"qwen3.8-27b", "local-a"},
+		{"qwen3.8-27b", "local-b"},
+		{"qwen-coder", "local-b"},
+	} {
+		b := cfg.Backends[defaultBackendName(tc.model, tc.server)]
+		if b.Server != tc.server {
+			t.Fatalf("backend for %s on %s records server %q", tc.model, tc.server, b.Server)
+		}
+	}
+}

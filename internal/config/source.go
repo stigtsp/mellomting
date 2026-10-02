@@ -131,6 +131,7 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				continue
 			}
 			cfg.Backends[name] = Backend{
+				Server:              server,
 				BaseURL:             s.URL,
 				UpstreamModel:       upstream,
 				APIKeyFile:          s.APIKeyFile,

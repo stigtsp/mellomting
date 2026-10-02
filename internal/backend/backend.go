@@ -121,6 +121,10 @@ type Options struct {
 	// emitted bytes in the proxy pump (FIX-12).
 	MaxResponseBytes int
 	Log              *slog.Logger
+	// Admission is the slot pool this client admits through. Clients
+	// for the same inference server pass the same one; nil gives the
+	// client a pool of its own, sized from Cfg.
+	Admission *Admission
 	// Resolver overrides the DNS resolver used for outbound dials.
 	// Defaults to net.DefaultResolver. Testing hook (T-M14).
 	Resolver Resolver
@@ -152,7 +156,14 @@ type Client struct {
 	// the completion bound (request_timeout), because for non-streaming
 	// work headers arrive only when the whole completion is ready
 	// (X6: a 30s+ generation must not be truncated by header_timeout).
-	httpPlain    *http.Client
+	httpPlain *http.Client
+	adm       *Admission
+}
+
+// Admission is the PLAN §22 slot pool of one inference server: at most
+// max_concurrency requests in flight and queue_size waiting, however
+// many clients admit through it.
+type Admission struct {
 	queue        chan struct{}
 	conc         chan struct{}
 	queueTimeout time.Duration
@@ -166,12 +177,22 @@ type Client struct {
 	drainOnce sync.Once
 }
 
+// NewAdmission builds a slot pool from a backend's admission settings.
+func NewAdmission(cfg config.Backend) *Admission {
+	return &Admission{
+		queue:        make(chan struct{}, max(cfg.QueueSize, 0)),
+		conc:         make(chan struct{}, max(cfg.MaxConcurrency, 1)),
+		queueTimeout: cfg.QueueTimeout.Duration(),
+		drain:        make(chan struct{}),
+	}
+}
+
 // Drain releases every request waiting for admission and makes later
 // waits fail immediately (PLAN §74.2). Requests already forwarded are
 // untouched: they are the ones the grace period is for. It is
-// idempotent.
+// idempotent, and drains every client sharing this client's admission.
 func (c *Client) Drain() {
-	c.drainOnce.Do(func() { close(c.drain) })
+	c.adm.drainOnce.Do(func() { close(c.adm.drain) })
 }
 
 // maxBackendResponseHeaderBytes bounds the backend response header size
@@ -218,8 +239,11 @@ func New(o Options) (*Client, error) {
 		}
 	}
 
-	maxConc := max(o.Cfg.MaxConcurrency, 1)
-	queueSize := max(int(o.Cfg.QueueSize), 0)
+	adm := o.Admission
+	if adm == nil {
+		adm = NewAdmission(o.Cfg)
+	}
+	maxConc := cap(adm.conc)
 
 	t := &http.Transport{
 		DisableKeepAlives: false,
@@ -291,10 +315,7 @@ func New(o Options) (*Client, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		queue:        make(chan struct{}, queueSize),
-		conc:         make(chan struct{}, maxConc),
-		queueTimeout: o.Cfg.QueueTimeout.Duration(),
-		drain:        make(chan struct{}),
+		adm: adm,
 	}, nil
 }
 
@@ -516,10 +537,10 @@ func (r *Result) Close() {
 // Inflight counts it as one active request once acquire has returned;
 // until then a queue-admitted request still holds its queue token too
 // (see the Inflight note on the transient double count).
-type hold struct{ c *Client }
+type hold struct{ a *Admission }
 
 func (h *hold) release() {
-	<-h.c.conc
+	<-h.a.conc
 }
 
 // acquire implements PLAN §22 admission. A concurrency slot is taken
@@ -530,16 +551,17 @@ func (h *hold) release() {
 // bounded by queue_size and queue_timeout. Failures are bounded and never
 // wait indefinitely.
 func (c *Client) acquire(ctx context.Context) (*hold, error) {
+	a := c.adm
 	// Fast path: a concurrency slot is free right now — admit without
 	// touching the queue.
 	select {
-	case <-c.drain:
+	case <-a.drain:
 		return nil, ErrDraining
 	default:
 	}
 	select {
-	case c.conc <- struct{}{}:
-		return &hold{c: c}, nil
+	case a.conc <- struct{}{}:
+		return &hold{a: a}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
@@ -549,7 +571,7 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 	// queue token is released when acquire returns (admitted or not), so
 	// it gates only waiters, never in-flight requests.
 	select {
-	case c.queue <- struct{}{}:
+	case a.queue <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
@@ -565,16 +587,16 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 			return nil, ErrQueueFull
 		}
 	}
-	defer func() { <-c.queue }()
+	defer func() { <-a.queue }()
 
-	timer := time.NewTimer(c.queueTimeout)
+	timer := time.NewTimer(a.queueTimeout)
 	defer timer.Stop()
 	select {
-	case c.conc <- struct{}{}:
-		return &hold{c: c}, nil
+	case a.conc <- struct{}{}:
+		return &hold{a: a}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.drain:
+	case <-a.drain:
 		return nil, ErrDraining
 	case <-timer.C:
 		// The timer (queue_full) and a client disconnect can fire in
@@ -795,7 +817,7 @@ func bodyReadError(err error) error {
 // streams the slot is held until Result.Close, so Inflight stays
 // accurate for the full generation, not just the header exchange.
 func (c *Client) Inflight() int {
-	return len(c.queue) + len(c.conc)
+	return len(c.adm.queue) + len(c.adm.conc)
 }
 
 // StreamIdleTimeout is the backend stream-idle bound (PLAN §24).

@@ -217,7 +217,7 @@ func TestAcquireQueueTimeoutAndCancel(t *testing.T) {
 
 	// Occupy the only concurrency slot so any further acquire must wait
 	// on the queue timer.
-	c.conc <- struct{}{}
+	c.adm.conc <- struct{}{}
 
 	if _, err := c.acquire(context.Background()); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("acquire with full concurrency = %v, want ErrQueueFull", err)

@@ -254,6 +254,10 @@ type Limits struct {
 
 // Backend is one OpenAI-compatible inference server (PLAN §15, §17).
 type Backend struct {
+	// Server names the source server this backend was generated from.
+	// Backends sharing a server share its admission: the server is one
+	// engine with one capacity, however many public models route to it.
+	Server        string `yaml:"-"`
 	BaseURL       string `yaml:"base_url"`
 	UpstreamModel string `yaml:"upstream_model"`
 	// APIKeyFile holds the backend credential, if any (PLAN §17). The

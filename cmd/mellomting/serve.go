@@ -619,6 +619,58 @@ func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, er
 	return pol, nil
 }
 
+// newBackendClients builds one client per configured backend. Backends
+// generated from one server admit through one pool: normalization makes
+// a backend per (model, server) pair, but the engine behind a server has
+// one capacity however many public models it serves, and a pool per
+// model would let it see that capacity times the number of models.
+func newBackendClients(cfg *config.Config, policy backend.Policy, roots *x509.CertPool, log *slog.Logger) (map[string]*backend.Client, error) {
+	clients := make(map[string]*backend.Client, len(cfg.Backends))
+	pools := make(map[string]*backend.Admission)
+	for name, b := range cfg.Backends {
+		// Every backend of a server carries the same static admission
+		// defaults, so the first one seen can size the pool.
+		pool := pools[b.Server]
+		if pool == nil {
+			pool = backend.NewAdmission(b)
+			if b.Server != "" {
+				pools[b.Server] = pool
+			}
+		}
+		client, err := backend.New(backend.Options{
+			Name:             name,
+			Cfg:              b,
+			Network:          policy,
+			MaxResponseBytes: cfg.Server.MaxResponseBytes,
+			Log:              log,
+			Admission:        pool,
+			RootCAs:          roots,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("backend %q: %w", name, err)
+		}
+		// The timeout and admission bounds have no configuration key
+		// and cannot appear in `config show-effective`, whose output
+		// must stay a valid configuration file. This line is where an
+		// operator reads what a backend is actually being served under
+		// — above all the header bound, which decides whether a long
+		// prefill returns or is reported as a backend failure.
+		log.Info("backend admission",
+			"backend", name,
+			"server", b.Server,
+			"connect_timeout", b.ConnectTimeout.Duration().String(),
+			"header_timeout", b.HeaderTimeout.Duration().String(),
+			"request_timeout", b.RequestTimeout.Duration().String(),
+			"stream_idle_timeout", b.StreamIdleTimeout.Duration().String(),
+			"max_concurrency", b.MaxConcurrency,
+			"queue_size", b.QueueSize,
+			"queue_timeout", b.QueueTimeout.Duration().String(),
+		)
+		clients[name] = client
+	}
+	return clients, nil
+}
+
 // buildDaemon wires the key store, router, backend clients, proxy, and
 // HTTP surface from validated configuration. It performs no I/O beyond
 // reading the key store, pepper, backend credentials, and the static TLS
@@ -672,36 +724,9 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		)
 	}
 
-	clients := make(map[string]*backend.Client, len(cfg.Backends))
-	for name, b := range cfg.Backends {
-		client, err := backend.New(backend.Options{
-			Name:             name,
-			Cfg:              b,
-			Network:          policy,
-			MaxResponseBytes: cfg.Server.MaxResponseBytes,
-			Log:              log,
-			RootCAs:          roots,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("backend %q: %w", name, err)
-		}
-		// The timeout and admission bounds have no configuration key
-		// and cannot appear in `config show-effective`, whose output
-		// must stay a valid configuration file. This line is where an
-		// operator reads what a backend is actually being served under
-		// — above all the header bound, which decides whether a long
-		// prefill returns or is reported as a backend failure.
-		log.Info("backend admission",
-			"backend", name,
-			"connect_timeout", b.ConnectTimeout.Duration().String(),
-			"header_timeout", b.HeaderTimeout.Duration().String(),
-			"request_timeout", b.RequestTimeout.Duration().String(),
-			"stream_idle_timeout", b.StreamIdleTimeout.Duration().String(),
-			"max_concurrency", b.MaxConcurrency,
-			"queue_size", b.QueueSize,
-			"queue_timeout", b.QueueTimeout.Duration().String(),
-		)
-		clients[name] = client
+	clients, err := newBackendClients(cfg, policy, roots, log)
+	if err != nil {
+		return nil, err
 	}
 
 	router, err := routing.New(cfg, func(name string) int {

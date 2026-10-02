@@ -106,7 +106,7 @@ func TestAcquireQueueFullClassifiesDisconnect(t *testing.T) {
 	// A zero queue timeout makes the timer ready immediately, so each
 	// acquire's second select races the fired timer against the
 	// cancelled client context.
-	c.queueTimeout = 0
+	c.adm.queueTimeout = 0
 
 	for i := range 200 {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1191,5 +1191,50 @@ func TestBackendUsesSuppliedRoots(t *testing.T) {
 		if tr.TLSClientConfig.RootCAs != roots {
 			t.Fatalf("%s transport does not use the preloaded roots", name)
 		}
+	}
+}
+
+// TestSharedAdmissionBoundsClientsTogether: clients built on one
+// Admission draw from one pool of slots. Two public models served by
+// the same engine must not each get the engine's full capacity, or the
+// excess waits in the engine's own queue, which nothing here bounds.
+func TestSharedAdmissionBoundsClientsTogether(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	opts := testOptions(t, ts.URL)
+	opts.Cfg.MaxConcurrency = 1
+	opts.Cfg.QueueSize = 0
+	opts.Admission = NewAdmission(opts.Cfg)
+	a, err := New(opts)
+	if err != nil {
+		t.Fatalf("New a: %v", err)
+	}
+	opts.Name = "test-b"
+	b, err := New(opts)
+	if err != nil {
+		t.Fatalf("New b: %v", err)
+	}
+
+	res, err := a.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true})
+	if err != nil {
+		t.Fatalf("a.Forward: %v", err)
+	}
+	defer res.Close()
+
+	if got := b.Inflight(); got != 1 {
+		t.Fatalf("b.Inflight() = %d while a holds the shared slot, want 1", got)
+	}
+	if _, err := b.Forward(context.Background(), Request{Method: "POST", Path: "/v1/chat/completions", Body: []byte(`{}`), Stream: true}); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("b.Forward with the shared slot taken: err = %v, want ErrQueueFull", err)
 	}
 }

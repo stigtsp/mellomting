@@ -1063,7 +1063,8 @@ Do not persist this mapping until a concrete need appears.
 
 # 22. Backend admission and queues
 
-Each backend has:
+Each server has one admission, shared by every model routed to it — the
+engine's capacity does not grow with the number of public names it serves:
 
 ```text
 active request semaphore
