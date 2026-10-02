@@ -59,6 +59,15 @@ const (
 	defaultQueueTimeout   = 120 * time.Second
 	defaultMaxConcurrency = 8
 
+	// Ceilings on a server's admission settings. Each in-flight slot
+	// may hold a backend connection, so the cap stays within the
+	// listener's connection bound; each queued request holds global and
+	// per-key in-flight slots while it waits, so neither the queue nor
+	// its wait may be unbounded. A wait longer than request_timeout
+	// would outlive the request it is waiting to send.
+	maxServerConcurrency = 1024
+	maxServerQueueSize   = 4096
+
 	// defaultMaxConnections bounds concurrently accepted connections at
 	// the listener (T-L15, PLAN §9.1).
 	defaultMaxConnections = 1024
@@ -158,9 +167,8 @@ func applyDefaults(c *Config) {
 		b.HeaderTimeout = cmp.Or(b.HeaderTimeout, Duration(defaultHeaderTimeout))
 		b.RequestTimeout = cmp.Or(b.RequestTimeout, Duration(defaultRequestTimeout))
 		b.StreamIdleTimeout = cmp.Or(b.StreamIdleTimeout, Duration(defaultStreamIdleTimeout))
-		b.MaxConcurrency = cmp.Or(b.MaxConcurrency, defaultMaxConcurrency)
-		b.QueueSize = cmp.Or(b.QueueSize, defaultBackendQueueSize)
-		b.QueueTimeout = cmp.Or(b.QueueTimeout, Duration(defaultQueueTimeout))
+		// Admission limits are resolved per server in normalization,
+		// where an explicit queue_size: 0 can still be told from unset.
 		c.Backends[name] = b
 	}
 

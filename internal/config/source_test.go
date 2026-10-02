@@ -1,9 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const sourceHappyYAML = `
@@ -464,5 +468,126 @@ func TestSourceBackendsRecordTheirServer(t *testing.T) {
 		if b.Server != tc.server {
 			t.Fatalf("backend for %s on %s records server %q", tc.model, tc.server, b.Server)
 		}
+	}
+}
+
+// serverLimitsYAML is a two-server document whose first server sets
+// its admission limits and whose second leaves them to the defaults.
+func serverLimitsYAML(limits string) string {
+	return `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+servers:
+  tuned:
+    url: http://127.0.0.1:8001
+` + limits + `
+  plain:
+    url: http://127.0.0.1:8002
+models:
+  m1:
+    servers: [tuned, plain]
+  m2:
+    servers: [tuned]
+`
+}
+
+// TestSourceServerAdmissionLimits: an operator sizes a server's
+// admission to what the engine behind it runs at once, and every
+// backend generated from that server carries the setting. A server that
+// sets nothing keeps the defaults. queue_size: 0 is a real choice — no
+// waiting, so a busy server is refused and routing can fall back at once
+// — and must not be read as "unset".
+func TestSourceServerAdmissionLimits(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(serverLimitsYAML(`    max_concurrency: 3
+    queue_size: 0
+    queue_timeout: 15s`)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, model := range []string{"m1", "m2"} {
+		b := cfg.Backends[defaultBackendName(model, "tuned")]
+		if b.MaxConcurrency != 3 || b.QueueSize != 0 || b.QueueTimeout.Duration() != 15*time.Second {
+			t.Fatalf("%s on tuned: admission = %d/%d/%s, want 3/0/15s",
+				model, b.MaxConcurrency, b.QueueSize, b.QueueTimeout.Duration())
+		}
+	}
+	b := cfg.Backends[defaultBackendName("m1", "plain")]
+	if b.MaxConcurrency != defaultMaxConcurrency || b.QueueSize != defaultBackendQueueSize ||
+		b.QueueTimeout.Duration() != defaultQueueTimeout {
+		t.Fatalf("plain server lost the defaults: %d/%d/%s",
+			b.MaxConcurrency, b.QueueSize, b.QueueTimeout.Duration())
+	}
+}
+
+// TestSourceServerAdmissionLimitsRejected: a limit outside its bound is
+// refused and named by the server the operator wrote, never by a
+// synthetic backend. An explicit zero cap or wait is refused rather
+// than read as "use the default": the operator asked for something the
+// daemon cannot do.
+func TestSourceServerAdmissionLimitsRejected(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ limits, want string }{
+		{"    max_concurrency: 0", "servers.tuned.max_concurrency"},
+		{"    max_concurrency: -1", "servers.tuned.max_concurrency"},
+		{fmt.Sprintf("    max_concurrency: %d", maxServerConcurrency+1), "servers.tuned.max_concurrency"},
+		{"    queue_size: -1", "servers.tuned.queue_size"},
+		{fmt.Sprintf("    queue_size: %d", maxServerQueueSize+1), "servers.tuned.queue_size"},
+		{"    queue_timeout: 0s", "servers.tuned.queue_timeout"},
+		{"    queue_timeout: -5s", "servers.tuned.queue_timeout"},
+		{"    queue_timeout: 31m", "servers.tuned.queue_timeout"},
+	} {
+		_, err := Parse([]byte(serverLimitsYAML(tc.limits)))
+		if err == nil {
+			t.Fatalf("%q: accepted, want rejection", tc.limits)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%q: error %q does not name %s", tc.limits, err, tc.want)
+		}
+		if strings.Contains(err.Error(), "auto-") {
+			t.Fatalf("%q: error names a synthetic backend: %v", tc.limits, err)
+		}
+	}
+}
+
+// TestSourceEffectiveShowsServerLimits: show-effective is where an
+// operator confirms what a server is admitted under, so it prints the
+// limits each server actually runs with, defaults included, and its
+// output is itself a configuration that parses to the same Config.
+func TestSourceEffectiveShowsServerLimits(t *testing.T) {
+	t.Parallel()
+
+	cfg, out, err := ParseEffective([]byte(serverLimitsYAML(`    max_concurrency: 3
+    queue_size: 0`)))
+	if err != nil {
+		t.Fatalf("ParseEffective: %v", err)
+	}
+	var doc struct {
+		Servers map[string]map[string]any `yaml:"servers"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal effective: %v", err)
+	}
+	for server, want := range map[string]map[string]any{
+		"tuned": {"max_concurrency": 3, "queue_size": 0, "queue_timeout": defaultQueueTimeout.String()},
+		"plain": {"max_concurrency": defaultMaxConcurrency, "queue_size": defaultBackendQueueSize, "queue_timeout": defaultQueueTimeout.String()},
+	} {
+		for key, v := range want {
+			if got, ok := doc.Servers[server][key]; !ok || got != v {
+				t.Fatalf("effective servers.%s.%s = %v (present %v), want %v\n%s", server, key, got, ok, v, out)
+			}
+		}
+	}
+	again, err := Parse(out)
+	if err != nil {
+		t.Fatalf("effective output does not parse: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(cfg, again) {
+		t.Fatalf("effective output parses to a different config:\nfirst = %+v\nagain = %+v", cfg, again)
 	}
 }

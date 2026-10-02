@@ -20,10 +20,40 @@ type sourceServer struct {
 	APIKeyFile string `yaml:"api_key_file"`
 	// RelayUpstreamErrors opts this server's sanitized error message
 	// into the client-facing error (see Backend.RelayUpstreamErrors).
-	// It is the one per-server trust decision an operator makes, so it
-	// belongs in the source schema rather than among the admission and
-	// timeout settings, which are static defaults.
+	// It is the one per-server trust decision an operator makes.
 	RelayUpstreamErrors bool `yaml:"relay_upstream_errors,omitempty"`
+	// Admission limits (PLAN §22), shared by every model on this
+	// server. Pointers, because an explicit zero is a statement: a zero
+	// queue means "never wait", and a zero cap or wait is an error, not
+	// a request for the default.
+	MaxConcurrency *int      `yaml:"max_concurrency"`
+	QueueSize      *int      `yaml:"queue_size"`
+	QueueTimeout   *Duration `yaml:"queue_timeout"`
+}
+
+// admission resolves the server's admission limits against the
+// defaults and reports each one outside its bound.
+func (s sourceServer) admission(name string) (conc, queue int, wait Duration, errs []string) {
+	conc, queue, wait = defaultMaxConcurrency, defaultBackendQueueSize, Duration(defaultQueueTimeout)
+	if s.MaxConcurrency != nil {
+		conc = *s.MaxConcurrency
+	}
+	if s.QueueSize != nil {
+		queue = *s.QueueSize
+	}
+	if s.QueueTimeout != nil {
+		wait = *s.QueueTimeout
+	}
+	if conc < 1 || conc > maxServerConcurrency {
+		errs = append(errs, fmt.Sprintf("servers.%s.max_concurrency: must be between 1 and %d, got %d", name, maxServerConcurrency, conc))
+	}
+	if queue < 0 || queue > maxServerQueueSize {
+		errs = append(errs, fmt.Sprintf("servers.%s.queue_size: must be between 0 and %d, got %d", name, maxServerQueueSize, queue))
+	}
+	if d := wait.Duration(); d <= 0 || d > defaultRequestTimeout {
+		errs = append(errs, fmt.Sprintf("servers.%s.queue_timeout: must be > 0 and at most request_timeout (%s), got %s", name, defaultRequestTimeout, d))
+	}
+	return conc, queue, wait, errs
 }
 
 // sourceModel is one compact public model in the source schema (D11). The
@@ -95,6 +125,17 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 		Models:     make(map[string]Model, len(doc.Models)),
 	}
 
+	type limits struct {
+		conc, queue int
+		wait        Duration
+	}
+	admission := make(map[string]limits, len(doc.Servers))
+	for _, name := range slices.Sorted(maps.Keys(doc.Servers)) {
+		conc, queue, wait, bad := doc.Servers[name].admission(name)
+		errs = append(errs, bad...)
+		admission[name] = limits{conc, queue, wait}
+	}
+
 	referenced := make(map[string]bool, len(doc.Servers))
 	if len(doc.Servers) == 0 {
 		errs = append(errs, "servers: at least one server is required")
@@ -136,6 +177,9 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				UpstreamModel:       upstream,
 				APIKeyFile:          s.APIKeyFile,
 				RelayUpstreamErrors: s.RelayUpstreamErrors,
+				MaxConcurrency:      admission[server].conc,
+				QueueSize:           admission[server].queue,
+				QueueTimeout:        admission[server].wait,
 			}
 			refs = append(refs, BackendRef{Name: name, Weight: 1})
 			referenced[server] = true
@@ -170,9 +214,12 @@ func sortedModelKeys(models map[string]sourceModel) []string {
 // server for `config show-effective` (D11). It carries the credential path
 // but never the credential contents.
 type effectiveServer struct {
-	URL                 string `yaml:"url"`
-	APIKeyFile          string `yaml:"api_key_file,omitempty"`
-	RelayUpstreamErrors bool   `yaml:"relay_upstream_errors,omitempty"`
+	URL                 string   `yaml:"url"`
+	APIKeyFile          string   `yaml:"api_key_file,omitempty"`
+	RelayUpstreamErrors bool     `yaml:"relay_upstream_errors,omitempty"`
+	MaxConcurrency      int      `yaml:"max_concurrency"`
+	QueueSize           int      `yaml:"queue_size"`
+	QueueTimeout        Duration `yaml:"queue_timeout"`
 }
 
 // effectiveModel is the fully defaulted operator-facing projection of one
@@ -211,7 +258,16 @@ type effectiveDoc struct {
 func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 	servers := make(map[string]effectiveServer, len(doc.Servers))
 	for name, s := range doc.Servers {
-		servers[name] = effectiveServer(s)
+		// parse has already refused out-of-bound limits.
+		conc, queue, wait, _ := s.admission(name)
+		servers[name] = effectiveServer{
+			URL:                 s.URL,
+			APIKeyFile:          s.APIKeyFile,
+			RelayUpstreamErrors: s.RelayUpstreamErrors,
+			MaxConcurrency:      conc,
+			QueueSize:           queue,
+			QueueTimeout:        wait,
+		}
 	}
 
 	models := make(map[string]effectiveModel, len(doc.Models))

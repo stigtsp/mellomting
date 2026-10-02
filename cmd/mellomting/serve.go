@@ -649,12 +649,12 @@ func newBackendClients(cfg *config.Config, policy backend.Policy, roots *x509.Ce
 		if err != nil {
 			return nil, fmt.Errorf("backend %q: %w", name, err)
 		}
-		// The timeout and admission bounds have no configuration key
-		// and cannot appear in `config show-effective`, whose output
-		// must stay a valid configuration file. This line is where an
-		// operator reads what a backend is actually being served under
-		// — above all the header bound, which decides whether a long
-		// prefill returns or is reported as a backend failure.
+		// The timeouts have no configuration key and cannot appear in
+		// `config show-effective`, whose output must stay a valid
+		// configuration file. This line is where an operator reads
+		// what a backend is actually being served under — above all
+		// the header bound, which decides whether a long prefill
+		// returns or is reported as a backend failure.
 		log.Info("backend admission",
 			"backend", name,
 			"server", b.Server,

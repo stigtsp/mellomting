@@ -73,6 +73,24 @@ business. Leave it off unless the server and every client routed to it are
 equally trusted, because a rejection message can quote the request that caused
 it. See [Operations](OPERATIONS.md) for the operator-only alternative.
 
+Each server admits a bounded number of requests at once and queues the rest.
+Set the cap to what the engine runs concurrently — for vLLM, its
+`--max-num-seqs`:
+
+```yaml
+servers:
+  a:
+    url: http://127.0.0.1:8000
+    max_concurrency: 8   # requests forwarded at once, 1-1024
+    queue_size: 32       # requests waiting for a slot, 0-4096; 0 never waits
+    queue_timeout: 120s  # longest wait for a slot, at most 30m
+```
+
+The limits belong to the server, not the model: every model listed under one
+server shares them, so two models on one vLLM instance forward at most
+`max_concurrency` requests to it between them. With `queue_size: 0` a busy
+server refuses at once, and a model with another replica falls back to it.
+
 ## Listener and TLS
 
 Local `init` defaults to `127.0.0.1:8080`. Use `--listen` during initialization
@@ -161,24 +179,19 @@ configured policy. See [Hardening](../HARDENING.md).
 | Request body / response size | 16 MiB / 64 MiB |
 | Global in-flight requests | 64 |
 | Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s |
-| Backend admission (per server) | 8 in flight, queue 32, queue wait 120s |
+| Server admission | 8 in flight, queue 32, queue wait 120s |
 | Retry attempts | 1 |
 
-Backend timeouts and admission are static: they assume a local inference
-server and are not per-server settings. A large request waits tens of
-seconds on scheduler admission and prefill before its first response byte,
-so the header bound covers that wait instead of reporting it as a backend
-failure. They have no configuration key, so `config show-effective` does not
-show them; the daemon logs each backend's bounds in a `backend admission`
-line at startup.
-
-Admission belongs to the server, not the model: every model listed under
-one server shares its in-flight cap and queue, so two models on one vLLM
-instance forward at most 8 requests to it between them.
+Backend timeouts are static: they assume a local inference server and are
+not per-server settings. A large request waits tens of seconds on scheduler
+admission and prefill before its first response byte, so the header bound
+covers that wait instead of reporting it as a backend failure. They have no
+configuration key, so `config show-effective` does not show them; the daemon
+logs each backend's bounds in a `backend admission` line at startup.
 
 Whichever in-flight limit is lowest decides when work starts queueing. A
-key's own `concurrent_requests` is 8 by default, the same as a backend's
-in-flight cap, so a single key is refused with `429` at the per-key gate
+key's own `concurrent_requests` is 8 by default, the same as a server's
+default in-flight cap, so a single key is refused with `429` at the per-key gate
 rather than queued; raise `concurrent_requests` for a deployment where one
 key should be able to queue behind itself. Above that point, excess work
 waits in Mellomting's queue, where `queue_size` bounds it and a client

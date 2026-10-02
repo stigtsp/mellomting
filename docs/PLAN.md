@@ -754,8 +754,12 @@ Server fields:
 ```yaml
 servers:
   NAME:
-    url: URL            # literal IPv4/IPv6 with explicit port
-    api_key_file: PATH  # optional; not accepted by init
+    url: URL                     # literal IPv4/IPv6 with explicit port
+    api_key_file: PATH           # optional; not accepted by init
+    relay_upstream_errors: BOOL  # optional, default false (§43)
+    max_concurrency: N           # optional, default 8 (§22)
+    queue_size: N                # optional, default 32 (§22)
+    queue_timeout: DURATION      # optional, default 120s (§22)
 ```
 
 Model fields:
@@ -1072,7 +1076,7 @@ bounded waiting queue
 queue timeout
 ```
 
-Example:
+Each is set on the server entry and defaults to:
 
 ```yaml
 max_concurrency: 8
@@ -3130,7 +3134,8 @@ models:
     servers: [local-b]
 ```
 
-Server fields are `url` (required) and `api_key_file` (optional). Model fields
+Server fields are `url` (required) and `api_key_file`, `relay_upstream_errors`,
+`max_concurrency`, `queue_size` and `queue_timeout` (optional). Model fields
 are `type` (optional, default generation), `servers` (required), `upstream_model`
 (optional, default public map key), `strategy` (optional; single when one
 server, least-inflight when several), and `policy` (optional). `backends:` and
