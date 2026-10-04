@@ -857,10 +857,11 @@ func TestRetryAndHealthClassification(t *testing.T) {
 		class  string
 	}{
 		{backend.ErrConnect, true, true, 502, "backend_connect"},
-		{backend.ErrDialTimeout, true, true, 504, "backend_timeout"},
-		{backend.ErrHeaderTimeout, false, false, 504, "backend_timeout"},
+		{backend.ErrDialTimeout, true, true, 504, "backend_dial_timeout"},
+		{backend.ErrHeaderTimeout, false, false, 504, "backend_header_timeout"},
 		{backend.ErrTimeout, false, false, 504, "backend_timeout"},
 		{backend.ErrQueueFull, true, false, 503, "queue_full"},
+		{backend.ErrQueueTimeout, true, false, 503, "queue_timeout"},
 		{backend.ErrTooLarge, false, false, 502, "backend_5xx"},
 		{backend.ErrPolicy, false, false, 500, "policy"},
 		{&backend.Upstream{Status: 429}, true, false, 429, "backend_429"},

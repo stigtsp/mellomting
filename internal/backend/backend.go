@@ -51,8 +51,10 @@ import (
 // arrive within header_timeout — and is deliberately NOT retried: it is
 // a latency/capacity signal, and retrying would re-issue a full
 // generation that cannot succeed within the header bound (X6). It also
-// does not poison passive health. ErrQueueFull (admission failure) is a
-// fallback candidate but not health-poisoning. ErrTimeout covers bounded
+// does not poison passive health. ErrQueueFull (no queue slot) and
+// ErrQueueTimeout (a queue slot, but no concurrency slot within
+// queue_timeout) are admission failures: fallback candidates, not
+// health-poisoning. ErrTimeout covers bounded
 // total/body timeouts, which are not on the PLAN §23 retry list.
 var (
 	ErrConnect       = errors.New("backend_connect")
@@ -60,6 +62,7 @@ var (
 	ErrHeaderTimeout = errors.New("backend_header_timeout")
 	ErrTimeout       = errors.New("backend_timeout")
 	ErrQueueFull     = errors.New("backend_queue_full")
+	ErrQueueTimeout  = errors.New("backend_queue_timeout")
 	ErrDraining      = errors.New("backend_draining")
 	ErrPolicy        = errors.New("backend_network_policy")
 	ErrTooLarge      = errors.New("backend_response_too_large")
@@ -599,15 +602,15 @@ func (c *Client) acquire(ctx context.Context) (*hold, error) {
 	case <-a.drain:
 		return nil, ErrDraining
 	case <-timer.C:
-		// The timer (queue_full) and a client disconnect can fire in
+		// The timer (queue_timeout) and a client disconnect can fire in
 		// the same instant; Go's select picks randomly among ready
-		// cases, so re-check the context before reporting queue
-		// exhaustion (T-L14).
+		// cases, so re-check the context before reporting a queue
+		// timeout (T-L14).
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
-			return nil, ErrQueueFull
+			return nil, ErrQueueTimeout
 		}
 	}
 }

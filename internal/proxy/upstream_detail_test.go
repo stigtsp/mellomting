@@ -542,11 +542,19 @@ func TestHeaderTimeoutIsDiagnosable(t *testing.T) {
 	if line == nil {
 		t.Fatalf("no diagnostic line for a header timeout: %s", buf.String())
 	}
-	if got := line["error_class"]; got != "backend_timeout" {
-		t.Fatalf("error_class = %v, want backend_timeout", got)
+	if got := line["error_class"]; got != "backend_header_timeout" {
+		t.Fatalf("error_class = %v, want backend_header_timeout", got)
 	}
 	if got := line["backend"]; got != "b1" {
 		t.Fatalf("backend = %v, want b1", got)
+	}
+	// The slot was free, so the whole attempt was the backend's: that
+	// split is what tells a slow prefill from a saturated server.
+	if ms, _ := line["attempt_ms"].(float64); ms < 100 {
+		t.Fatalf("attempt_ms = %v, want at least the 100ms header bound: %v", line["attempt_ms"], line)
+	}
+	if _, ok := line["queue_ms"]; !ok {
+		t.Fatalf("no queue_ms on the attempt line: %v", line)
 	}
 	// No response arrived, so there is nothing to report about a body.
 	if _, ok := line["upstream_message"]; ok {

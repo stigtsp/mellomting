@@ -1851,6 +1851,7 @@ duration_ms
 bytes_in
 bytes_out
 retry_count
+queue_ms
 error_class
 qualifier_action
 ```
@@ -1880,7 +1881,11 @@ Map backend failures into sanitized error classes such as:
 
 ```text
 backend_connect
+backend_dial_timeout
+backend_header_timeout
 backend_timeout
+queue_full
+queue_timeout
 backend_429
 backend_5xx
 backend_stream_error

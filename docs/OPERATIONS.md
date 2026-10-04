@@ -168,21 +168,35 @@ Every completed request writes one `request` line, which is the access log:
  "endpoint":"POST /v1/chat/completions","public_model":"my-model",
  "backend":"a","status":200,"duration_ms":8412,"bytes_in":712,"bytes_out":4108,
  "tokens_in":120,"tokens_out":480,"tokens_total":600,"usage_status":"exact",
- "retry_count":0,"error_class":"ok"}
+ "retry_count":0,"queue_ms":0,"error_class":"ok"}
 ```
 
 `remote` is the client address after `server.trusted_proxies` is applied, and
 `unix` for a Unix-socket client. `user_agent` is client-controlled: it is
 truncated and stripped of control characters, but not otherwise trusted.
 `usage_status` says whether the backend reported the token counts or they are
-unknown. To read only the access log:
+unknown. `queue_ms` is the time spent waiting for a backend admission slot,
+summed over attempts; the rest of `duration_ms` is the backend's. To read only
+the access log:
 
 ```sh
 sudo journalctl -u mellomting -o cat | jq 'select(.msg == "request")'
 ```
 
 `error_class` says which kind of failure occurred, not which request was
-malformed. When the class alone is not enough — to tell a chat-template
+malformed. Each bound that can expire has its own class, so a `504` or `503`
+names the setting to look at:
+
+| class | bound that ran out |
+|-------|--------------------|
+| `backend_dial_timeout` | `connect_timeout` |
+| `backend_header_timeout` | `header_timeout`: no response header, so queueing and prefill inside the engine |
+| `backend_timeout` | `request_timeout` on a non-streaming request |
+| `queue_full` | `queue_size`: no slot to wait in |
+| `queue_timeout` | `queue_timeout`: waited, but no concurrency slot came free |
+
+The timeouts in force for each backend are logged at startup on the
+`backend admission` line. When the class alone is not enough — to tell a chat-template
 mismatch from a tool-schema, output-limit, or context-window failure, or to
 see which backend timed out during a wave of `504`s — raise `logging.level`
 to `debug`. Every failed attempt then writes a line of its own, carrying what
@@ -190,14 +204,16 @@ the backend said when it answered at all:
 
 ```json
 {"time":"...","level":"DEBUG","msg":"backend attempt failed","request_id":"...",
- "backend":"a","error_class":"backend_4xx","status":400,
+ "backend":"a","error_class":"backend_4xx","queue_ms":0,"attempt_ms":912,"status":400,
  "upstream_type":"BadRequestError","upstream_code":"400",
  "upstream_message":"only one system message is allowed"}
 ```
 
 A failure with no response at all — a header timeout, a refused connection, a
 full queue — carries the class and the backend but no `status` or
-`upstream_*` fields, because there was nothing to read.
+`upstream_*` fields, because there was nothing to read. `queue_ms` and
+`attempt_ms` split each attempt between waiting for admission and waiting on
+the backend.
 
 Only the `type`, `code`, and `message` members of an OpenAI-shaped error body
 are read, each bounded and stripped of control characters; everything else in

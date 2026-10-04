@@ -189,6 +189,10 @@ type result struct {
 	bytesIn  int
 	bytesOut int
 	retries  int
+	// queued is the time spent waiting for backend admission, summed
+	// over attempts. Without it a slow request reads the same whether
+	// the server was saturated or the model was slow to answer.
+	queued time.Duration
 
 	// Accounting inputs. Carrying them here rather than in loop locals
 	// is what lets the deferred call be the only accounting call site,
@@ -231,6 +235,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			"tokens_total", out.usage.Total,
 			"usage_status", string(out.usageStatus),
 			"retry_count", out.retries,
+			"queue_ms", out.queued.Milliseconds(),
 			"error_class", out.class,
 		)
 		// Every request is accounted exactly once, here (PLAN §41).
@@ -396,6 +401,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 
 		live.Target(publicModel, backendName)
 		live.Phase(inflight.PhaseQueued)
+		attemptStart := time.Now()
+		var admittedAt time.Time
 		res, err := client.Forward(uctx, backend.Request{
 			Method:  o.method,
 			Path:    outPath,
@@ -404,8 +411,17 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			Stream:  stream,
 			// The slot is held: what follows is the model thinking,
 			// not this daemon queueing.
-			Admitted: func() { live.Phase(inflight.PhaseWaiting) },
+			Admitted: func() {
+				admittedAt = time.Now()
+				live.Phase(inflight.PhaseWaiting)
+			},
 		})
+		// An attempt that was never admitted spent all of it queued.
+		queued := time.Since(attemptStart)
+		if !admittedAt.IsZero() {
+			queued = admittedAt.Sub(attemptStart)
+		}
+		out.queued += queued
 		if err != nil {
 			if errors.Is(err, context.Canceled) && q.R.Context().Err() != nil {
 				// The client went away; no response is sent or possible.
@@ -414,7 +430,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 			lastErr = err
 			lastFailed = backendName
-			p.logBackendFailure(q.RequestID, backendName, err)
+			p.logBackendFailure(q.RequestID, backendName, err, queued, time.Since(attemptStart))
 			// Remember the upstream Retry-After only when this attempt
 			// is the rate limit it belongs to, and forget any earlier
 			// one (T-Q12). It is consumed against the FINAL error's

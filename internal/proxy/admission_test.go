@@ -168,11 +168,12 @@ func TestQueueWaitIsNotChargedToHeaderTimeout(t *testing.T) {
 	}
 }
 
-// TestQueueExhaustionAndHeaderTimeoutDifferInClass keeps the two
-// failures an operator must tell apart distinct: one says Mellomting is
-// holding more work than it agreed to, the other says the backend went
+// TestAdmissionAndTimeoutFailuresDifferInClass keeps the failures an
+// operator must tell apart distinct: a full queue and a waited-out queue
+// say Mellomting is holding more work than it agreed to (queue_size and
+// queue_timeout respectively), a header timeout says the backend went
 // quiet. Collapsing them would hide which knob to turn.
-func TestQueueExhaustionAndHeaderTimeoutDifferInClass(t *testing.T) {
+func TestAdmissionAndTimeoutFailuresDifferInClass(t *testing.T) {
 	t.Parallel()
 
 	t.Run("queue exhaustion", func(t *testing.T) {
@@ -203,7 +204,7 @@ func TestQueueExhaustionAndHeaderTimeoutDifferInClass(t *testing.T) {
 		if !hasClass(t, &buf, "queue_full") {
 			t.Fatalf("queue exhaustion was not classified queue_full: %s", buf.String())
 		}
-		if hasClass(t, &buf, "backend_timeout") {
+		if hasClass(t, &buf, "backend_header_timeout") {
 			t.Fatalf("queue exhaustion was reported as a backend timeout: %s", buf.String())
 		}
 	})
@@ -222,11 +223,38 @@ func TestQueueExhaustionAndHeaderTimeoutDifferInClass(t *testing.T) {
 		if rec.Code != http.StatusGatewayTimeout {
 			t.Fatalf("status = %d, want 504 (body %s)", rec.Code, rec.Body.String())
 		}
-		if !hasClass(t, &buf, "backend_timeout") {
-			t.Fatalf("header timeout was not classified backend_timeout: %s", buf.String())
+		if !hasClass(t, &buf, "backend_header_timeout") {
+			t.Fatalf("header timeout was not classified backend_header_timeout: %s", buf.String())
 		}
 		if hasClass(t, &buf, "queue_full") {
 			t.Fatalf("header timeout was reported as queue exhaustion: %s", buf.String())
+		}
+	})
+
+	t.Run("queue timeout", func(t *testing.T) {
+		t.Parallel()
+		const queueTimeout = 50 * time.Millisecond
+		s := &slowStream{prefillDelay: 400 * time.Millisecond}
+		f := newFakeVLLM(t, s.handler)
+		// One slot and room to wait: the second request gets a queue
+		// slot, then waits out queue_timeout behind the first.
+		cfg := admissionConfig(f.server.URL, 1, 4, queueTimeout, 5*time.Second)
+		var buf bytes.Buffer
+		p := newProxyLogged(t, cfg, &buf, slog.LevelInfo)
+
+		runStreams(t, p, 2)
+
+		line := requestLine(t, &buf, "queue_timeout")
+		if line == nil {
+			t.Fatalf("a request that waited out queue_timeout was not classified queue_timeout: %s", buf.String())
+		}
+		if hasClass(t, &buf, "queue_full") {
+			t.Fatalf("a queue timeout was reported as a full queue: %s", buf.String())
+		}
+		// The wait is what an operator sizes queue_timeout from, so
+		// the line must say how long it was.
+		if ms, _ := line["queue_ms"].(float64); ms < float64(queueTimeout.Milliseconds()) {
+			t.Fatalf("queue_ms = %v, want at least %d: %v", line["queue_ms"], queueTimeout.Milliseconds(), line)
 		}
 	})
 }
@@ -297,22 +325,26 @@ func TestCancelledRequestReleasesAdmission(t *testing.T) {
 // the given error_class.
 func hasClass(t *testing.T, buf *bytes.Buffer, class string) bool {
 	t.Helper()
+	return requestLine(t, buf, class) != nil
+}
+
+// requestLine returns the first request line in a JSON log buffer that
+// carries the given error_class, or nil.
+func requestLine(t *testing.T, buf *bytes.Buffer, class string) map[string]any {
+	t.Helper()
 	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
 		if line == "" {
 			continue
 		}
-		var rec struct {
-			Msg   string `json:"msg"`
-			Class string `json:"error_class"`
-		}
+		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("log line is not JSON: %q: %v", line, err)
 		}
-		if rec.Msg == "request" && rec.Class == class {
-			return true
+		if rec["msg"] == "request" && rec["error_class"] == class {
+			return rec
 		}
 	}
-	return false
+	return nil
 }
 
 // TestDrainReleasesQueuedRequests: queue_timeout is far longer than the

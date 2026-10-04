@@ -846,13 +846,13 @@ func TestStreamHoldsAdmissionUntilClosed(t *testing.T) {
 
 	// While the stream body is open, the single concurrency slot is
 	// still held: Inflight must reflect the active stream, and a second
-	// request must be refused (queue full), not admitted.
+	// request must be refused (queue timeout), not admitted.
 	if c.Inflight() != 1 {
 		t.Fatalf("Inflight = %d during live stream, want 1", c.Inflight())
 	}
 	_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
-	if !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("second request while stream live: err = %v, want ErrQueueFull", err)
+	if !errors.Is(err, ErrQueueTimeout) {
+		t.Fatalf("second request while stream live: err = %v, want ErrQueueTimeout", err)
 	}
 
 	// Draining and closing the stream body must release the slot.
@@ -901,7 +901,7 @@ func TestForwardQueueFull(t *testing.T) {
 
 	// Concurrency 1 + queue 2: req1 holds the concurrency slot; its
 	// queue slot is freed at admission, so later probes take the free
-	// queue slot and fail with ErrQueueFull when the (short)
+	// queue slot and fail with ErrQueueTimeout when the (short)
 	// queue_timeout elapses, or with context.Canceled if the caller
 	// gives up first.
 	o := testOptions(t, ts.URL)
@@ -933,10 +933,10 @@ func TestForwardQueueFull(t *testing.T) {
 		t.Fatal("first request was not admitted")
 	}
 
-	// Now the concurrency slot is held; a probe must get ErrQueueFull.
+	// Now the concurrency slot is held; a probe must get ErrQueueTimeout.
 	_, err = c.Forward(context.Background(), Request{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{}`)})
-	if !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("err = %v, want ErrQueueFull", err)
+	if !errors.Is(err, ErrQueueTimeout) {
+		t.Fatalf("err = %v, want ErrQueueTimeout", err)
 	}
 
 	// Client cancellation of a queued request also surfaces promptly.

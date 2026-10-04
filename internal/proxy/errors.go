@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"mellomting/internal/backend"
 )
@@ -55,7 +56,22 @@ var (
 	errUpstreamTimeout     = apiError{504, "api_error", "upstream_timeout", "upstream timed out", "backend_timeout"}
 	errUpstreamConnect     = apiError{502, "api_error", "upstream_unavailable", "upstream is unavailable", "backend_connect"}
 	errQueueFull           = apiError{503, "overload_error", "server_overloaded", "server is overloaded", "queue_full"}
+
+	// Each bound that can expire gets its own class. A client sees one
+	// timeout and one overload whichever fired, but an operator reading
+	// a 504 needs to know whether the dial, the header bound (queueing
+	// plus prefill inside the engine) or the total bound ran out, and
+	// whether a 503 waited out queue_timeout or never got a queue slot:
+	// each points at a different setting.
+	errUpstreamDialTimeout   = withClass(errUpstreamTimeout, "backend_dial_timeout")
+	errUpstreamHeaderTimeout = withClass(errUpstreamTimeout, "backend_header_timeout")
+	errQueueTimeout          = withClass(errQueueFull, "queue_timeout")
 )
+
+func withClass(e apiError, class string) apiError {
+	e.class = class
+	return e
+}
 
 // backendFailure is the complete behaviour of one backend error: whether
 // the request may be retried (PLAN §23), whether the failure poisons the
@@ -98,12 +114,16 @@ func classifyBackendError(err error) backendFailure {
 	case errors.Is(err, backend.ErrConnect):
 		return backendFailure{retryable: true, poisonsHealth: true, resp: errUpstreamConnect}
 	case errors.Is(err, backend.ErrDialTimeout):
-		return backendFailure{retryable: true, poisonsHealth: true, resp: errUpstreamTimeout}
+		return backendFailure{retryable: true, poisonsHealth: true, resp: errUpstreamDialTimeout}
 	case errors.Is(err, backend.ErrDraining):
 		return backendFailure{resp: errDraining}
 	case errors.Is(err, backend.ErrQueueFull):
 		return backendFailure{retryable: true, resp: errQueueFull}
-	case errors.Is(err, backend.ErrHeaderTimeout), errors.Is(err, backend.ErrTimeout):
+	case errors.Is(err, backend.ErrQueueTimeout):
+		return backendFailure{retryable: true, resp: errQueueTimeout}
+	case errors.Is(err, backend.ErrHeaderTimeout):
+		return backendFailure{resp: errUpstreamHeaderTimeout}
+	case errors.Is(err, backend.ErrTimeout):
 		return backendFailure{resp: errUpstreamTimeout}
 	case errors.Is(err, backend.ErrTooLarge):
 		return backendFailure{resp: errUpstream5xx}
@@ -122,7 +142,9 @@ func classifyBackendError(err error) backendFailure {
 // A header timeout is the failure this diagnostic exists for, and it
 // has no body at all; a line that appeared only for response statuses
 // would be silent in exactly the recurrence an operator turns debug on
-// to investigate.
+// to investigate. queue_ms and attempt_ms split the attempt's time
+// between waiting for admission and waiting on the backend, which is
+// what tells a saturated server from a slow prefill.
 //
 // Debug level, because a rejection message can quote the request it
 // rejected and prompts stay out of the default operational log
@@ -132,11 +154,13 @@ func classifyBackendError(err error) backendFailure {
 // error_class alone cannot distinguish. The fields are empty when the
 // backend answered with a body this cannot parse — that is the answer,
 // not a missing line.
-func (p *Proxy) logBackendFailure(requestID, backendName string, err error) {
+func (p *Proxy) logBackendFailure(requestID, backendName string, err error, queued, elapsed time.Duration) {
 	attrs := []any{
 		"request_id", requestID,
 		"backend", backendName,
 		"error_class", classifyBackendError(err).resp.class,
+		"queue_ms", queued.Milliseconds(),
+		"attempt_ms", elapsed.Milliseconds(),
 	}
 	if up, ok := errors.AsType[*backend.Upstream](err); ok {
 		attrs = append(attrs,

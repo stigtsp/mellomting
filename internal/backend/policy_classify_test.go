@@ -193,7 +193,7 @@ func TestStreamIdleTimeout(t *testing.T) {
 
 // TestAcquireQueueTimeoutAndCancel pins the two bounded admission
 // failure modes (PLAN §22): when the concurrency slot stays occupied
-// past queue_timeout the acquire reports ErrQueueFull, and a client
+// past queue_timeout the acquire reports ErrQueueTimeout, and a client
 // cancel during the wait reports the context error (never the sentinel).
 func TestAcquireQueueTimeoutAndCancel(t *testing.T) {
 	t.Parallel()
@@ -219,8 +219,8 @@ func TestAcquireQueueTimeoutAndCancel(t *testing.T) {
 	// on the queue timer.
 	c.adm.conc <- struct{}{}
 
-	if _, err := c.acquire(context.Background()); !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("acquire with full concurrency = %v, want ErrQueueFull", err)
+	if _, err := c.acquire(context.Background()); !errors.Is(err, ErrQueueTimeout) {
+		t.Fatalf("acquire with full concurrency = %v, want ErrQueueTimeout", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
