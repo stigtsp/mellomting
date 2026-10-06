@@ -409,12 +409,12 @@ models:
 	}
 }
 
-// TestSourceRelayUpstreamErrors pins the one per-server trust flag
-// through the whole path an operator uses: the source schema accepts it,
-// normalization carries it onto every backend generated for that server,
-// and a server that does not set it stays off. Without the source-schema
-// half, the flag would parse nowhere and the feature would be
-// unreachable from a real configuration file.
+// TestSourceRelayUpstreamErrors pins the per-server relay flag through
+// the whole path an operator uses: a server that says nothing relays,
+// because a rejection the client cannot read is a rejection it cannot fix
+// (PLAN §43); an explicit false turns it off, for a backend not trusted
+// with its clients; and normalization carries the resolved value onto
+// every backend generated for that server.
 func TestSourceRelayUpstreamErrors(t *testing.T) {
 	t.Parallel()
 
@@ -425,26 +425,69 @@ server:
     network: unix
     address: /run/mellomting/mellomting.sock
 servers:
-  trusted:
+  unset:
     url: http://127.0.0.1:8001
-    relay_upstream_errors: true
-  plain:
+  on:
     url: http://127.0.0.1:8002
+    relay_upstream_errors: true
+  off:
+    url: http://127.0.0.1:8003
+    relay_upstream_errors: false
 models:
   m1:
-    servers: [trusted, plain]
+    servers: [unset, on, off]
+  m2:
+    servers: [off]
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	relay := cfg.Backends[defaultBackendName("m1", "trusted")]
-	if !relay.RelayUpstreamErrors {
-		t.Fatalf("relay_upstream_errors did not reach the backend: %+v", relay)
+	for _, tc := range []struct {
+		model, server string
+		want          bool
+	}{
+		{"m1", "unset", true},
+		{"m1", "on", true},
+		{"m1", "off", false},
+		{"m2", "off", false},
+	} {
+		b := cfg.Backends[defaultBackendName(tc.model, tc.server)]
+		if b.RelayUpstreamErrors != tc.want {
+			t.Fatalf("%s on %s: relay = %v, want %v", tc.model, tc.server, b.RelayUpstreamErrors, tc.want)
+		}
 	}
-	plain := cfg.Backends[defaultBackendName("m1", "plain")]
-	if plain.RelayUpstreamErrors {
-		t.Fatalf("a server that did not opt in relays anyway: %+v", plain)
+}
+
+// TestSourceEffectiveKeepsRelayOff: with relay on by default, an explicit
+// false is the one value show-effective must not drop. Omitted, it would
+// parse back as the default and turn relay on for a backend the operator
+// had turned it off for.
+func TestSourceEffectiveKeepsRelayOff(t *testing.T) {
+	t.Parallel()
+
+	cfg, out, err := ParseEffective([]byte(serverLimitsYAML(`    relay_upstream_errors: false`)))
+	if err != nil {
+		t.Fatalf("ParseEffective: %v", err)
+	}
+	var doc struct {
+		Servers map[string]map[string]any `yaml:"servers"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal effective: %v", err)
+	}
+	if got, ok := doc.Servers["tuned"]["relay_upstream_errors"]; !ok || got != false {
+		t.Fatalf("effective servers.tuned.relay_upstream_errors = %v (present %v), want false\n%s", got, ok, out)
+	}
+	if got := doc.Servers["plain"]["relay_upstream_errors"]; got != true {
+		t.Fatalf("effective servers.plain.relay_upstream_errors = %v, want the default true\n%s", got, out)
+	}
+	again, err := Parse(out)
+	if err != nil {
+		t.Fatalf("effective output does not parse: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(cfg, again) {
+		t.Fatalf("effective output parses to a different config:\nfirst = %+v\nagain = %+v", cfg, again)
 	}
 }
 

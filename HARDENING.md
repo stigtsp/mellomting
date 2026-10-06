@@ -115,16 +115,18 @@ Operational logs are structured JSON. Prompts, responses, API keys, backend
 credentials, and raw backend errors are not logged. Client errors use the
 OpenAI JSON error format without stack traces, paths, or backend hostnames.
 
-Two narrow exceptions exist, both off by default and both carrying only a
-backend's own `error.type`, `error.code` and `error.message`, each bounded and
-stripped of control characters. At `logging.level: debug` a rejected request
-also logs that triple; because such a message can quote the request that
-caused it, it must not be enabled where logs are exported under a policy that
-assumes prompts never appear in them. With `relay_upstream_errors` set on a
-server, the same message is appended to that server's client-facing errors —
-only for statuses that describe the request (400, 413, 422, 429), and the
-status, type and code still come from Mellomting. A relayed message is always
-logged, whatever the level.
+Two narrow exceptions exist, both carrying only a backend's own `error.type`,
+`error.code` and `error.message`, each bounded and stripped of control
+characters. At `logging.level: debug` a rejected request also logs that
+triple; because such a message can quote the request that caused it, it must
+not be enabled where logs are exported under a policy that assumes prompts
+never appear in them. And by default the same message is appended to the
+client-facing error — only for statuses that describe the request (400, 413,
+422, 429), with the status, type and code still from Mellomting. It goes to
+the client that sent the request, and the default log records only that a
+relay happened and its size. Set `relay_upstream_errors: false` on a server
+whose messages should not reach clients, such as a third-party gateway, whose
+rate-limit text can name the account behind the injected credential.
 
 The optional admin socket exposes active request metadata, including client
 addresses and token usage. Its mode is `0600`; only the service account and

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -89,7 +90,7 @@ func TestBackendRejectionIsDiagnosableAtDebug(t *testing.T) {
 	}
 	decodeErr(t, rec.Body.String(), rec.Code)
 	if strings.Contains(rec.Body.String(), upstreamRejectMessage) {
-		t.Fatalf("backend message reached a client that did not opt in: %s", rec.Body.String())
+		t.Fatalf("backend message reached a client through a backend with relay off: %s", rec.Body.String())
 	}
 
 	line := detailLine(t, &buf)
@@ -119,13 +120,19 @@ func TestBackendRejectionIsDiagnosableAtDebug(t *testing.T) {
 }
 
 // TestBackendRejectionSilentAtInfo holds the default posture: with the
-// shipped log level, a backend's own words appear nowhere. The class in
-// the request line is all an operator gets until they ask for more.
+// shipped log level and relay on, as it is by default, a backend's own
+// words appear nowhere in the log. The class in the request line and the
+// size of what was relayed are all an operator gets until they ask for
+// more.
 func TestBackendRejectionSilentAtInfo(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, upstreamRejectsWithDetail)
+	cfg := testConfig(f.server.URL)
+	b := cfg.Backends["b1"]
+	b.RelayUpstreamErrors = true
+	cfg.Backends["b1"] = b
 	var buf bytes.Buffer
-	p := newProxyLogged(t, testConfig(f.server.URL), &buf, slog.LevelInfo)
+	p := newProxyLogged(t, cfg, &buf, slog.LevelInfo)
 
 	run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
 
@@ -141,9 +148,9 @@ func TestBackendRejectionSilentAtInfo(t *testing.T) {
 	}
 }
 
-// TestBackendRejectionRelayOptIn covers the explicit opt-in: the message
+// TestBackendRejectionRelayed covers relay, on by default: the message
 // reaches the client, and the envelope it arrives in does not change.
-func TestBackendRejectionRelayOptIn(t *testing.T) {
+func TestBackendRejectionRelayed(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, upstreamRejectsWithDetail)
 	cfg := testConfig(f.server.URL)
@@ -488,30 +495,59 @@ func TestRelayRefusesNonRequestStatuses(t *testing.T) {
 	}
 }
 
-// TestRelayIsRecordedAtTheLevelItIsDisclosed: the debug line is the
-// operator's to enable, but text already handed to a client has to be in
-// the log whatever the level — otherwise nothing says what was given out.
-func TestRelayIsRecordedAtTheLevelItIsDisclosed(t *testing.T) {
+// TestRelayIsRecordedWithoutItsText: a relay is on by default, so the
+// default log records that one happened — request, backend, status and
+// size — and not the text. A rejection message can quote the prompt, and
+// the default log never carries prompts (PLAN §24, §43). The text is
+// still the operator's to see, on the debug attempt line.
+func TestRelayIsRecordedWithoutItsText(t *testing.T) {
 	t.Parallel()
 
-	f := newFakeVLLM(t, upstreamRejectsWithDetail)
-	cfg := testConfig(f.server.URL)
-	b := cfg.Backends["b1"]
-	b.RelayUpstreamErrors = true
-	cfg.Backends["b1"] = b
-	var buf bytes.Buffer
-	p := newProxyLogged(t, cfg, &buf, slog.LevelInfo)
+	for _, tc := range []struct {
+		level    slog.Level
+		wantText bool
+	}{
+		{slog.LevelInfo, false},
+		{slog.LevelDebug, true},
+	} {
+		t.Run(tc.level.String(), func(t *testing.T) {
+			t.Parallel()
+			f := newFakeVLLM(t, upstreamRejectsWithDetail)
+			cfg := testConfig(f.server.URL)
+			b := cfg.Backends["b1"]
+			b.RelayUpstreamErrors = true
+			cfg.Backends["b1"] = b
+			var buf bytes.Buffer
+			p := newProxyLogged(t, cfg, &buf, tc.level)
 
-	rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
+			rec := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"gen-1"}`, testKey())
 
-	if !strings.Contains(rec.Body.String(), upstreamRejectMessage) {
-		t.Fatalf("relay did not reach the client: %s", rec.Body.String())
-	}
-	if !strings.Contains(buf.String(), `"msg":"relayed backend error detail"`) {
-		t.Fatalf("a disclosure to the client was not recorded at info: %s", buf.String())
-	}
-	if !strings.Contains(buf.String(), upstreamRejectMessage) {
-		t.Fatalf("the log does not say what was disclosed: %s", buf.String())
+			if !strings.Contains(rec.Body.String(), upstreamRejectMessage) {
+				t.Fatalf("relay did not reach the client: %s", rec.Body.String())
+			}
+			var line map[string]any
+			for l := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+				var m map[string]any
+				if err := json.Unmarshal([]byte(l), &m); err != nil {
+					t.Fatalf("log line is not JSON: %q: %v", l, err)
+				}
+				if m["msg"] == "relayed backend error detail" {
+					line = m
+				}
+			}
+			if line == nil || line["level"] != "INFO" {
+				t.Fatalf("a relay to the client was not recorded at info: %s", buf.String())
+			}
+			if got, want := line["message_bytes"], float64(len(upstreamRejectMessage)); got != want {
+				t.Fatalf("message_bytes = %v, want %v: %v", got, want, line)
+			}
+			if strings.Contains(fmt.Sprint(line), upstreamRejectMessage) {
+				t.Fatalf("the relay record carries the relayed text: %v", line)
+			}
+			if got := strings.Contains(buf.String(), upstreamRejectMessage); got != tc.wantText {
+				t.Fatalf("relayed text in the %s log = %v, want %v: %s", tc.level, got, tc.wantText, buf.String())
+			}
+		})
 	}
 }
 

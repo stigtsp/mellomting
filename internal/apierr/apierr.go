@@ -4,8 +4,8 @@
 // backend hostname, or backend body reaches a client is enforced in one
 // place rather than in each package that answers a request.
 //
-// One caller may widen the message it passes: with relay_upstream_errors
-// set on a server, internal/proxy appends that backend's bounded,
+// One caller may widen the message it passes: unless relay_upstream_errors
+// is turned off for a server, internal/proxy appends that backend's bounded,
 // scalar-only error message for the statuses that describe the client's
 // request (PLAN §43). The envelope written here is unchanged, and a
 // backend's message can never become the type, code, or status.

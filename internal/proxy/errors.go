@@ -191,16 +191,18 @@ var relayableUpstreamStatus = map[int]bool{
 }
 
 // relayUpstreamDetail appends the backend's sanitized message to the
-// client-facing error, for a backend configured to relay it.
+// client-facing error, unless the backend's relay is turned off.
 //
 // The status, type, and code are untouched. Clients switch on those, so
 // they stay Mellomting's own vocabulary whatever an operator trusts a
 // backend with; only the human-readable message grows.
 //
-// Disclosure is recorded at the level it is disclosed. The debug line is
-// for the operator and can stay off; text that has already reached a
-// client must appear in the log whatever the level, or nothing says what
-// was handed out.
+// Every relay is recorded at the default level, but by its size, not its
+// text. Relay is on by default, and a rejection message can quote the
+// prompt, which the default log never carries (PLAN §24, §43). What was
+// handed out went to the client that sent the request, about that
+// request; its text is on the debug attempt line logBackendFailure has
+// already written.
 func (p *Proxy) relayUpstreamDetail(e apiError, requestID, backendName string, err error) apiError {
 	if !p.cfg.Backends[backendName].RelayUpstreamErrors {
 		return e
@@ -214,7 +216,7 @@ func (p *Proxy) relayUpstreamDetail(e apiError, requestID, backendName string, e
 		"request_id", requestID,
 		"backend", backendName,
 		"status", up.Status,
-		"upstream_message", up.Detail.Message,
+		"message_bytes", len(up.Detail.Message),
 	)
 	return e
 }

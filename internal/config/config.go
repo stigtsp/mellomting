@@ -302,15 +302,17 @@ type Backend struct {
 	NoMetrics bool `yaml:"-"`
 	// RelayUpstreamErrors appends this backend's own sanitized error
 	// message to the client-facing error it produces (PLAN §43, §72).
-	// Off by default: a rejection message can quote the request it
-	// rejected, so relaying one is a statement that this backend and
-	// the clients routed to it are equally trusted. The envelope —
-	// status, type, code — never changes, only a 4xx is relayed, and
-	// what is appended is the same bounded, scalar-only diagnostic the
-	// debug log carries.
+	// On by default: without it a client cannot tell an input that is
+	// too long from a malformed one, and cannot fix either. An operator
+	// turns it off for a backend not trusted with its clients, such as
+	// a third-party gateway whose messages name its account. The
+	// envelope — status, type, code — never changes, only a status that
+	// describes the client's request is relayed, and what is appended
+	// is the same bounded, scalar-only diagnostic the debug log carries.
 	//
-	// Operators set it once per server; normalization copies it onto
-	// every backend generated from that server.
+	// Operators set it once per server; normalization resolves the
+	// default and copies it onto every backend generated from that
+	// server.
 	RelayUpstreamErrors bool `yaml:"relay_upstream_errors,omitempty"`
 }
 

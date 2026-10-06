@@ -340,8 +340,8 @@ the backend.
 
 Only the `type`, `code`, and `message` members of an OpenAI-shaped error body
 are read, each bounded and stripped of control characters; everything else in
-the body is discarded unparsed. It is off by default because a rejection
-message can quote the request that caused it.
+the body is discarded unparsed. The debug line is off by default because a
+rejection message can quote the request that caused it.
 
 When the backend answered with a status but a body this cannot read — not
 JSON, or past the parse bound — the `upstream_*` fields are present and
@@ -357,14 +357,24 @@ Both the nested `{"error": {...}}` shape and the flat `{"object": "error",
 ...}` shape are read; SGLang uses the flat one on chat completions and the
 nested one on `/v1/responses`.
 
-To hand the same message to the client instead of only the operator, set
-`relay_upstream_errors: true` on that server's entry under `servers:` (see
-[Configuration](CONFIGURATION.md)). The message is appended to the sanitized
-error; its status, `type`, and `code` do not change. Only a 4xx is relayed:
-a 5xx says the server broke rather than that the request was wrong, and its
-text is where a traceback or a model path would appear. The debug log above
-carries those either way. Setting it says the server and every client routed
-to it are equally trusted.
+The same message is also handed to the client, appended to the sanitized
+error, unless `relay_upstream_errors: false` is set on that server's entry
+under `servers:` (see [Configuration](CONFIGURATION.md)). Its status, `type`,
+and `code` do not change. Only 400, 413, 422 and 429 are relayed: a 5xx says
+the server broke rather than that the request was wrong, and its text is where
+a traceback or a model path would appear. The debug log above carries those
+either way.
+
+Every relay writes an Info line, with the size of what was handed out but not
+its text, so the default log stays free of anything the message quoted:
+
+```json
+{"time":"...","level":"INFO","msg":"relayed backend error detail",
+ "request_id":"...","backend":"a","status":400,"message_bytes":34}
+```
+
+The text itself is on the debug `backend attempt failed` line for the same
+`request_id`.
 
 With accounting enabled, `mellomting usage report` reports per-key token and
 request totals. Use the supplied logrotate policy for the JSONL file; it uses

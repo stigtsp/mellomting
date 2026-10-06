@@ -18,10 +18,11 @@ import (
 type sourceServer struct {
 	URL        string `yaml:"url"`
 	APIKeyFile string `yaml:"api_key_file"`
-	// RelayUpstreamErrors opts this server's sanitized error message
-	// into the client-facing error (see Backend.RelayUpstreamErrors).
-	// It is the one per-server trust decision an operator makes.
-	RelayUpstreamErrors bool `yaml:"relay_upstream_errors,omitempty"`
+	// RelayUpstreamErrors appends this server's sanitized error message
+	// to the client-facing error (see Backend.RelayUpstreamErrors). A
+	// pointer, because it defaults on: an explicit false, for a server
+	// not trusted with its clients, must be told from unset.
+	RelayUpstreamErrors *bool `yaml:"relay_upstream_errors"`
 	// Admission limits (PLAN §22), shared by every model on this
 	// server. Pointers, because an explicit zero is a statement: a zero
 	// queue means "never wait", and a zero cap or wait is an error, not
@@ -32,6 +33,12 @@ type sourceServer struct {
 	// Metrics false stops `top` from reading this server's own load
 	// report (PLAN §43.2). Absent means on.
 	Metrics *bool `yaml:"metrics,omitempty"`
+}
+
+// relay resolves relay_upstream_errors: on unless the operator turned it
+// off (PLAN §43).
+func (s sourceServer) relay() bool {
+	return s.RelayUpstreamErrors == nil || *s.RelayUpstreamErrors
 }
 
 // admission resolves the server's admission limits against the
@@ -187,7 +194,7 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				BaseURL:             s.URL,
 				UpstreamModel:       upstream,
 				APIKeyFile:          s.APIKeyFile,
-				RelayUpstreamErrors: s.RelayUpstreamErrors,
+				RelayUpstreamErrors: s.relay(),
 				MaxConcurrency:      admission[server].conc,
 				QueueSize:           admission[server].queue,
 				QueueTimeout:        admission[server].wait,
@@ -226,9 +233,11 @@ func sortedModelKeys(models map[string]sourceModel) []string {
 // server for `config show-effective` (D11). It carries the credential path
 // but never the credential contents.
 type effectiveServer struct {
-	URL                 string   `yaml:"url"`
-	APIKeyFile          string   `yaml:"api_key_file,omitempty"`
-	RelayUpstreamErrors bool     `yaml:"relay_upstream_errors,omitempty"`
+	URL        string `yaml:"url"`
+	APIKeyFile string `yaml:"api_key_file,omitempty"`
+	// Not omitempty: with relay on by default, a dropped false would
+	// parse back as on.
+	RelayUpstreamErrors bool     `yaml:"relay_upstream_errors"`
 	MaxConcurrency      int      `yaml:"max_concurrency"`
 	QueueSize           int      `yaml:"queue_size"`
 	QueueTimeout        Duration `yaml:"queue_timeout"`
@@ -278,7 +287,7 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 		servers[name] = effectiveServer{
 			URL:                 s.URL,
 			APIKeyFile:          s.APIKeyFile,
-			RelayUpstreamErrors: s.RelayUpstreamErrors,
+			RelayUpstreamErrors: s.relay(),
 			MaxConcurrency:      conc,
 			QueueSize:           queue,
 			QueueTimeout:        wait,

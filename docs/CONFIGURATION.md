@@ -56,22 +56,25 @@ If a server requires authentication, add `api_key_file` to its entry, pointing
 to a protected file containing its credential. Client credentials are stripped
 before forwarding; server credentials come from configuration only.
 
-A server that rejects a request answers with its own error message, which
-Mellomting replaces with a sanitized one. To pass that message through to the
-client as well:
+A server that rejects a request answers with its own error message, such as
+"maximum context length exceeded". Mellomting appends that message, bounded and
+stripped of control characters, to its own sanitized one, so the client can
+see what to fix. Only the message grows; the status and error code do not
+change, and only the statuses that describe the client's request (400, 413,
+422, 429) are relayed — a server error's text is the operator's business.
+
+Turn it off for a server you do not trust with your clients, such as a
+third-party gateway: its rate-limit message can name the account behind the
+credential Mellomting sends it.
 
 ```yaml
 servers:
-  a:
-    url: http://127.0.0.1:8000
-    relay_upstream_errors: true
+  gateway:
+    url: http://10.0.0.5:8000
+    relay_upstream_errors: false
 ```
 
-Only the message grows; the status and error code do not change, and only a
-client error (4xx) is relayed — a server error's text is the operator's
-business. Leave it off unless the server and every client routed to it are
-equally trusted, because a rejection message can quote the request that caused
-it. See [Operations](OPERATIONS.md) for the operator-only alternative.
+See [Operations](OPERATIONS.md) for how relays are logged.
 
 With `server.admin_socket` set, the daemon reads each server's own load
 report for `mellomting top`. To stop that for one server:

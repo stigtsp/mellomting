@@ -762,7 +762,7 @@ servers:
   NAME:
     url: URL                     # literal IPv4/IPv6 with explicit port
     api_key_file: PATH           # optional; not accepted by init
-    relay_upstream_errors: BOOL  # optional, default false (§43)
+    relay_upstream_errors: BOOL  # optional, default true (§43)
     max_concurrency: N           # optional, default 8 (§22)
     queue_size: N                # optional, default 32 (§22)
     queue_timeout: DURATION      # optional, default 120s (§22)
@@ -1875,14 +1875,22 @@ arbitrary object. Never parse or log any other member of the body, the
 request body, the backend URL, or a filesystem path.
 
 Because a rejection message can quote the request that caused it, this MUST
-NOT appear at the default level, and relaying it to a client MUST be an
-explicit per-server opt-in (`relay_upstream_errors`) that leaves the response
-status, `type`, and `code` unchanged. Only statuses that describe the client's
-request MAY be relayed (400, 413, 422, 429). A 5xx says the backend broke, and
-its text is where a traceback appears; a 401 or 403 is about the credential
-the proxy injected, which gateways quote; a 404 names the backend's own model,
-which routing rewrites so a client never learns it. Whatever is relayed MUST
-be logged regardless of level: nothing else records what was disclosed.
+NOT appear at the default level. The same message is relayed to the client by
+default, appended to Mellomting's own message, and MUST leave the response
+status, `type`, and `code` unchanged. Without it a client cannot tell an input
+that is too long from a malformed one, and cannot fix either. An operator
+turns it off per server (`relay_upstream_errors: false`) for a backend not
+trusted with its clients, such as a third-party gateway. Only statuses that
+describe the client's request MAY be relayed (400, 413, 422, 429). A 5xx says
+the backend broke, and its text is where a traceback appears; a 401 or 403 is
+about the credential the proxy injected, which gateways quote; a 404 names the
+backend's own model, which routing rewrites so a client never learns it. A
+gateway's 429 can also name the account behind the injected credential, which
+is the case for turning relay off on that server. Every relay MUST be recorded
+at the default level by request ID, backend, status, and the message's byte
+length, and MUST NOT carry the text there: the text goes to the client that
+sent the request, about that request, and the default log stays free of
+prompts (§24). The text is on the debug line.
 
 Map backend failures into sanitized error classes such as:
 
