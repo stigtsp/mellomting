@@ -40,9 +40,41 @@ func TestUpstreamDetailExtraction(t *testing.T) {
 		body: `[{"error":{"message":"hi"}}]`,
 		want: Detail{},
 	}, {
-		name: "error as a string yields nothing",
-		body: `{"error":"plain text failure"}`,
+		// Clef's SystemOne wrapper and Ollama put the whole error in a
+		// string: a scalar, so its text is the message.
+		name: "error as a string is the message",
+		body: `{"error":"Complete input exceeds 4096 tokens; shorten state/schema"}`,
+		want: Detail{Message: "Complete input exceeds 4096 tokens; shorten state/schema"},
+	}, {
+		name: "error string is sanitized",
+		body: `{"error":"line one\nline\u0007 two\u202e evil"}`,
+		want: Detail{Message: "line one line two evil"},
+	}, {
+		name: "empty error string yields nothing",
+		body: `{"error":""}`,
 		want: Detail{},
+	}, {
+		name: "error as a number yields nothing",
+		body: `{"error":500}`,
+		want: Detail{},
+	}, {
+		name: "error as an array yields nothing",
+		body: `{"error":["a","b"]}`,
+		want: Detail{},
+	}, {
+		name: "error as a boolean yields nothing",
+		body: `{"error":true}`,
+		want: Detail{},
+	}, {
+		name: "null error without the marker yields nothing",
+		body: `{"error":null,"message":"internal detail"}`,
+		want: Detail{},
+	}, {
+		// A null error is no error object: the marker still licenses
+		// the flat form beside it.
+		name: "null error beside the flat form reads the flat form",
+		body: `{"error":null,"object":"error","message":"bad request","code":400}`,
+		want: Detail{Code: "400", Message: "bad request"},
 	}, {
 		// SGLang's ErrorResponse, which its chat and completions
 		// endpoints have emitted in every release: the triple sits at
@@ -200,18 +232,22 @@ func TestUpstreamDetailTruncatesOnRuneBoundary(t *testing.T) {
 	// prefix lengths; prepending one ASCII byte walks the cut across
 	// the boundary.
 	for _, prefix := range []string{"", "x"} {
-		body, err := json.Marshal(map[string]any{
-			"error": map[string]any{"message": prefix + strings.Repeat("μ", 400)},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := upstreamDetail(body).Message
-		if !utf8.ValidString(got) {
-			t.Fatalf("prefix %q: truncated message is not valid UTF-8: %q", prefix, got)
-		}
-		if len(got) > maxDetailMessage {
-			t.Fatalf("prefix %q: message = %d bytes, exceeds %d", prefix, len(got), maxDetailMessage)
+		long := prefix + strings.Repeat("μ", 400)
+		for shape, v := range map[string]any{
+			"nested": map[string]any{"message": long},
+			"string": long,
+		} {
+			body, err := json.Marshal(map[string]any{"error": v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := upstreamDetail(body).Message
+			if !utf8.ValidString(got) {
+				t.Fatalf("%s, prefix %q: truncated message is not valid UTF-8: %q", shape, prefix, got)
+			}
+			if len(got) > maxDetailMessage || len(got) < maxDetailMessage-1 {
+				t.Fatalf("%s, prefix %q: message = %d bytes, want the %d-byte bound less at most one partial rune", shape, prefix, len(got), maxDetailMessage)
+			}
 		}
 	}
 }
@@ -224,6 +260,8 @@ func FuzzUpstreamDetail(f *testing.F) {
 	f.Add([]byte(`{"error":{"message":{"nested":true}}}`))
 	f.Add([]byte(`{"error":`))
 	f.Add([]byte(`{"error":{"message":"\u0000\u001b"}}`))
+	f.Add([]byte(`{"error":"Supply 1\u20138 questions"}`))
+	f.Add([]byte(`{"error":"\u202e\u0000"}`))
 	f.Add([]byte(``))
 
 	f.Fuzz(func(t *testing.T, body []byte) {

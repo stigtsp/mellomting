@@ -353,9 +353,10 @@ None of this covers a backend that reports a failure inside a stream it has
 already answered `200` to: that reaches the client as stream content and is
 logged as `backend_stream_error` or `ok`, not as a rejection.
 
-Both the nested `{"error": {...}}` shape and the flat `{"object": "error",
-...}` shape are read; SGLang uses the flat one on chat completions and the
-nested one on `/v1/responses`.
+Three shapes are read: the nested `{"error": {...}}`, the flat `{"object":
+"error", ...}`, and `{"error": "<text>"}`. SGLang uses the flat one on chat
+completions and the nested one on `/v1/responses`; SystemOne servers such as
+Clef, and Ollama, use the string, which fills only `upstream_message`.
 
 The same message is also handed to the client, appended to the sanitized
 error, unless `relay_upstream_errors: false` is set on that server's entry

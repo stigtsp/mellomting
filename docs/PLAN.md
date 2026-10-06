@@ -1868,10 +1868,11 @@ Do not log raw errors from an upstream if they can contain response bodies or se
 A bounded, structurally extracted diagnostic is not a raw error and MAY be
 logged at `debug`: parse a backend error body under a size bound, accept only
 the scalar `type`, `code`, and `message`, cap each field, and strip control
-and format characters. Both shapes in the field are read — the triple nested
-under `error`, and the flat form beside `object: "error"` — and the marker is
-what licenses the flat one, so the three keys are never claimed from an
-arbitrary object. Never parse or log any other member of the body, the
+and format characters. Three shapes in the field are read: the triple nested
+under `error`; the flat form beside `object: "error"`, where the marker is
+what licenses it, so the three keys are never claimed from an arbitrary
+object; and `error` as a string (SystemOne servers, Ollama), which is a scalar
+and becomes the message alone. Never parse or log any other member of the body, the
 request body, the backend URL, or a filesystem path.
 
 Because a rejection message can quote the request that caused it, this MUST

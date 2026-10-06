@@ -65,29 +65,41 @@ type errorFields struct {
 // decoded, so unrelated response fields — including secret-shaped ones a
 // backend might echo — cannot reach a log or a client by construction.
 //
-// Two shapes are recognized. OpenAI nests the triple under `error`.
+// Three shapes are recognized. OpenAI nests the triple under `error`.
 // vLLM and SGLang have also shipped a flat ErrorResponse whose triple
 // sits at the top level next to `object: "error"`; that marker is what
 // makes the flat form safe to read, since without it the three keys
 // would be claimed from any JSON object a backend happened to return.
+// Clef's SystemOne wrapper and Ollama put the whole error in a string
+// under `error`, which is a scalar and so becomes the message.
 func upstreamDetail(body []byte) Detail {
 	if len(body) == 0 || len(body) > maxDetailParseBytes {
 		return Detail{}
 	}
 	var envelope struct {
-		Object string       `json:"object"`
-		Error  *errorFields `json:"error"`
+		Object string          `json:"object"`
+		Error  json.RawMessage `json:"error"`
 		errorFields
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return Detail{}
 	}
-	f := envelope.Error
-	if f == nil {
+	var f *errorFields
+	switch {
+	case len(envelope.Error) == 0 || string(envelope.Error) == "null":
 		if envelope.Object != "error" {
 			return Detail{}
 		}
 		f = &envelope.errorFields
+	case envelope.Error[0] == '{':
+		f = new(errorFields)
+		if err := json.Unmarshal(envelope.Error, f); err != nil {
+			return Detail{}
+		}
+	case envelope.Error[0] == '"':
+		return Detail{Message: scalarField(envelope.Error, maxDetailMessage)}
+	default: // number, boolean, array: not an error the backend described
+		return Detail{}
 	}
 	return Detail{
 		Type:    scalarField(f.Type, maxDetailType),
