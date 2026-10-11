@@ -60,6 +60,15 @@ const (
 	defaultQueueTimeout   = 120 * time.Second
 	defaultMaxConcurrency = 8
 
+	// A decision server answers in milliseconds, not minutes
+	// (SYSTEMONE_PLAN §D11): the bounds a non-streaming call waits on
+	// are 30s — 200 times the observed latency — so a wedged decision
+	// server is refused in seconds rather than holding a slot for half
+	// an hour. The header bound is kept no larger than the request
+	// bound.
+	decisionRequestTimeout = 30 * time.Second
+	decisionHeaderTimeout  = 30 * time.Second
+
 	// Ceilings on a server's admission settings. Each in-flight slot
 	// may hold a backend connection, so the cap stays within the
 	// listener's connection bound; each queued request holds global and
@@ -817,9 +826,9 @@ func validateModels(models map[string]Model, backends map[string]Backend, option
 		}
 
 		switch m.Type {
-		case "generation", "embedding":
+		case "generation", "embedding", "decision":
 		default:
-			errs = append(errs, fmt.Sprintf("%s.type: %q must be generation or embedding", prefix, m.Type))
+			errs = append(errs, fmt.Sprintf("%s.type: %q must be generation, embedding, or decision", prefix, m.Type))
 		}
 
 		if !slices.Contains(SupportedStrategies, m.Strategy) {
@@ -852,6 +861,13 @@ func validateModels(models map[string]Model, backends map[string]Backend, option
 
 		if m.Policy.MaxOutputTokens < 0 {
 			errs = append(errs, prefix+".policy.max_output_tokens: must be >= 0")
+		}
+		// A decision model emits no tokens, so an output cap is
+		// meaningless on it (SYSTEMONE_PLAN §D2); refusing it keeps a
+		// generation policy copy-pasted onto a decision model from
+		// reading as a limit.
+		if m.Type == "decision" && m.Policy.MaxOutputTokens != 0 {
+			errs = append(errs, prefix+".policy.max_output_tokens: not meaningful on a decision model")
 		}
 	}
 

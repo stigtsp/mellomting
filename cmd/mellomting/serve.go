@@ -500,14 +500,14 @@ func checkQuotaEnforceable(cfg *config.Config, users *auth.UsersFile) error {
 	// unknown_usage_reservation, or the model's output cap on a
 	// generation model; with both zero such a request counts zero, the
 	// quota never advances, and the limit is silently unlimited. An
-	// embedding model has no output cap to fall back to, so only the
-	// reservation can account for it.
+	// embedding or decision model has no output cap to fall back to, so
+	// only the reservation can account for it.
 	if !hasQuota || cfg.Accounting.UnknownUsageReservation != 0 {
 		return nil
 	}
 	var uncounted []string
 	for name, m := range cfg.Models {
-		if m.Type == "embedding" || m.Policy.MaxOutputTokens == 0 {
+		if m.Type == "embedding" || m.Type == "decision" || m.Policy.MaxOutputTokens == 0 {
 			uncounted = append(uncounted, name)
 		}
 	}

@@ -41,29 +41,78 @@ func (s sourceServer) relay() bool {
 	return s.RelayUpstreamErrors == nil || *s.RelayUpstreamErrors
 }
 
-// admission resolves the server's admission limits against the
-// defaults and reports each one outside its bound.
-func (s sourceServer) admission(name string) (conc, queue int, wait Duration, errs []string) {
-	conc, queue, wait = defaultMaxConcurrency, defaultBackendQueueSize, Duration(defaultQueueTimeout)
-	if s.MaxConcurrency != nil {
-		conc = *s.MaxConcurrency
+// serverSettings is one server's fully resolved admission limits and
+// timeouts: what every backend generated from that server runs with.
+type serverSettings struct {
+	conc, queue    int
+	wait           Duration
+	headerTimeout  Duration
+	requestTimeout Duration
+}
+
+// resolveServers resolves every server's admission limits and timeouts
+// against the defaults and the types of the models it serves
+// (SYSTEMONE_PLAN §D11). The timeouts have no configuration key; they
+// are resolved here, where normalization builds each server's backends
+// and knows which models reference the server.
+func resolveServers(doc sourceDoc) (map[string]serverSettings, []string) {
+	// A server takes the decision timeouts only when every model
+	// routed to it is a decision model. A server shared by decision
+	// and generation models keeps the generation timeouts: the smaller
+	// bounds would cut a generation call off. An empty type defaults
+	// to generation (applyDefaults), so it counts as generation here.
+	decisionOnly := make(map[string]bool, len(doc.Servers))
+	for name := range doc.Servers {
+		decisionOnly[name] = true
 	}
-	if s.QueueSize != nil {
-		queue = *s.QueueSize
+	for _, publicName := range sortedModelKeys(doc.Models) {
+		sm := doc.Models[publicName]
+		if sm.Type == "decision" {
+			continue
+		}
+		for _, server := range sm.Servers {
+			decisionOnly[server] = false
+		}
 	}
-	if s.QueueTimeout != nil {
-		wait = *s.QueueTimeout
+
+	var errs []string
+	out := make(map[string]serverSettings, len(doc.Servers))
+	for _, name := range slices.Sorted(maps.Keys(doc.Servers)) {
+		s := doc.Servers[name]
+		conc, queue, wait := defaultMaxConcurrency, defaultBackendQueueSize, Duration(defaultQueueTimeout)
+		if s.MaxConcurrency != nil {
+			conc = *s.MaxConcurrency
+		}
+		if s.QueueSize != nil {
+			queue = *s.QueueSize
+		}
+		header, request := Duration(defaultHeaderTimeout), Duration(defaultRequestTimeout)
+		if decisionOnly[name] {
+			header, request = Duration(decisionHeaderTimeout), Duration(decisionRequestTimeout)
+		}
+		// A queue wait must not outlive the request it is waiting to
+		// send, so the bound is the server's own request timeout, not
+		// the generation constant. The default wait is lowered to that
+		// bound when it exceeds it (a decision server's 30s), rather
+		// than refused; only a wait the operator wrote above the bound
+		// is an error.
+		if s.QueueTimeout != nil {
+			wait = *s.QueueTimeout
+			if d := wait.Duration(); d <= 0 || d > request.Duration() {
+				errs = append(errs, fmt.Sprintf("servers.%s.queue_timeout: must be > 0 and at most the server's request timeout (%s), got %s", name, request.Duration(), d))
+			}
+		} else if defaultQueueTimeout > request.Duration() {
+			wait = request
+		}
+		if conc < 1 || conc > maxServerConcurrency {
+			errs = append(errs, fmt.Sprintf("servers.%s.max_concurrency: must be between 1 and %d, got %d", name, maxServerConcurrency, conc))
+		}
+		if queue < 0 || queue > maxServerQueueSize {
+			errs = append(errs, fmt.Sprintf("servers.%s.queue_size: must be between 0 and %d, got %d", name, maxServerQueueSize, queue))
+		}
+		out[name] = serverSettings{conc: conc, queue: queue, wait: wait, headerTimeout: header, requestTimeout: request}
 	}
-	if conc < 1 || conc > maxServerConcurrency {
-		errs = append(errs, fmt.Sprintf("servers.%s.max_concurrency: must be between 1 and %d, got %d", name, maxServerConcurrency, conc))
-	}
-	if queue < 0 || queue > maxServerQueueSize {
-		errs = append(errs, fmt.Sprintf("servers.%s.queue_size: must be between 0 and %d, got %d", name, maxServerQueueSize, queue))
-	}
-	if d := wait.Duration(); d <= 0 || d > defaultRequestTimeout {
-		errs = append(errs, fmt.Sprintf("servers.%s.queue_timeout: must be > 0 and at most request_timeout (%s), got %s", name, defaultRequestTimeout, d))
-	}
-	return conc, queue, wait, errs
+	return out, errs
 }
 
 // sourceModel is one compact public model in the source schema (D11). The
@@ -139,16 +188,8 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 		Models:     make(map[string]Model, len(doc.Models)),
 	}
 
-	type limits struct {
-		conc, queue int
-		wait        Duration
-	}
-	admission := make(map[string]limits, len(doc.Servers))
-	for _, name := range slices.Sorted(maps.Keys(doc.Servers)) {
-		conc, queue, wait, bad := doc.Servers[name].admission(name)
-		errs = append(errs, bad...)
-		admission[name] = limits{conc, queue, wait}
-	}
+	settings, bad := resolveServers(doc)
+	errs = append(errs, bad...)
 
 	referenced := make(map[string]bool, len(doc.Servers))
 	// With agents enabled, an edge may serve only attached models; a
@@ -189,15 +230,18 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				errs = append(errs, fmt.Sprintf("generated backend name collision: %s", name))
 				continue
 			}
+			st := settings[server]
 			cfg.Backends[name] = Backend{
 				Server:              server,
 				BaseURL:             s.URL,
 				UpstreamModel:       upstream,
 				APIKeyFile:          s.APIKeyFile,
 				RelayUpstreamErrors: s.relay(),
-				MaxConcurrency:      admission[server].conc,
-				QueueSize:           admission[server].queue,
-				QueueTimeout:        admission[server].wait,
+				MaxConcurrency:      st.conc,
+				QueueSize:           st.queue,
+				QueueTimeout:        st.wait,
+				HeaderTimeout:       st.headerTimeout,
+				RequestTimeout:      st.requestTimeout,
 				NoMetrics:           s.Metrics != nil && !*s.Metrics,
 			}
 			refs = append(refs, BackendRef{Name: name, Weight: 1})
@@ -281,16 +325,17 @@ type effectiveDoc struct {
 // backend names (D11).
 func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 	servers := make(map[string]effectiveServer, len(doc.Servers))
+	// parse has already refused out-of-bound limits.
+	settings, _ := resolveServers(doc)
 	for name, s := range doc.Servers {
-		// parse has already refused out-of-bound limits.
-		conc, queue, wait, _ := s.admission(name)
+		st := settings[name]
 		servers[name] = effectiveServer{
 			URL:                 s.URL,
 			APIKeyFile:          s.APIKeyFile,
 			RelayUpstreamErrors: s.relay(),
-			MaxConcurrency:      conc,
-			QueueSize:           queue,
-			QueueTimeout:        wait,
+			MaxConcurrency:      st.conc,
+			QueueSize:           st.queue,
+			QueueTimeout:        st.wait,
 			Metrics:             s.Metrics,
 		}
 	}

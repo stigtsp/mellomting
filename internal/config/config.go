@@ -318,7 +318,7 @@ type Backend struct {
 
 // Model is one public model alias (PLAN §13, §19).
 type Model struct {
-	Type     string       `yaml:"type"` // "generation" or "embedding"
+	Type     string       `yaml:"type"` // "generation", "embedding", or "decision"
 	Strategy string       `yaml:"strategy"`
 	Policy   ModelPolicy  `yaml:"policy"`
 	Backends []BackendRef `yaml:"backends"`

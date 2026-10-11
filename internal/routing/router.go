@@ -62,7 +62,7 @@ type Target struct {
 	Backend string
 	// Upstream is the model name to send to the backend.
 	Upstream string
-	// Type is "generation" or "embedding".
+	// Type is "generation", "embedding", or "decision".
 	Type string
 }
 
@@ -395,7 +395,8 @@ func (r *Router) List() []string {
 	return out
 }
 
-// TypeOf returns the model type ("generation" or "embedding").
+// TypeOf returns the model type ("generation", "embedding", or
+// "decision").
 func (r *Router) TypeOf(publicModel string) string {
 	e, ok := r.lookup(publicModel)
 	if !ok {

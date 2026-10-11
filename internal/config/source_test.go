@@ -598,6 +598,176 @@ func TestSourceServerAdmissionLimitsRejected(t *testing.T) {
 	}
 }
 
+// decisionServerYAML is the minimal §D11 block: one decision server and
+// one decision model, nothing else. Adding a decision server should
+// need exactly this.
+const decisionServerYAML = `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+servers:
+  clef:
+    url: http://127.0.0.1:8011
+models:
+  clef-flash:
+    type: decision
+    servers: [clef]
+`
+
+// TestSourceDecisionServerDefaults pins §D11: the minimal decision block
+// parses, and its server resolves the decision timeouts (30s header and
+// request) with the ordinary admission defaults. The default queue
+// wait, above a decision server's 30s request bound, is lowered to that
+// bound rather than refused.
+func TestSourceDecisionServerDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(decisionServerYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	b := cfg.Backends[defaultBackendName("clef-flash", "clef")]
+	if b.HeaderTimeout.Duration() != decisionHeaderTimeout {
+		t.Fatalf("header timeout = %s, want %s", b.HeaderTimeout.Duration(), decisionHeaderTimeout)
+	}
+	if b.RequestTimeout.Duration() != decisionRequestTimeout {
+		t.Fatalf("request timeout = %s, want %s", b.RequestTimeout.Duration(), decisionRequestTimeout)
+	}
+	if b.MaxConcurrency != defaultMaxConcurrency || b.QueueSize != defaultBackendQueueSize {
+		t.Fatalf("admission = %d/%d, want the ordinary defaults %d/%d",
+			b.MaxConcurrency, b.QueueSize, defaultMaxConcurrency, defaultBackendQueueSize)
+	}
+	if b.QueueTimeout.Duration() != decisionRequestTimeout {
+		t.Fatalf("queue wait = %s, want it lowered to the 30s request bound", b.QueueTimeout.Duration())
+	}
+	// upstream_model defaults to the public name (§D11), which also
+	// keeps the one relayed message that names the upstream model
+	// harmless (§D6).
+	if b.UpstreamModel != "clef-flash" {
+		t.Fatalf("upstream = %q, want the public name default", b.UpstreamModel)
+	}
+	if m := cfg.Models["clef-flash"]; m.Type != "decision" {
+		t.Fatalf("model type = %q, want decision", m.Type)
+	}
+}
+
+// TestSourceMixedServerKeepsGenerationTimeouts pins §D11: a server
+// shared by a decision and a generation model keeps the generation
+// timeouts. The smaller bounds would cut a generation call off, while
+// the larger ones hurt a decision call only by waiting longer.
+func TestSourceMixedServerKeepsGenerationTimeouts(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(`
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+servers:
+  shared:
+    url: http://127.0.0.1:8011
+models:
+  clef-flash:
+    type: decision
+    servers: [shared]
+  qwen:
+    servers: [shared]
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, model := range []string{"clef-flash", "qwen"} {
+		b := cfg.Backends[defaultBackendName(model, "shared")]
+		if b.HeaderTimeout.Duration() != defaultHeaderTimeout || b.RequestTimeout.Duration() != defaultRequestTimeout {
+			t.Fatalf("%s: timeouts = %s/%s, want the generation defaults %s/%s",
+				model, b.HeaderTimeout.Duration(), b.RequestTimeout.Duration(), defaultHeaderTimeout, defaultRequestTimeout)
+		}
+		if b.QueueTimeout.Duration() != defaultQueueTimeout {
+			t.Fatalf("%s: queue wait = %s, want the default %s", model, b.QueueTimeout.Duration(), defaultQueueTimeout)
+		}
+	}
+}
+
+// TestSourceQueueTimeoutBoundIsTheServersOwn pins §D11: queue_timeout
+// is checked against the server's own request bound, not the
+// generation constant. On a decision server the bound is 30s, so an
+// explicit wait above it is refused, naming the server; at the bound it
+// is kept; below it, kept. On a generation server the bound is the
+// generation request timeout.
+func TestSourceQueueTimeoutBoundIsTheServersOwn(t *testing.T) {
+	t.Parallel()
+
+	decision := func(limits string) string {
+		return `
+version: 1
+server:
+  listen:
+    network: unix
+    address: /run/mellomting/mellomting.sock
+servers:
+  clef:
+    url: http://127.0.0.1:8011
+` + limits + `
+models:
+  clef-flash:
+    type: decision
+    servers: [clef]
+`
+	}
+
+	// Above the decision bound: refused, naming the server.
+	if _, err := Parse([]byte(decision("    queue_timeout: 31s"))); err == nil ||
+		!strings.Contains(err.Error(), "servers.clef.queue_timeout") {
+		t.Fatalf("31s on a decision server: err = %v, want a servers.clef.queue_timeout rejection", err)
+	}
+	// At the bound: kept.
+	cfg, err := Parse([]byte(decision("    queue_timeout: 30s")))
+	if err != nil {
+		t.Fatalf("30s on a decision server: %v", err)
+	}
+	if got := cfg.Backends[defaultBackendName("clef-flash", "clef")].QueueTimeout.Duration(); got != 30*time.Second {
+		t.Fatalf("queue wait = %s, want 30s", got)
+	}
+	// A generation server's bound is its request timeout: 31m is
+	// refused there too, and the default wait is untouched.
+	if _, err := Parse([]byte(serverLimitsYAML("    queue_timeout: 31m"))); err == nil ||
+		!strings.Contains(err.Error(), "servers.tuned.queue_timeout") {
+		t.Fatalf("31m on a generation server: err = %v, want a servers.tuned.queue_timeout rejection", err)
+	}
+}
+
+// TestSourceEffectiveDecisionRoundTrip pins §D11: show-effective gains
+// no field for the resolved timeouts (they have no configuration key),
+// and its output for the minimal decision block parses back to the same
+// Config, with the model keeping type: decision.
+func TestSourceEffectiveDecisionRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cfg, out, err := ParseEffective([]byte(decisionServerYAML))
+	if err != nil {
+		t.Fatalf("ParseEffective: %v", err)
+	}
+	var doc struct {
+		Models map[string]map[string]any `yaml:"models"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal effective: %v", err)
+	}
+	if got := doc.Models["clef-flash"]["type"]; got != "decision" {
+		t.Fatalf("effective models.clef-flash.type = %v, want decision\n%s", got, out)
+	}
+	again, err := Parse(out)
+	if err != nil {
+		t.Fatalf("effective output does not parse: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(cfg, again) {
+		t.Fatalf("effective output parses to a different config:\nfirst = %+v\nagain = %+v", cfg, again)
+	}
+}
+
 // TestSourceEffectiveShowsServerLimits: show-effective is where an
 // operator confirms what a server is admitted under, so it prints the
 // limits each server actually runs with, defaults included, and its

@@ -1759,7 +1759,7 @@ models:
     servers:
     - qa
 `,
-			wantErr: "must be generation or embedding",
+			wantErr: "must be generation, embedding, or decision",
 		},
 		{
 			name: "model strategy invalid",
@@ -1810,6 +1810,44 @@ models:
     - qa
 `,
 			wantErr: "max_output_tokens: must be >= 0",
+		},
+		{
+			// A decision model (SYSTEMONE_PLAN §D2) is a valid type.
+			name: "model type decision",
+			yaml: `
+version: 1
+` + minimalServer + `
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    type: decision
+    upstream_model: M
+    servers:
+    - qa
+`,
+		},
+		{
+			// A decision model emits no tokens, so an output cap is
+			// meaningless on it and refused (SYSTEMONE_PLAN §D2).
+			name: "decision model max_output_tokens",
+			yaml: `
+version: 1
+` + minimalServer + `
+servers:
+  qa:
+    url: http://127.0.0.1:8001
+models:
+  m1:
+    type: decision
+    policy:
+      max_output_tokens: 100
+    upstream_model: M
+    servers:
+    - qa
+`,
+			wantErr: "max_output_tokens: not meaningful on a decision model",
 		},
 	}
 
