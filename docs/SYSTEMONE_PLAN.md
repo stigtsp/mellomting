@@ -83,6 +83,12 @@ serves, and any other type is refused with the existing 400
 model", joins `errNotGenerate` and `errNotEmbed`. With an allow-list, a fourth
 type later is refused everywhere until an operation names it.
 
+An attached model (PLAN §104) has no type: its server's `/v1/models` does
+not say whether it embeds, so it has always been served on both the
+generation and embeddings operations. It keeps that, and is refused on
+`/v1/systemone`: a decision server has no model list to attach from, and
+an agent does not relay the path.
+
 ### D3. Forward the body with nothing added
 
 The server rejects any key it does not know. Mellomting therefore forwards

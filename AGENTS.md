@@ -266,3 +266,10 @@ Remaining deferred work (later phases): optional stickiness (PLAN §20);
 defence-in-depth review (PLAN §98). (The §30 SIGHUP users-file reload is
 implemented, and applies under every sandbox mode: the policy grants the
 users file's directory, not the inode a key mutation renames away.)
+
+On branch `systemone`, the SystemOne decision endpoint
+(`docs/SYSTEMONE_PLAN.md`) is implemented through step 6 — relay-by-default,
+the string-shaped backend diagnostic, the `decision` model type with its
+per-server timeout defaults, allow-list type gating, and the
+`POST /v1/systemone` route — leaving only step 7, the live check against
+the Clef wrapper, which waits on the wrapper.

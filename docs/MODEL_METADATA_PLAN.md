@@ -18,6 +18,7 @@
 - Commit messages: imperative, lower-case subject, no attribution trailers (memory rule).
 - The backend answering discovery is untrusted: every new parsed field is bounded and fails closed (PLAN D7).
 - `/v1/models` and the new endpoint never expose a backend URL, backend name, upstream model ID, filesystem path, or the caller's key.
+- Decision models (`type: decision`, `docs/SYSTEMONE_PLAN.md` §D9) are hidden from the opencode-facing `/v1/models` view the same way embedding models are: no chat card to list, so the `owned_by` filter drops them.
 - Nothing rewrites an existing config file. `config discover` prints; it does not write.
 - Context window bound: integer in `[1, 1<<31)`. `policy.body` bound: 4096 bytes serialized.
 - Owned request keys, rejected in `policy.body`: `model`, `stream`, `stream_options`, `max_tokens`, `max_completion_tokens`, `max_output_tokens`.

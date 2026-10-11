@@ -52,6 +52,33 @@ The output cap rejects higher client limits and supplies a limit when absent.
 It never raises a client-supplied limit. For embedding models, set
 `type: embedding`; discovery defaults to `type: generation`.
 
+A decision model is declared the same way, `type: decision`, because the
+server has no `/v1/models` for discovery to read. Adding a decision server
+is this, and nothing else:
+
+```yaml
+servers:
+  clef:
+    url: http://127.0.0.1:8011
+
+models:
+  clef-flash:
+    type: decision
+    servers: [clef]
+```
+
+`policy.max_output_tokens` is refused on a decision model: it has no
+generative output to cap. A server takes the decision timeouts when every
+model routed to it is `type: decision`; a server shared with generation
+models keeps the generation timeouts. An explicit `queue_timeout` above the
+server's own request bound is refused, naming the server.
+
+| Setting | Decision server | Generation server |
+|---------|-----------------|-------------------|
+| Request timeout | 30s | 30m |
+| Header timeout | 30s | 300s |
+| Queue wait default | 30s | 120s |
+
 If a server requires authentication, add `api_key_file` to its entry, pointing
 to a protected file containing its credential. Client credentials are stripped
 before forwarding; server credentials come from configuration only.
@@ -241,16 +268,18 @@ lists it. See [Hardening](../HARDENING.md).
 | Global rate | 100 requests/s, burst 200 |
 | Request body / response size | 16 MiB / 64 MiB |
 | Global in-flight requests | 64 |
-| Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s |
+| Backend timeouts | Connect 3s, headers 300s, request 30m, stream idle 120s (headers/request 30s/30s on a decision-only server) |
 | Server admission | 8 in flight, queue 32, queue wait 120s |
 | Retry attempts | 1 |
 
-Backend timeouts are static: they assume a local inference server and are
-not per-server settings. A large request waits tens of seconds on scheduler
-admission and prefill before its first response byte, so the header bound
-covers that wait instead of reporting it as a backend failure. They have no
-configuration key, so `config show-effective` does not show them; the daemon
-logs each backend's bounds in a `backend admission` line at startup.
+Backend timeouts assume a local inference server and have no configuration
+key. Generation servers get the defaults above; a server whose models are
+all `type: decision` gets the decision bounds from the table in
+[Servers and models](#servers-and-models) instead. A large request waits
+tens of seconds on scheduler admission and prefill before its first
+response byte, so the header bound covers that wait instead of reporting it
+as a backend failure. `config show-effective` does not show timeouts; the
+daemon logs each backend's bounds in a `backend admission` line at startup.
 
 Whichever in-flight limit is lowest decides when work starts queueing. A
 key's own `concurrent_requests` is 8 by default, the same as a server's

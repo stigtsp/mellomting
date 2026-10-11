@@ -547,6 +547,7 @@ POST /v1/responses
 GET  /v1/responses/{response_id}
 POST /v1/responses/{response_id}/cancel
 POST /v1/embeddings
+POST /v1/systemone
 ```
 
 The Responses retrieve/cancel endpoints matter because current vLLM supports stateful Responses API operations.
@@ -590,6 +591,38 @@ merely because the backend happens to expose them.
 The daemon reading a server's `/metrics` (or Ollama's `/api/ps`) itself,
 for `mellomting top` (§43.2), is not forwarding: no client request reaches
 those paths, and nothing read there is returned to a client.
+
+## 11.4 Decision endpoint
+
+`POST /v1/systemone` serves models of `type: decision`, a third model type
+beside `generation` and `embedding`. It cannot be discovered — a decision
+server exposes no `/v1/models` — so the type comes from configuration. A
+decision model takes no `policy.max_output_tokens`: it has no generative
+output to cap.
+
+Three rules:
+
+- One explicit route. The path joins the §11.1 allow-list; other methods
+  get a 405 naming POST, and nothing under the path is routed (§11.3).
+- Type gating is an allow-list. Each operation names the one model type it
+  serves, and a model of any other type is refused with 400
+  `model_type_mismatch`. A type added later is refused everywhere until an
+  operation names it, which fails closed. An attached model (§104) has no
+  type, since its server's model list does not say whether it embeds; it
+  reaches the generation and embeddings operations, never this one, and
+  agents do not relay this path.
+- The body is forwarded with nothing added. The server rejects any key it
+  does not know, so Mellomting rewrites only `model` (to `upstream_model`)
+  and adds nothing: no output cap, no stream-usage injection, and
+  `"stream": true` is refused locally with 400 before anything is
+  forwarded. A key the server rejects, such as `"stream": false`, is
+  forwarded; the rejection reaches the client through the §43 relay.
+
+Decision calls are accounted under `endpoint: "systemone"`. The server's
+usage shape (`input_tokens`, `output_tokens: 0`) is the Responses shape, and
+input tokens count against the key's quota. A server whose models are all
+`type: decision` takes decision timeouts — 30s request, 30s header — in
+place of the generation ones; CONFIGURATION.md has the table.
 
 ---
 
@@ -773,7 +806,8 @@ Model fields:
 ```yaml
 models:
   PUBLIC_NAME:
-    type: generation         # optional, default generation
+    type: generation         # optional, default generation; also
+                             # embedding, decision (§11.4)
     servers: [SERVER_NAME]
     upstream_model: ID       # optional, default public map key
     strategy: least-inflight # optional; single when one server,

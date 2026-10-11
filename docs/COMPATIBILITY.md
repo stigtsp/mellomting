@@ -12,11 +12,32 @@ POST /v1/embeddings
 POST /v1/responses
 GET  /v1/responses/{id}
 POST /v1/responses/{id}/cancel
+POST /v1/systemone
 GET  /v1/models
 ```
 
 Other routes, including backend admin endpoints, are not forwarded.
 `/v1/models` lists the public models available to the authenticated key.
+
+## SystemOne decision endpoint
+
+`POST /v1/systemone` serves a decision model (`type: decision` in the
+configuration). The contract below was probed against the Clef-Flash
+wrapper at `127.0.0.1:8011` on 2026-10-06 with `clef-probe.sh`; no finer
+wrapper revision is recorded.
+
+The request is exactly `model`, `state`, and `questions`. Any other
+top-level key, including `stream` and `max_tokens`, is rejected with a 400,
+so Mellomting forwards the client's body unchanged apart from the `model`
+rewrite and refuses `"stream": true` itself. A valid call answers with
+`model`, `answers` keyed by question id, and
+`usage: {"input_tokens": N, "output_tokens": 0}`; the response is buffered,
+never streamed. Every error is a 400 with `{"error": "<string>"}`; the
+reason is relayed to the client by default (see `relay_upstream_errors`).
+
+Limits observed on the wrapper: request bodies of 65536 bytes (rejected
+with a 400, not a 413) and 4096 input tokens including the question
+schema.
 
 ## Request fields
 
