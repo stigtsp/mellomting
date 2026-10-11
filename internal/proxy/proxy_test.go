@@ -228,6 +228,8 @@ func run(t *testing.T, p *Proxy, method, path, body string, key *auth.Key) *http
 		p.Completions(q)
 	case method == http.MethodPost && path == "/v1/embeddings":
 		p.Embeddings(q)
+	case method == http.MethodPost && path == "/v1/systemone":
+		p.Decide(q)
 	case method == http.MethodPost && path == "/v1/responses":
 		p.ResponsesCreate(q)
 	case path == "/v1/responses": // GET
@@ -412,15 +414,21 @@ func TestSSEParserEventsAndBounds(t *testing.T) {
 
 // --- pipeline ----------------------------------------------------------
 
-// N12: the endpoint and the model type must agree. An embedding model on
-// a generative endpoint and a generation model on the embeddings endpoint
-// are rejected 400; the correct pairings pass.
+// N12 + SYSTEMONE_PLAN §D2: the endpoint and the model type must agree,
+// as an allow-list — each operation serves exactly one model type, and
+// every other pairing is a 400 model_type_mismatch. A type added later
+// is refused everywhere until an operation names it, which fails closed.
 func TestEndpointModelTypeAgreement(t *testing.T) {
 	t.Parallel()
 	f := newFakeVLLM(t, okJSON)
 	cfg := testConfig(f.server.URL)
 	cfg.Models["emb-1"] = config.Model{
 		Type:     "embedding",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	cfg.Models["dec-1"] = config.Model{
+		Type:     "decision",
 		Strategy: "single",
 		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
 	}
@@ -443,27 +451,107 @@ func TestEndpointModelTypeAgreement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key := testKey("gen-1", "emb-1")
+	key := testKey("gen-1", "emb-1", "dec-1")
 	for _, tc := range []struct {
-		name, path, body string
-		want             int
+		name, path, model string
+		want              int
 	}{
-		{"embedding model on chat", "/v1/chat/completions",
-			`{"model":"emb-1","messages":[{"role":"user","content":"hi"}]}`, 400},
-		{"generation model on embeddings", "/v1/embeddings",
-			`{"model":"gen-1","input":"hi"}`, 400},
-		{"generation model on chat", "/v1/chat/completions",
-			`{"model":"gen-1","messages":[{"role":"user","content":"hi"}]}`, 200},
-		{"embedding model on embeddings", "/v1/embeddings",
-			`{"model":"emb-1","input":"hi"}`, 200},
+		{"chat serves generation", "/v1/chat/completions", "gen-1", 200},
+		{"chat refuses embedding", "/v1/chat/completions", "emb-1", 400},
+		{"chat refuses decision", "/v1/chat/completions", "dec-1", 400},
+		{"completions serves generation", "/v1/completions", "gen-1", 200},
+		{"completions refuses embedding", "/v1/completions", "emb-1", 400},
+		{"completions refuses decision", "/v1/completions", "dec-1", 400},
+		{"embeddings serves embedding", "/v1/embeddings", "emb-1", 200},
+		{"embeddings refuses generation", "/v1/embeddings", "gen-1", 400},
+		{"embeddings refuses decision", "/v1/embeddings", "dec-1", 400},
+		{"responses serves generation", "/v1/responses", "gen-1", 200},
+		{"responses refuses embedding", "/v1/responses", "emb-1", 400},
+		{"responses refuses decision", "/v1/responses", "dec-1", 400},
+		{"systemone serves decision", "/v1/systemone", "dec-1", 200},
+		{"systemone refuses generation", "/v1/systemone", "gen-1", 400},
+		{"systemone refuses embedding", "/v1/systemone", "emb-1", 400},
 	} {
-		rec := run(t, p, http.MethodPost, tc.path, tc.body, key)
+		rec := run(t, p, http.MethodPost, tc.path, `{"model":"`+tc.model+`"}`, key)
 		if rec.Code != tc.want {
 			t.Fatalf("%s: status = %d (want %d) body = %s", tc.name, rec.Code, tc.want, rec.Body.String())
 		}
 		if tc.want == 400 && !strings.Contains(rec.Body.String(), "model_type_mismatch") {
 			t.Fatalf("%s: body = %s (want model_type_mismatch)", tc.name, rec.Body.String())
 		}
+	}
+}
+
+// TestResolveTargetModelTypeAllowList exercises the type-gating
+// allow-list directly, without a backend: every model-routing operation
+// × model type pair. The serving pairs pass; every other pair is a 400
+// model_type_mismatch. (The end-to-end twin, TestEndpointModelTypeAgreement,
+// drives the same matrix through dispatch.)
+func TestResolveTargetModelTypeAllowList(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig("http://127.0.0.1:1") // never dialed
+	cfg.Models["emb-1"] = config.Model{
+		Type:     "embedding",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	cfg.Models["dec-1"] = config.Model{
+		Type:     "decision",
+		Strategy: "single",
+		Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+	}
+	router, err := routing.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := backend.New(backend.Options{
+		Name:             "b1",
+		Cfg:              cfg.Backends["b1"],
+		Network:          backend.Policy{Mode: "loopback-only"},
+		MaxResponseBytes: cfg.Server.MaxResponseBytes,
+		Log:              testsupport.DiscardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(cfg, router, map[string]*backend.Client{"b1": client}, testsupport.DiscardLogger(), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := testKey("gen-1", "emb-1", "dec-1")
+	ops := []struct {
+		name string
+		op   operation
+	}{
+		{"chat", opChat},
+		{"completions", opLegacy},
+		{"embeddings", opEmbed},
+		{"responses", opResp},
+		{"systemone", opDecide},
+	}
+	for _, o := range ops {
+		for _, model := range []string{"gen-1", "emb-1", "dec-1"} {
+			q := &Req{Key: key, RequestID: "req_test"}
+			_, apiErr := p.resolveTarget(q, o.op, []byte(`{"model":"`+model+`"}`))
+			wantServed := (o.op.modelType == "generation" && model == "gen-1") ||
+				(o.op.modelType == "embedding" && model == "emb-1") ||
+				(o.op.modelType == "decision" && model == "dec-1")
+			switch {
+			case wantServed && apiErr != nil:
+				t.Fatalf("%s serving %s: err = %v, want nil", o.name, model, apiErr)
+			case !wantServed && (apiErr == nil || apiErr.status != 400 || apiErr.code != "model_type_mismatch"):
+				t.Fatalf("%s refusing %s: err = %v, want 400 model_type_mismatch", o.name, model, apiErr)
+			}
+		}
+	}
+
+	// A stream request on the non-generative decision operation is
+	// refused before anything is forwarded (§D1).
+	q := &Req{Key: key, RequestID: "req_test"}
+	_, apiErr := p.resolveTarget(q, opDecide, []byte(`{"model":"dec-1","stream":true}`))
+	if apiErr == nil || apiErr.status != 400 || apiErr.code != "stream_not_supported" {
+		t.Fatalf("systemone stream:true: err = %v, want 400 stream_not_supported", apiErr)
 	}
 }
 

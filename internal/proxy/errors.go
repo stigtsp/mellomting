@@ -39,6 +39,7 @@ var (
 	errModelDenied        = apiError{404, "invalid_request_error", "model_not_found_or_not_allowed", "model not found or not allowed", "authz"}
 	errNotGenerate        = apiError{400, "invalid_request_error", "model_type_mismatch", "the requested model is not a generation model", "bad_request"}
 	errNotEmbed           = apiError{400, "invalid_request_error", "model_type_mismatch", "the requested model is not an embedding model", "bad_request"}
+	errNotDecide          = apiError{400, "invalid_request_error", "model_type_mismatch", "the requested model is not a decision model", "bad_request"}
 	errPrevNotFound       = apiError{404, "invalid_request_error", "response_not_found", "previous response not found", "affinity"}
 	errRespNotFound       = apiError{404, "invalid_request_error", "response_not_found", "response not found", "affinity"}
 	errRespBadID          = apiError{404, "invalid_request_error", "response_not_found", "response not found", "bad_request"}

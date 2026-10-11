@@ -182,3 +182,16 @@ func TestGoneConnectionFallsBack(t *testing.T) {
 		t.Fatalf("status %d, want 200: %s", w.Code, w.Body)
 	}
 }
+
+// An attached model's type is unknown, and a decision server advertises
+// no model list to attach from, so /v1/systemone never reaches one: the
+// decision endpoint serves only models configured as type: decision.
+func TestAttachedModelRefusedOnDecision(t *testing.T) {
+	p, _ := agentProxy(t, []string{"agent-a-1"}, func(cfg *config.Config) fakeAgents {
+		return fakeAgents{"agent-a-1": agentClient(t, cfg, "agent-a-1")}
+	})
+	w := run(t, p, http.MethodPost, "/v1/systemone", `{"model":"lab/m","input":"x"}`, labKey())
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "model_type_mismatch") {
+		t.Fatalf("status %d, want 400 model_type_mismatch: %s", w.Code, w.Body)
+	}
+}

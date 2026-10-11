@@ -720,6 +720,7 @@ func TestAllowHeadersConsistent(t *testing.T) {
 		{http.MethodGet, "/v1/chat/completions", "POST"},
 		{http.MethodGet, "/v1/completions", "POST"},
 		{http.MethodGet, "/v1/embeddings", "POST"},
+		{http.MethodGet, "/v1/systemone", "POST"},
 		{http.MethodPost, "/v1/responses/xyz", "GET"},
 		{http.MethodPut, "/v1/responses/xyz/cancel", "POST"},
 		{http.MethodGet, "/v1/responses/xyz/cancel", "POST"},
@@ -736,6 +737,65 @@ func TestAllowHeadersConsistent(t *testing.T) {
 		if got := rr.Header().Get("Allow"); got != tc.allow {
 			t.Fatalf("%s %s: Allow = %q (want %q)", tc.method, tc.path, got, tc.allow)
 		}
+	}
+}
+
+// TestSystemOneRouteFlow exercises POST /v1/systemone through the full
+// ingress (SYSTEMONE_PLAN §D1): routed to the backend for a key allowed
+// the decision model, refused with the same 404 an unknown model gets
+// for a key that is not, 405 on GET, and 404 under the path.
+func TestSystemOneRouteFlow(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var gotBody []byte
+	e := buildEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"clef-flash","answers":{"q1":"yes"},"usage":{"input_tokens":7,"output_tokens":0}}`))
+	}, func(cfg *config.Config) {
+		cfg.Models["clef-flash"] = config.Model{
+			Type:     "decision",
+			Strategy: "single",
+			Backends: []config.BackendRef{{Name: "b1", Weight: 1}},
+		}
+	}, auth.KeyLimits{})
+
+	// The wildcard key may call the decision model.
+	w := e.do(t, http.MethodPost, "/v1/systemone", "bearer2",
+		`{"model":"clef-flash","state":{"pkg":"Acme"},"questions":{"q1":"safe?"}}`)
+	if w.Code != 200 {
+		t.Fatalf("status = %d (want 200) body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"answers"`) {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+	mu.Lock()
+	if !strings.Contains(string(gotBody), `"state"`) {
+		t.Fatalf("backend received %s", gotBody)
+	}
+	mu.Unlock()
+
+	// A key without the model gets the same 404 as an unknown model.
+	denied := e.do(t, http.MethodPost, "/v1/systemone", "bearer",
+		`{"model":"clef-flash","state":{},"questions":{}}`)
+	unknown := e.do(t, http.MethodPost, "/v1/systemone", "bearer2",
+		`{"model":"no-such-model","state":{},"questions":{}}`)
+	if denied.Code != 404 || unknown.Code != 404 {
+		t.Fatalf("statuses = %d/%d, want 404/404", denied.Code, unknown.Code)
+	}
+	if denied.Body.String() != unknown.Body.String() {
+		t.Fatalf("ACL denial and unknown model differ:\n%s\n%s", denied.Body.String(), unknown.Body.String())
+	}
+
+	// GET is a 405 naming POST; nothing under the path is routed.
+	if w := e.do(t, http.MethodGet, "/v1/systemone", "bearer2", ""); w.Code != 405 {
+		t.Fatalf("GET: status = %d (want 405)", w.Code)
+	}
+	if w := e.do(t, http.MethodPost, "/v1/systemone/extra", "bearer2", `{}`); w.Code != 404 {
+		t.Fatalf("subpath: status = %d (want 404)", w.Code)
 	}
 }
 
@@ -778,6 +838,7 @@ func TestNoCatchAllRoute(t *testing.T) {
 		"/openapi.json",
 		"/v1/internal",
 		"/v1/models/extra",
+		"/v1/systemone/extra",
 	}
 	for _, p := range paths {
 		w := e.do(t, http.MethodGet, p, "bearer2", "")

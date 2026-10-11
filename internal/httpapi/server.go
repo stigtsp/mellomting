@@ -381,6 +381,9 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/embeddings":
 		s.proxy.Embeddings(q)
 		return
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/systemone":
+		s.proxy.Decide(q)
+		return
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/responses":
 		s.proxy.ResponsesCreate(q)
 		return
@@ -423,8 +426,10 @@ func (s *Server) allowFor(path string) string {
 	case path == "/v1/responses":
 		return "POST"
 	case path == "/v1/chat/completions", path == "/v1/completions",
-		path == "/v1/embeddings", path == "/healthz", path == "/readyz":
-		if path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/embeddings" {
+		path == "/v1/embeddings", path == "/v1/systemone",
+		path == "/healthz", path == "/readyz":
+		if path == "/v1/chat/completions" || path == "/v1/completions" ||
+			path == "/v1/embeddings" || path == "/v1/systemone" {
 			return "POST"
 		}
 		return "GET"

@@ -66,6 +66,11 @@ type operation struct {
 	route    routeKind
 	capture  bool // record created response IDs (responses create)
 	endpoint string
+	// modelType is the one model type this operation serves. The
+	// agreement check is an allow-list, not a pair of exclusions: a
+	// type added later is refused on every operation until one names
+	// it, which fails closed (SYSTEMONE_PLAN §D2).
+	modelType string
 	// capField and altCapField name the generative output-limit request
 	// fields (PLAN §36). An operation is generative exactly when
 	// capField is set, so that is the single spelling of the predicate:
@@ -85,13 +90,44 @@ func (o operation) generative() bool { return o.capField != "" }
 // request log, the usage record, and quota replay then agree.
 func (o operation) consumesUsage() bool { return o.route == routeByModel }
 
+// serves reports whether a model of type mt may be served here. An
+// attached model has no type (""): its server's model list does not say
+// whether it embeds, so it reaches the generation and embeddings
+// operations as it always has. A decision server advertises no model
+// list to attach from, so an untyped model never reaches a decision
+// operation.
+func (o operation) serves(mt string) bool {
+	if mt == "" {
+		return o.modelType == "generation" || o.modelType == "embedding"
+	}
+	return mt == o.modelType
+}
+
+// typeMismatch is the 400 a model of the wrong type gets on this
+// operation: the message names the type the operation serves.
+func (o operation) typeMismatch() *apiError {
+	switch o.modelType {
+	case "embedding":
+		return &errNotEmbed
+	case "decision":
+		return &errNotDecide
+	default:
+		return &errNotGenerate
+	}
+}
+
 var (
-	opChat       = operation{path: "/v1/chat/completions", method: "POST", route: routeByModel, endpoint: "chat.completions", capField: "max_completion_tokens", altCapField: "max_tokens"}
-	opLegacy     = operation{path: "/v1/completions", method: "POST", route: routeByModel, endpoint: "completions", capField: "max_tokens"}
-	opEmbed      = operation{path: "/v1/embeddings", method: "POST", route: routeByModel, endpoint: "embeddings"}
-	opResp       = operation{path: "/v1/responses", method: "POST", route: routeByModel, capture: true, endpoint: "responses", capField: "max_output_tokens"}
-	opRespGet    = operation{path: "/v1/responses", method: "GET", route: routeByResponseID, endpoint: "responses"}
-	opRespCancel = operation{path: "/v1/responses", method: "POST", route: routeByResponseID, endpoint: "responses"}
+	opChat       = operation{path: "/v1/chat/completions", method: "POST", route: routeByModel, endpoint: "chat.completions", modelType: "generation", capField: "max_completion_tokens", altCapField: "max_tokens"}
+	opLegacy     = operation{path: "/v1/completions", method: "POST", route: routeByModel, endpoint: "completions", modelType: "generation", capField: "max_tokens"}
+	opEmbed      = operation{path: "/v1/embeddings", method: "POST", route: routeByModel, endpoint: "embeddings", modelType: "embedding"}
+	opResp       = operation{path: "/v1/responses", method: "POST", route: routeByModel, capture: true, endpoint: "responses", modelType: "generation", capField: "max_output_tokens"}
+	opRespGet    = operation{path: "/v1/responses", method: "GET", route: routeByResponseID, endpoint: "responses", modelType: "generation"}
+	opRespCancel = operation{path: "/v1/responses", method: "POST", route: routeByResponseID, endpoint: "responses", modelType: "generation"}
+	// opDecide serves decision models (SYSTEMONE_PLAN §D1). It has no
+	// capField, so it is non-generative: no output cap, no stream-usage
+	// injection, and "stream": true is refused before anything is
+	// forwarded.
+	opDecide = operation{path: "/v1/systemone", method: "POST", route: routeByModel, endpoint: "systemone", modelType: "decision"}
 )
 
 // Proxy wires configuration, routing, and backend clients together.
@@ -206,6 +242,11 @@ func (p *Proxy) Completions(q *Req) { p.dispatch(q, opLegacy) }
 
 // Embeddings implements POST /v1/embeddings (PLAN §11.1).
 func (p *Proxy) Embeddings(q *Req) { p.dispatch(q, opEmbed) }
+
+// Decide implements POST /v1/systemone (PLAN §11.1, SYSTEMONE_PLAN
+// §D1): a decision model called under the same authentication, limits,
+// accounting and live view as every other inference call.
+func (p *Proxy) Decide(q *Req) { p.dispatch(q, opDecide) }
 
 // ResponsesCreate implements POST /v1/responses (PLAN §11.1, §21).
 func (p *Proxy) ResponsesCreate(q *Req) { p.dispatch(q, opResp) }
@@ -710,19 +751,14 @@ func (p *Proxy) resolveTarget(q *Req, o operation, body []byte) (target, *apiErr
 		if !q.Key.Allows(publicModel) || !p.router.Has(publicModel) {
 			return t, &errModelDenied
 		}
-		// Endpoint/model-type agreement (N12): an embedding model is not
-		// servable on a generative endpoint, and a generation model is
-		// not servable on the embeddings endpoint. The model is known to
-		// exist here, so this is a 400, not a 404.
-		switch p.router.TypeOf(publicModel) {
-		case "embedding":
-			if o.generative() {
-				return t, &errNotGenerate
-			}
-		case "generation":
-			if o.endpoint == "embeddings" {
-				return t, &errNotEmbed
-			}
+		// Endpoint/model-type agreement (N12): each operation serves
+		// exactly one model type, and any other type is refused. An
+		// allow-list rather than exclusions, so a type added later is
+		// refused everywhere until an operation names it — that fails
+		// closed (SYSTEMONE_PLAN §D2). The model is known to exist
+		// here, so this is a 400, not a 404.
+		if !o.serves(p.router.TypeOf(publicModel)) {
+			return t, o.typeMismatch()
 		}
 		if o.capture {
 			if prev, ok := stringField(t.fields, "previous_response_id"); ok {
