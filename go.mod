@@ -1,6 +1,6 @@
 module mellomting
 
-go 1.27
+go 1.27.2
 
 require (
 	github.com/landlock-lsm/go-landlock v0.9.0
