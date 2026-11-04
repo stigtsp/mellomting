@@ -175,3 +175,15 @@ func TestProfileGrantsUnresolvablePathAsWritten(t *testing.T) {
 		t.Fatalf("profile dropped an unresolvable path:\n%s", p)
 	}
 }
+
+// Go on macOS resolves through mDNSResponder, so a backend named by
+// hostname needs its socket; without one the grant must be absent.
+func TestProfileGrantsResolverOnlyWhenAsked(t *testing.T) {
+	const rule = `(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))`
+	if p := Profile(sandbox.Policy{Resolve: true}); !strings.Contains(p, rule) {
+		t.Fatalf("profile missing %s:\n%s", rule, p)
+	}
+	if p := Profile(testPolicy()); strings.Contains(p, "mDNSResponder") {
+		t.Fatalf("profile grants the resolver without a hostname backend:\n%s", p)
+	}
+}

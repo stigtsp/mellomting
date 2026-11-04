@@ -62,6 +62,14 @@ are accepted. It restricts the daemon to the resources it still needs:
   file replacement. Put that file in a separate directory to narrow access.
 - Write the accounting log when enabled.
 - Connect to configured backend TCP ports.
+- Resolve names, only when a backend URL uses a hostname instead of an IP
+  literal. On Linux this grants read access to the directories holding
+  `/etc/resolv.conf`, `/etc/hosts` and `/etc/nsswitch.conf`, including where
+  their symlinks lead, because those files are replaced by rename. That is
+  usually all of `/etc`, the configuration directory included. On macOS
+  it grants the mDNSResponder socket. Use IP literals to keep this out of the
+  policy. DNS over TCP is not granted, so a lookup whose UDP reply is
+  truncated fails.
 - Accept requests on listeners opened at startup.
 
 No execution rights are granted. Landlock also restricts signals and abstract

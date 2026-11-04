@@ -29,7 +29,9 @@ This summarizes the threats and limits defined in [the design](docs/PLAN.md).
 If Mellomting is compromised, an attacker may still misuse what Mellomting
 is intentionally allowed to touch (PLAN §5.2): already-open files, the
 accounting file descriptor, configured backend ports, backend credentials
-already in memory, and anything the configured destination policy allows.
+already in memory, anything the configured destination policy allows, and,
+when a backend is named by hostname, the resolver: on Linux, read access to
+the directories holding the resolver configuration, usually all of `/etc`.
 Keep backend credentials in protected files referenced by configuration,
 rather than in the YAML itself.
 

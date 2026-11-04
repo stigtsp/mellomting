@@ -4,6 +4,7 @@ package landlock
 
 import (
 	"fmt"
+	"slices"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
@@ -57,7 +58,11 @@ func Apply(abi int, pol sandbox.Policy) error {
 	// AccessFSReadDir is deliberately absent: the daemon opens known
 	// pathnames and never enumerates a directory.
 	var rules []ll.Rule
-	for _, f := range pol.ReadPaths {
+	readPaths := pol.ReadPaths
+	if pol.Resolve {
+		readPaths = slices.Concat(readPaths, sandbox.ResolverPaths())
+	}
+	for _, f := range readPaths {
 		rules = append(rules, ll.PathAccess(readFile, f))
 	}
 	for _, f := range pol.WriteFiles {

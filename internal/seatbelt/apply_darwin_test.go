@@ -51,6 +51,11 @@ func TestGeneratedProfileCompiles(t *testing.T) {
 			ReadPaths: []string{"/etc/mellomting"},
 			Listeners: []sandbox.Listener{{UnixPath: "/run/mellomting/x.sock"}},
 		}},
+		{"hostname backend", sandbox.Policy{
+			ConnectTCP: []uint16{443},
+			Listeners:  []sandbox.Listener{{TCPPort: 8080}},
+			Resolve:    true,
+		}},
 		{"empty", sandbox.Policy{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

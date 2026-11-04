@@ -211,7 +211,8 @@ configured the registry is not created and nothing is tracked.
 
 Phase 4 adds Landlock hardening (PLAN §95): `internal/landlock` builds
 the minimal post-startup policy from config (users-file read, accounting
-write, backend TCP connect ports; everything else denied), enforces it
+write, backend TCP connect ports, resolver configuration read only when a
+backend is named by hostname; everything else denied), enforces it
 strictly on all runtime threads (ABI 8+ TSYNC path) only after all
 startup FDs are settled and before the listener accepts (PLAN §57);
 `security.landlock.mode: required` fails closed, `best-effort` (the

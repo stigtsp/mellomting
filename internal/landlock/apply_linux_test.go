@@ -4,6 +4,8 @@ package landlock_test
 
 import (
 	"bufio"
+	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -527,4 +530,62 @@ func TestScopedAbstractSocket(t *testing.T) {
 // keyed by name, so uniqueness across parallel tests matters.
 func abstractSockName(pid int) string {
 	return "@mellomting-lltest-" + strconv.Itoa(pid)
+}
+
+// resolverTestName is a name /etc/hosts answers for. Go reads the
+// resolver configuration on the first lookup, which in the daemon comes
+// after confinement, so this is what a backend named by hostname needs.
+// MELLOMTING_LANDLOCK_HOSTS_NAME picks a name only /etc/hosts knows (a
+// container's --add-host), which no DNS fallback can answer instead.
+func resolverTestName(t *testing.T) string {
+	t.Helper()
+	name := cmp.Or(os.Getenv("MELLOMTING_LANDLOCK_HOSTS_NAME"), "localhost")
+	hosts, err := os.ReadFile("/etc/hosts")
+	if err != nil || !slices.Contains(strings.Fields(string(hosts)), name) {
+		t.Skipf("/etc/hosts does not list %q", name)
+	}
+	return name
+}
+
+func lookupAfterApply(t *testing.T, pol sandbox.Policy) ([]string, error) {
+	t.Helper()
+	requireABIOrFail(t, landlock.DefaultMinimumABI)
+	abi := min(landlock.Check().KernelABI, landlock.MaxABI)
+	if err := landlock.Apply(abi, pol); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	r := &net.Resolver{PreferGo: true}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	return r.LookupHost(ctx, os.Getenv("LL_RESOLVE_NAME"))
+}
+
+// TestResolveKeepsLookupsWorking proves the resolver grant on a
+// kernel that enforces it: a lookup made for the first time after
+// confinement still reads the hosts file and resolver configuration.
+func TestResolveKeepsLookupsWorking(t *testing.T) {
+	if !lltest.IsRunningInSubprocess() {
+		t.Setenv("LL_RESOLVE_NAME", resolverTestName(t))
+	}
+	lltest.RunInSubprocess(t, func() {
+		addrs, err := lookupAfterApply(t, sandbox.Policy{Resolve: true})
+		if err != nil || len(addrs) == 0 {
+			t.Fatalf("lookup after confinement = %v, %v; want the hosts-file answer", addrs, err)
+		}
+	})
+}
+
+// TestLookupDeniedWithoutResolve is the control for the test
+// above: without the grant the same lookup cannot read /etc/hosts, so
+// the grant is what makes the difference rather than a cached answer.
+func TestLookupDeniedWithoutResolve(t *testing.T) {
+	if !lltest.IsRunningInSubprocess() {
+		t.Setenv("LL_RESOLVE_NAME", resolverTestName(t))
+	}
+	lltest.RunInSubprocess(t, func() {
+		addrs, err := lookupAfterApply(t, sandbox.Policy{})
+		if err == nil {
+			t.Skipf("lookup answered %v without the hosts file; a resolver on the fallback address must have served it", addrs)
+		}
+	})
 }

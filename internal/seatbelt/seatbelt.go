@@ -24,6 +24,10 @@ import (
 // Backend is the name this enforcement mechanism reports itself under.
 const Backend = "seatbelt"
 
+// ResolverSocket is mDNSResponder's socket, through which libSystem, and
+// so Go, resolves names on macOS.
+const ResolverSocket = "/private/var/run/mDNSResponder"
+
 // baseProfile is Apple's own profile for "various BSD daemons". It
 // imports system.sb and grants the reads a running process needs —
 // shared libraries, timezone data, locale tables — none of which the
@@ -80,6 +84,16 @@ func Profile(pol sandbox.Policy) string {
 		case l.TCPPort != 0:
 			b.WriteString(fmt.Sprintf("(allow network-inbound (local ip \"*:%d\"))\n", l.TCPPort))
 		}
+	}
+
+	// Go resolves through libSystem on macOS, which asks mDNSResponder
+	// over this socket; it reads no resolver file the daemon would
+	// otherwise need. Without the grant every lookup reports "no such
+	// host". system.sb's (system-network) macro would also cover it, but
+	// grants far more (configd, the network extension services), so it
+	// is not invoked.
+	if pol.Resolve {
+		b.WriteString("(allow network-outbound (remote unix-socket (path-literal " + quote(ResolverSocket) + ")))\n")
 	}
 
 	// Backend connections are filtered by destination port only. That

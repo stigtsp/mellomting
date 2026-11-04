@@ -833,7 +833,8 @@ Allow only:
 ::1/128
 ```
 
-Prefer IP literals rather than DNS names.
+Prefer IP literals rather than DNS names. A DNS name also widens the sandbox
+policy to the resolver (§58).
 
 This should be the documented standard deployment.
 
@@ -2353,6 +2354,18 @@ READ:
                                      key mutation renames a new file over it —
                                      a rule bound to the replaced inode would
                                      deny the reload (§30)
+    resolver configuration           only when a backend URL names a host
+                                     rather than an IP literal: the directories
+                                     of /etc/resolv.conf, /etc/hosts and
+                                     /etc/nsswitch.conf, as written and as their
+                                     symlinks resolve. Go reads them on the
+                                     first lookup, after confinement, and again
+                                     whenever they change; they are replaced by
+                                     rename, so a per-file rule would stop
+                                     matching. A denied read silently falls
+                                     back to 127.0.0.1:53. Seatbelt grants the
+                                     mDNSResponder socket instead, which is
+                                     how Go resolves on macOS.
 
 WRITE:
     accounting destination only if opened/reopened by pathname

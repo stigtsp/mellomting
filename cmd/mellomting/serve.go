@@ -333,7 +333,7 @@ func enforceSandbox(b sandboxBackend, cfg *config.Config, listeners []net.Addr, 
 	if err := b.apply(report, pol); err != nil {
 		return failClosed("sandbox application failed", err.Error())
 	}
-	fields := append([]any{"backend", b.name, "mode", b.mode}, b.applied(report)...)
+	fields := append([]any{"backend", b.name, "mode", b.mode}, b.applied(report, pol)...)
 	log.Info("sandbox enforced", append(fields, "rules", pol.Summarize())...)
 	return nil
 }
@@ -351,19 +351,26 @@ type sandboxBackend struct {
 	// floor its own mechanism has.
 	ready func(sandbox.Report) (reason, detail string)
 	apply func(sandbox.Report, sandbox.Policy) error
-	// applied names what was enforced, for the operational log.
-	applied func(sandbox.Report) []any
+	// applied names what was enforced, for the operational log,
+	// including the platform's own grants behind a policy flag such as
+	// Resolve, which the platform-neutral summary cannot name.
+	applied func(sandbox.Report, sandbox.Policy) []any
 }
 
 func platformSandbox(cfg *config.Config) sandboxBackend {
 	if runtime.GOOS == "darwin" {
 		return sandboxBackend{
-			name:    "seatbelt",
-			mode:    cfg.Security.Seatbelt.Mode,
-			check:   seatbelt.Check,
-			ready:   func(sandbox.Report) (string, string) { return "", "" },
-			apply:   func(_ sandbox.Report, p sandbox.Policy) error { return seatbelt.Apply(p) },
-			applied: func(sandbox.Report) []any { return nil },
+			name:  "seatbelt",
+			mode:  cfg.Security.Seatbelt.Mode,
+			check: seatbelt.Check,
+			ready: func(sandbox.Report) (string, string) { return "", "" },
+			apply: func(_ sandbox.Report, p sandbox.Policy) error { return seatbelt.Apply(p) },
+			applied: func(_ sandbox.Report, p sandbox.Policy) []any {
+				if p.Resolve {
+					return []any{"resolver_socket", seatbelt.ResolverSocket}
+				}
+				return nil
+			},
 		}
 	}
 	// Landlock is the backend everywhere else, including platforms with
@@ -392,8 +399,14 @@ func platformSandbox(cfg *config.Config) sandboxBackend {
 		apply: func(r sandbox.Report, p sandbox.Policy) error {
 			return landlock.Apply(min(r.KernelABI, landlock.MaxABI), p)
 		},
-		applied: func(r sandbox.Report) []any {
-			return []any{"kernel_abi", r.KernelABI, "applied_abi", min(r.KernelABI, landlock.MaxABI)}
+		applied: func(r sandbox.Report, p sandbox.Policy) []any {
+			fields := []any{"kernel_abi", r.KernelABI, "applied_abi", min(r.KernelABI, landlock.MaxABI)}
+			if p.Resolve {
+				// Usually all of /etc: the widening an operator most
+				// needs to see, so it is listed rather than implied.
+				fields = append(fields, "resolver_read", sandbox.ResolverPaths())
+			}
+			return fields
 		},
 	}
 }
@@ -582,7 +595,8 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 // confines itself to can be asserted on any host, not only one that
 // can enforce it.
 func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, error) {
-	ports, err := sandbox.BackendPorts(backendBaseURLs(cfg)...)
+	urls := backendBaseURLs(cfg)
+	ports, err := sandbox.BackendPorts(urls...)
 	if err != nil {
 		return sandbox.Policy{}, fmt.Errorf("sandbox: %w", err)
 	}
@@ -599,6 +613,14 @@ func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, er
 		ReadPaths:  []string{filepath.Dir(cfg.Auth.UsersFile)},
 		ConnectTCP: ports,
 	}
+	// A backend named by hostname is resolved per connection (PLAN
+	// §16.2), after confinement, so the resolver must keep working. An
+	// all-literal configuration keeps the narrower policy. TCP port 53
+	// is deliberately not granted: the port rule cannot name a host, so
+	// it would open TCP to any host on 53, and Go only falls back to TCP
+	// for a truncated UDP reply, which a single-name lookup rarely
+	// produces.
+	pol.Resolve = sandbox.NamesHost(urls...)
 	if cfg.Accounting.Enabled {
 		pol.WriteFiles = append(pol.WriteFiles, cfg.Accounting.Path)
 	}

@@ -169,7 +169,9 @@ The sandbox uses Landlock on Linux and Seatbelt on macOS. It defaults to
 `best-effort`: apply when available and warn otherwise. `required` refuses
 startup without it; `disabled` skips it. Run
 `mellomting sandbox check --config ./config.yaml` to inspect capability and
-configured policy. See [Hardening](../HARDENING.md).
+configured policy. A backend URL with a hostname instead of an IP literal
+adds name resolution to the sandbox policy; the `sandbox enforced` log line
+lists it. See [Hardening](../HARDENING.md).
 
 | Setting | Default |
 |---------|---------|

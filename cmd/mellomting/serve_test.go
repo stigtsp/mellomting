@@ -1189,7 +1189,7 @@ func TestEnforceSandboxModes(t *testing.T) {
 			check:   func() sandbox.Report { return sandbox.Report{Reason: "stub is never available"} },
 			ready:   func(sandbox.Report) (string, string) { return "", "" },
 			apply:   func(sandbox.Report, sandbox.Policy) error { return errors.New("stub cannot apply") },
-			applied: func(sandbox.Report) []any { return nil },
+			applied: func(sandbox.Report, sandbox.Policy) []any { return nil },
 		}
 	}
 
@@ -3019,5 +3019,38 @@ func TestSandboxPolicyGrantsUsersFileDirectory(t *testing.T) {
 	}
 	if !slices.Equal(withLog.WriteFiles, []string{accounting.Accounting.Path}) {
 		t.Fatalf("WriteFiles = %v, want the accounting log", withLog.WriteFiles)
+	}
+}
+
+// A backend named by hostname is resolved after confinement, so the
+// policy must keep the resolver configuration readable; a configuration
+// of IP literals must not gain that grant (PLAN §58).
+func TestSandboxPolicyGrantsResolverOnlyForHostnames(t *testing.T) {
+	addrs := []net.Addr{&net.TCPAddr{Port: 8080}}
+	literal := &config.Config{
+		Auth:     config.Auth{UsersFile: "/etc/mellomting/users.yaml"},
+		Backends: map[string]config.Backend{"b1": {BaseURL: "http://10.0.9.130:8001"}},
+	}
+	pol, err := sandboxPolicy(literal, addrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pol.Resolve {
+		t.Fatal("Resolve set for IP-literal backends")
+	}
+
+	named := &config.Config{
+		Auth: config.Auth{UsersFile: "/etc/mellomting/users.yaml"},
+		Backends: map[string]config.Backend{
+			"b1": {BaseURL: "http://10.0.9.130:8001"},
+			"b2": {BaseURL: "https://beep.example.ts.net:443"},
+		},
+	}
+	pol, err = sandboxPolicy(named, addrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pol.Resolve {
+		t.Fatal("Resolve unset with a backend named by hostname")
 	}
 }
