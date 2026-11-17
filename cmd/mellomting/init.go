@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -104,15 +105,24 @@ func systemdUnitInstalled() bool {
 //
 // Exit codes: 0 ok, 1 platform/preflight failure, 2 usage error.
 func initCmd(args []string) int {
-	fs := commandFlags("init", "Create configuration and key files from inference servers.\nRequires Linux; use --dry-run on other platforms. Existing files are preserved.")
+	fs := commandFlags("init", "Create configuration and key files from inference servers.\n"+
+		"With --edge, create a configuration that attaches the servers to that\n"+
+		"proxy instead; the agent key is read from standard input and checked\n"+
+		"with the proxy first:\n\n"+
+		"  echo \"$AGENT_KEY\" | sudo mellomting init --edge https://proxy.example.org\n\n"+
+		"Requires Linux; use --dry-run on other platforms. Existing files are preserved.")
 	var servers serverList
-	var configPath, listen, sandboxMode string
-	var dryRun bool
-	fs.Var(&servers, "server", "required server `URL` or NAME=URL; repeat for multiple servers")
-	fs.StringVar(&configPath, "config", "", "destination `PATH` (default ./config.yaml)")
+	var configPath, listen, sandboxMode, edge, caFile, backendKeyFile string
+	var dryRun, insecureEdge bool
+	fs.Var(&servers, "server", "server `URL` or NAME=URL, required; repeat for multiple servers.\nWith --edge: a plain URL, default "+defaultAttachServer)
+	fs.StringVar(&configPath, "config", "", "destination `PATH` (default "+config.DefaultConfigPath+")")
 	fs.StringVar(&listen, "listen", defaultInitListen, "listener `ADDRESS`: IP:port or absolute socket path")
 	fs.StringVar(&sandboxMode, "sandbox", sandbox.ModeBestEffort, "sandbox `MODE` for this platform: required, best-effort, disabled")
 	fs.BoolVar(&dryRun, "dry-run", false, "validate and print config without writing files")
+	fs.StringVar(&edge, "edge", "", "attach the servers to the proxy at `URL` instead of serving them")
+	fs.StringVar(&caFile, "ca-file", "", "with --edge: PEM `PATH` of CAs for the proxy (default: system roots)")
+	fs.StringVar(&backendKeyFile, "backend-key-file", "", "with --edge: `PATH` of a bearer token for the servers")
+	fs.BoolVar(&insecureEdge, "insecure-edge", false, "with --edge: allow a plain http proxy off loopback (sends the agent key unencrypted)")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
 	}
@@ -120,12 +130,23 @@ func initCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: init: unexpected arguments %q\n", fs.Args())
 		return 2
 	}
-	sandboxSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "sandbox" {
-			sandboxSet = true
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	sandboxSet := set["sandbox"]
+	if edge != "" {
+		return initAttachCmd(initAttach{
+			configPath: cmp.Or(configPath, config.DefaultConfigPath), edge: edge, servers: servers,
+			caFile: caFile, backendKeyFile: backendKeyFile, insecureEdge: insecureEdge,
+			sandbox: initSandboxFor(runtime.GOOS), sandboxMode: sandboxMode,
+			dryRun: dryRun, unitInstalled: systemdUnitInstalled(),
+		}, set["listen"], sandboxSet)
+	}
+	for _, f := range []string{"ca-file", "backend-key-file", "insecure-edge"} {
+		if set[f] {
+			fmt.Fprintf(os.Stderr, "mellomting: init: --%s needs --edge\n", f)
+			return 2
 		}
-	})
+	}
 
 	parsed, err := parseInitArguments(configPath, listen, sandboxMode, sandboxSet, dryRun, []string(servers))
 	if err != nil {
@@ -690,13 +711,28 @@ type commitFile struct {
 // final path and never follows a final-component symlink. A --dry-run
 // invocation returns from runInit before reaching this function.
 func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commitOps) error {
+	return commitFiles([]commitFile{
+		{path: args.PepperPath, data: artifacts.Pepper},
+		{path: args.UsersPath, data: artifacts.Users},
+		{path: args.ConfigPath, data: artifacts.Config},
+	}, ops)
+}
+
+// commitFiles publishes files that share one directory, create-only and
+// directory-FD-relative (D4/D5), the last one (the configuration that
+// names the others) only after the rest are durable.
+func commitFiles(files []commitFile, ops commitOps) error {
 	if ops == nil {
 		ops = defaultCommitOps()
 	}
-	if filepath.Dir(args.ConfigPath) != filepath.Dir(args.UsersPath) || filepath.Dir(args.ConfigPath) != filepath.Dir(args.PepperPath) {
-		return fmt.Errorf("config, users, and pepper must share one parent directory")
+	dir := filepath.Dir(files[0].path)
+	for i := range files {
+		if filepath.Dir(files[i].path) != dir {
+			return fmt.Errorf("%s and %s must share one parent directory", files[0].path, files[i].path)
+		}
+		files[i].final = filepath.Base(files[i].path)
+		files[i].temp = fmt.Sprintf(".mellomting-init-%d-%s.tmp", os.Getpid(), files[i].final)
 	}
-	dir := filepath.Dir(args.ConfigPath)
 
 	dirFD, dirID, err := ops.openParent(dir)
 	if err != nil {
@@ -719,27 +755,6 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		return fmt.Errorf("revalidate destination directory: %w", err)
 	} else if id.Dev != dirID.Dev || id.Ino != dirID.Ino {
 		return fmt.Errorf("destination directory %s changed after it was opened", dir)
-	}
-
-	files := []commitFile{
-		{
-			temp:  fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid()),
-			final: filepath.Base(args.PepperPath),
-			path:  args.PepperPath,
-			data:  artifacts.Pepper,
-		},
-		{
-			temp:  fmt.Sprintf(".mellomting-init-%d-users.tmp", os.Getpid()),
-			final: filepath.Base(args.UsersPath),
-			path:  args.UsersPath,
-			data:  artifacts.Users,
-		},
-		{
-			temp:  fmt.Sprintf(".mellomting-init-%d-config.tmp", os.Getpid()),
-			final: filepath.Base(args.ConfigPath),
-			path:  args.ConfigPath,
-			data:  artifacts.Config,
-		},
 	}
 
 	var existing []string
@@ -811,9 +826,10 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		files[i].fd = -1
 	}
 
-	// D4 order: publish and unlink the two auth entries, durably sync the
-	// directory, then publish the config destination last.
-	for i := range 2 {
+	// D4 order: publish and unlink every entry but the config, durably
+	// sync the directory, then publish the config destination last.
+	last := len(files) - 1
+	for i := range last {
 		if err := publishCommitFile(ops, dirFD, &files[i]); err != nil {
 			rollbackCommitFiles(ops, dirFD, files)
 			return err
@@ -823,7 +839,7 @@ func commitInitArtifacts(args initArguments, artifacts initArtifacts, ops commit
 		rollbackCommitFiles(ops, dirFD, files)
 		return fmt.Errorf("fsync destination directory: %w", err)
 	}
-	if err := publishCommitFile(ops, dirFD, &files[2]); err != nil {
+	if err := publishCommitFile(ops, dirFD, &files[last]); err != nil {
 		rollbackCommitFiles(ops, dirFD, files)
 		return err
 	}

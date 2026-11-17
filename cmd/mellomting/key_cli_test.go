@@ -351,6 +351,39 @@ func TestKeyCreateLimits(t *testing.T) {
 	}
 }
 
+// An agent key's --register list lands in the users file, and key list
+// shows the public names with their upstream ids.
+func TestKeyCreateAgentRegister(t *testing.T) {
+	bin, dir := keyCLIFixture(t)
+	cfg := filepath.Join(dir, "config.yaml")
+
+	code, out, errOut := runCLI(t, bin, dir,
+		"key", "create", "ollama_a", "-config", cfg, "-agent", "*",
+		"-register", "qwen3-coder:30b=coder,gpt-oss:20b")
+	if code != 0 {
+		t.Fatalf("create exit = %d: %s", code, errOut)
+	}
+	if key := keyRe.FindString(out); key == "" || out != key+"\n" {
+		t.Fatalf("stdout must be the raw key and newline only: %q", out)
+	}
+	if !strings.Contains(errOut, "coder (qwen3-coder:30b), gpt-oss:20b") {
+		t.Fatalf("confirmation must name the registered models: %q", errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "users.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"register:", "id: qwen3-coder:30b", "as: coder", "id: gpt-oss:20b"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("users file lacks %q:\n%s", want, data)
+		}
+	}
+	code, out, _ = runCLI(t, bin, dir, "key", "list", "-config", cfg)
+	if code != 0 || !strings.Contains(out, "agent: coder (qwen3-coder:30b), gpt-oss:20b") {
+		t.Fatalf("key list: %d %q", code, out)
+	}
+}
+
 // D18: chooseKeyID retries a key-ID collision at most maxAttempts times and
 // then fails without mutation; a generator (entropy) failure is propagated.
 func TestChooseKeyID(t *testing.T) {

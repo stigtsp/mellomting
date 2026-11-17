@@ -47,6 +47,8 @@ type Config struct {
 	Shutdown   Shutdown           `yaml:"shutdown"`
 	Responses  Responses          `yaml:"responses"`
 	Retry      Retry              `yaml:"retry"`
+	Agents     Agents             `yaml:"agents,omitempty"`
+	Attach     *Attach            `yaml:"attach,omitempty"`
 	Backends   map[string]Backend `yaml:"backends"`
 	Models     map[string]Model   `yaml:"models"`
 }
@@ -73,6 +75,31 @@ type Retry struct {
 
 // JitterEnabled reports whether backoff jitter is on (default true).
 func (r Retry) JitterEnabled() bool { return r.Jitter == nil || *r.Jitter }
+
+// Agents controls self-registering backends (PLAN §104): daemons
+// with an attach section that dial in with an agent key, attach over the
+// ingress listener, and serve the models their inference server
+// advertises under the key's namespace. Disabled by default: the attach
+// path is a 404 unless an operator turns it on.
+type Agents struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxAttachments bounds concurrently attached agents across all
+	// keys; each one holds a connection and a slot pool.
+	MaxAttachments int `yaml:"max_attachments,omitempty"`
+	// MaxAttachmentsPerKey bounds one agent key's share, so one
+	// (possibly stolen) key cannot take every slot.
+	MaxAttachmentsPerKey int `yaml:"max_attachments_per_key,omitempty"`
+	// MaxConcurrency is each attachment's admission cap, the agent
+	// counterpart of a server's max_concurrency.
+	MaxConcurrency int `yaml:"max_concurrency,omitempty"`
+	// MaxModels bounds how many models one attachment may register.
+	MaxModels int `yaml:"max_models,omitempty"`
+	// QueueSize and QueueTimeout bound the requests waiting for an
+	// attachment's admission slot, like a server's queue_size and
+	// queue_timeout.
+	QueueSize    int      `yaml:"queue_size,omitempty"`
+	QueueTimeout Duration `yaml:"queue_timeout,omitempty"`
+}
 
 // Shutdown controls graceful shutdown (PLAN §74).
 type Shutdown struct {
@@ -182,7 +209,7 @@ type Auth struct {
 
 // Security holds backend network and sandbox policy (PLAN §16, §55).
 type Security struct {
-	BackendNetwork BackendNetwork `yaml:"backend_network"`
+	BackendNetwork BackendNetwork `yaml:"backend_network,omitempty"`
 	Landlock       Landlock       `yaml:"landlock"`
 	Seatbelt       Seatbelt       `yaml:"seatbelt,omitempty"`
 }

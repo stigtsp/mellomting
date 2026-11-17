@@ -106,6 +106,33 @@ type Proxy struct {
 	usageOptIn bool               // stream_options.include_usage injection is not disabled (§38)
 	inflight   *inflight.Registry // live-request view for `mellomting top`; nil = untracked
 	draining   atomic.Bool
+	// agents resolves attached-agent backends (PLAN §104); nil when
+	// agents are disabled.
+	agents AgentClients
+}
+
+// AgentClients resolves the backend clients of attached agents, which
+// come and go after startup (PLAN §104). It is an interface, with one
+// implementation (agent.Registry), only to keep proxy from importing the
+// agent package, which builds on proxy's neighbours.
+type AgentClients interface {
+	Client(name string) (*backend.Client, bool)
+	DrainAll()
+}
+
+// SetAgents installs the attached-agent client lookup. It is called once
+// at startup, before the proxy serves.
+func (p *Proxy) SetAgents(a AgentClients) { p.agents = a }
+
+// client returns the configured or attached backend client by name.
+func (p *Proxy) client(name string) (*backend.Client, bool) {
+	if c, ok := p.clients[name]; ok {
+		return c, true
+	}
+	if p.agents != nil {
+		return p.agents.Client(name)
+	}
+	return nil, false
 }
 
 // New builds a Proxy. clients is the backend-name -> client table built
@@ -115,7 +142,7 @@ func New(cfg *config.Config, router *routing.Router, clients map[string]*backend
 	if log == nil {
 		log = slog.Default()
 	}
-	if cfg == nil || router == nil || len(clients) == 0 {
+	if cfg == nil || router == nil || (len(clients) == 0 && !cfg.Agents.Enabled) {
 		return nil, fmt.Errorf("proxy: configuration, router, and clients are required")
 	}
 	total := int64(cfg.Server.MaxBufferedRequestBytes) * int64(cfg.Server.MaxInflightRequests)
@@ -156,6 +183,9 @@ func (p *Proxy) BeginDraining() {
 	p.draining.Store(true)
 	for _, c := range p.clients {
 		c.Drain()
+	}
+	if p.agents != nil {
+		p.agents.DrainAll()
 	}
 }
 
@@ -201,6 +231,10 @@ type result struct {
 	usage       accounting.Usage
 	usageStatus accounting.UsageStatus
 	reservation int64
+	// untrusted is set when the backend that answered is an attached
+	// agent. Recorded at forwarding time: by accounting time the agent
+	// may already be gone.
+	untrusted bool
 }
 
 // dispatch runs the full pipeline for one allow-listed operation.
@@ -334,7 +368,22 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		out.class = "client_canceled"
 		out.bytesOut = 0
 	}
-	for attempt := range maxAttempts {
+	// Picks of an attached backend that detached after selection. Nothing
+	// reached it, so they cost no attempt; each one is excluded from
+	// further selection, and the count is bounded regardless.
+	gone := 0
+	skipGone := func(name string) bool {
+		if gone++; gone > maxGonePicks {
+			return false
+		}
+		tried = append(tried, name)
+		if lastFailed == name {
+			// The in-place repeat below must not pick it again.
+			lastFailed = ""
+		}
+		return true
+	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if q.R.Context().Err() != nil {
 			markClientCanceled()
 			return
@@ -363,9 +412,34 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// upstream model differs across replicas, so it cannot be hoisted
 		// out of the loop. A response-ID route has no decoded body and is
 		// relayed byte-for-byte.
+		client, haveClient := p.client(backendName)
+		up, haveUpstream := "", true
+		if ob.fields != nil {
+			up, haveUpstream = p.router.UpstreamForModel(publicModel, backendName)
+		}
+		if !haveClient || !haveUpstream {
+			// Configured backends never go away, so a miss on one is a
+			// routing invariant failure. An attached one detaches at any
+			// time (PLAN §104).
+			if _, static := p.clients[backendName]; static || p.agents == nil {
+				fail(errInternal)
+				return
+			}
+			if fixedBackend != "" {
+				// The stored response lived on that attachment.
+				fail(goneResponse(o))
+				return
+			}
+			if !skipGone(backendName) {
+				fail(errNoBackend)
+				return
+			}
+			attempt--
+			continue
+		}
+
 		bd := ob.body
 		if ob.fields != nil {
-			up, _ := p.router.UpstreamFor(backendName)
 			var rerr error
 			if bd, rerr = encodeOutbound(ob.fields, up); rerr != nil {
 				// A missing upstream model is a routing invariant
@@ -392,12 +466,8 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			}
 		}
 
-		client, ok := p.clients[backendName]
-		if !ok {
-			fail(errInternal)
-			return
-		}
 		out.backend = backendName
+		out.untrusted = client.Untrusted()
 
 		live.Target(publicModel, backendName)
 		live.Phase(inflight.PhaseQueued)
@@ -427,6 +497,22 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 				// The client went away; no response is sent or possible.
 				markClientCanceled()
 				return
+			}
+			if client.Untrusted() && (errors.Is(err, backend.ErrGone) ||
+				errors.Is(err, backend.ErrDraining) && !p.draining.Load()) {
+				// The attachment detached, or began draining, before
+				// this request was sent: try another replica. Only the
+				// daemon's own shutdown reports draining.
+				if fixedBackend != "" {
+					fail(goneResponse(o))
+					return
+				}
+				if !skipGone(backendName) {
+					fail(errNoBackend)
+					return
+				}
+				attempt--
+				continue
 			}
 			lastErr = err
 			lastFailed = backendName
@@ -515,7 +601,25 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 			q.W.Header().Set("Retry-After", lastRetryAfter)
 		}
 		fail(p.relayUpstreamDetail(f.resp, q.RequestID, lastFailed, lastErr))
+		return
 	}
+	// Only skipped detached picks: there is no upstream error to report.
+	fail(errNoBackend)
+}
+
+// maxGonePicks bounds the detached picks one request may skip. Each is a
+// distinct attachment, so this only matters if they churn faster than
+// requests route.
+const maxGonePicks = 16
+
+// goneResponse is the answer when the attachment holding a stored
+// response has detached: the response is unreachable, which reads as not
+// found (PLAN §31), not as a server fault.
+func goneResponse(o operation) apiError {
+	if o.route == routeByModel {
+		return errPrevNotFound
+	}
+	return errRespNotFound
 }
 
 // writeBuffered relays a buffered response body under a client
@@ -817,7 +921,7 @@ func (p *Proxy) pump(q *Req, res *backend.Result, o operation, ucancel context.C
 	// server-level value remains the fallback for unknown backends, and
 	// the client write-idle below falls back to it too.
 	idle := p.cfg.Server.StreamIdleTimeout.Duration()
-	if c, ok := p.clients[backendName]; ok {
+	if c, ok := p.client(backendName); ok {
 		if bIdle := c.StreamIdleTimeout(); bIdle > 0 {
 			idle = bIdle
 		}
@@ -1406,6 +1510,14 @@ func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 		} else {
 			total = 0
 		}
+	}
+	// An attached agent reports whatever usage it likes, and settling it
+	// unchecked would let one agent exhaust a client key's budget for
+	// every model. A token is at least one byte on the wire, so charge
+	// no more than the bytes that moved (PLAN §104.6). The JSONL keeps
+	// the claimed total next to the charge.
+	if out.untrusted {
+		total = min(total, int64(max(out.bytesIn, 0))+int64(max(out.bytesOut, 0)))
 	}
 	if p.quota != nil && total > 0 {
 		p.quota.Settle(q.Key.ID, total, time.Now())

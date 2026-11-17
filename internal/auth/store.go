@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -54,16 +55,47 @@ type Key struct {
 	SecretHash string     `yaml:"secret_hash"`
 	Enabled    bool       `yaml:"enabled"`
 	ExpiresAt  *time.Time `yaml:"expires_at"`
-	Models     []string   `yaml:"models"`
+	Models     []string   `yaml:"models,omitempty"`
 	Limits     KeyLimits  `yaml:"limits,omitempty"`
+	// Agent makes this an agent key (PLAN §104): it may attach a
+	// daemon (an attach section) and register models under this namespace, and
+	// may do nothing else. An agent key has no model ACL; a client key
+	// has no namespace.
+	Agent string `yaml:"agent,omitempty"`
+	// Register, on an agent key, is the allowlist of advertised ids its
+	// agents may register, each optionally under an alias (PLAN §104.4).
+	// Absent: every advertised id, under the namespace.
+	Register []AgentModel `yaml:"register,omitempty"`
 }
+
+// AgentModel is one register entry: the id the agent's server advertises
+// (and receives upstream) and the optional public alias.
+type AgentModel struct {
+	ID string `yaml:"id"`
+	As string `yaml:"as,omitempty"`
+}
+
+// IsAgent reports whether this is an agent key (PLAN §104).
+func (k *Key) IsAgent() bool { return k.Agent != "" }
 
 // Allows reports whether the key may use the public model (PLAN §31).
 // The "*" wildcard is explicit and easy to spot in review (PLAN §77).
+//
+// An entry ending in "/*" grants every model under that namespace
+// (PLAN §104): "exp1/*" allows "exp1/qwen" but not "exp1" or "exp10/x".
+// An agent key allows no model at all.
 func (k *Key) Allows(model string) bool {
+	if k.IsAgent() {
+		return false
+	}
 	for _, m := range k.Models {
 		if m == model || m == config.ModelWildcard {
 			return true
+		}
+		if prefix, ok := strings.CutSuffix(m, config.ModelPrefixWildcardSuffix); ok && prefix != "" {
+			if rest, ok := strings.CutPrefix(model, prefix+"/"); ok && rest != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -152,12 +184,53 @@ func validateUsers(uf *UsersFile) error {
 		if _, err := ParseHashValue(k.SecretHash); err != nil {
 			return fmt.Errorf("key %s: %v", k.ID, err)
 		}
-		if len(k.Models) == 0 {
-			return fmt.Errorf("key %s: models list must not be empty", k.ID)
+		if k.Agent != "" {
+			if err := config.ValidateAgentNamespace(k.Agent); err != nil {
+				return fmt.Errorf("key %s: %v", k.ID, err)
+			}
+			if len(k.Models) != 0 {
+				return fmt.Errorf("key %s: an agent key has no models list", k.ID)
+			}
+			if err := ValidateRegister(k.Agent, k.Register); err != nil {
+				return fmt.Errorf("key %s: %v", k.ID, err)
+			}
+		} else {
+			if len(k.Models) == 0 {
+				return fmt.Errorf("key %s: models list must not be empty", k.ID)
+			}
+			if len(k.Register) != 0 {
+				return fmt.Errorf("key %s: only an agent key has a register list", k.ID)
+			}
 		}
 		if err := validateLimits(&k.Limits); err != nil {
 			return fmt.Errorf("key %s: %v", k.ID, err)
 		}
+	}
+	return nil
+}
+
+// ValidateRegister checks an agent key's register list (PLAN §104.4):
+// valid ids and aliases, no id listed twice, and no two entries sharing
+// a public name. An empty list is valid and means "every advertised id".
+func ValidateRegister(ns string, reg []AgentModel) error {
+	if len(reg) > config.MaxAgentRegister {
+		return fmt.Errorf("register: at most %d entries, got %d", config.MaxAgentRegister, len(reg))
+	}
+	ids := make(map[string]bool, len(reg))
+	names := make(map[string]string, len(reg))
+	for _, r := range reg {
+		public, err := config.AgentRegisteredName(ns, r.ID, r.As)
+		if err != nil {
+			return err
+		}
+		if ids[r.ID] {
+			return fmt.Errorf("register: id %q listed twice", r.ID)
+		}
+		ids[r.ID] = true
+		if prev, ok := names[public]; ok {
+			return fmt.Errorf("register: %q and %q would both be served as %q", prev, r.ID, public)
+		}
+		names[public] = r.ID
 	}
 	return nil
 }
@@ -249,6 +322,20 @@ type Store struct {
 func (s *Store) HasID(id string) bool {
 	_, ok := s.byID[id]
 	return ok
+}
+
+// Active reports whether a key record authenticated earlier is still in
+// force unchanged: present, enabled and unexpired, with the same secret
+// and the same agent namespace and register list. Attached agents are
+// re-checked against it so revoking, disabling, expiring, rotating or
+// re-scoping an agent key detaches its agents (PLAN §104); an agent
+// re-attaches on its own and registers under the new list.
+func (s *Store) Active(k *Key) bool {
+	cur, ok := s.byID[k.ID]
+	if !ok || !cur.Enabled || cur.SecretHash != k.SecretHash || cur.Agent != k.Agent || !slices.Equal(cur.Register, k.Register) {
+		return false
+	}
+	return cur.ExpiresAt == nil || !s.now().After(*cur.ExpiresAt)
 }
 
 // NewStore builds a Store from a validated users file and pepper.

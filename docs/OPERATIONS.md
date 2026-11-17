@@ -71,6 +71,128 @@ Without systemd, send the daemon `SIGHUP`. Automatic checks use modification
 time, file identity, size, and permissions. If an editor changes a file in
 place while preserving all of those, use SIGHUP to force a reload.
 
+## Agents
+
+With `agents.enabled: true` (see [Configuration](CONFIGURATION.md#agents)),
+remote inference servers attach themselves. On the proxy (the "edge"),
+create one agent key per deployment, and client keys for the namespace:
+
+```sh
+AGENT_KEY=$(mellomting key create gpu_lab --agent lab --expires 2027-01-01)
+mellomting key create alice --models 'lab/*'
+```
+
+An agent key does nothing but attach: every other route rejects it. Its
+namespace is the first segment of every model its agents register, so a
+server advertising `qwen3` appears as `lab/qwen3`. `--agent '*'` registers
+the advertised names unprefixed. A client key's `NAMESPACE/*` entry grants
+every model under that namespace.
+
+`--register` narrows an agent key to the listed advertised ids, each
+optionally served under an alias (`ID=ALIAS`). Use it for servers that list
+everything they hold, such as Ollama: two hosts can each serve one model at
+the root, under names you choose:
+
+```sh
+mellomting key create ollama_a --agent '*' --register qwen3-coder:30b=coder
+mellomting key create ollama_b --agent '*' --register gpt-oss:20b
+mellomting key create alice --models coder,gpt-oss:20b
+```
+
+Clients see `coder` and `gpt-oss:20b`; the edge sends `qwen3-coder:30b`
+upstream for `coder`. Unlisted models are ignored, and `agents.max_models`
+counts only the listed ones, so a host listing many models still attaches.
+An alias contains no `/`, and under `*` neither does the served name, so
+`org/model` ids need an alias there. Editing the list (re-create the key)
+detaches the key's agents; they re-attach under the new list.
+
+Next to the inference server, install Mellomting as on the edge (the Debian
+package, or `install --systemd`) and let `init` write a configuration that
+attaches the server instead of serving clients:
+
+```sh
+echo "$AGENT_KEY" | sudo mellomting init --edge https://edge.example.org \
+  --server http://127.0.0.1:8000
+sudo systemctl enable --now mellomting
+```
+
+`init --edge` checks the key with the edge before writing anything; a
+refused key, or agents not enabled on the edge, aborts with nothing
+written. It reports whether each `--server` answers yet (one still loading
+is fine: the agent waits for it), then writes `/etc/mellomting/agent.key`
+and a `config.yaml` whose `attach` section names it (see
+[Configuration](CONFIGURATION.md#attach)). `--server` defaults to
+`http://127.0.0.1:8000`; repeat it for several local servers, each attached
+on its own connection. `--backend-key-file` sends a bearer token to the
+local servers, which the edge never sees, and `--ca-file` verifies the edge
+against your own CA; both are copied beside the configuration. The edge
+must be `https://` unless it is a loopback IP address; `--insecure-edge` sends
+the key over plain http anyway.
+
+To rotate the key, replace `agent.key` and restart the service.
+`mellomting agent check` repeats the key check and probes the servers, for
+scripts that want to fail fast. The agent recovers by itself:
+
+- It waits until the local server lists a model before attaching
+  (`waiting for backend`).
+- It detaches while the server is down (`backend unavailable; detaching`)
+  and reattaches when it returns. A failed health check is not counted
+  while requests are in flight, so a busy server is never cut off.
+- When its model list changes it opens a new attachment before draining
+  the old one, so in-flight streams finish. At an attachment cap it
+  replaces the attachment in place, with a gap of one handshake.
+- It reconnects with jittered backoff when the connection drops, the
+  network goes silent, or the edge restarts.
+- While its key is disabled or revoked it keeps retrying, logging
+  `agent disconnected; reconnecting` with
+  `error="edge refused attach: 401 Unauthorized"`.
+
+Stopping the service drains instead of cutting streams: the edge stops
+routing to it at once (`top` shows `draining`), and in-flight streams get
+up to `shutdown.grace_period` (default 30s) to finish. Set it above your
+longest expected stream; above 90 seconds, also raise the unit's
+`TimeoutStopSec` with a drop-in, or systemd kills the drain. While the only
+agent serving a model drains, new requests for that model get 404; run two
+agents per model for restarts without a gap.
+
+### Scaling to hundreds of sessions
+
+One agent connection carries any number of concurrent streams: each is an
+HTTP/2 stream with its own flow control, so a client that stops reading
+does not stall the others. The test suite runs 256 concurrent streams
+through one agent. What limits concurrency is configuration; raise every
+layer a request passes through:
+
+| Layer | Setting | Default | For about 256 sessions |
+| --- | --- | --- | --- |
+| Agent | `agents.max_concurrency` (per attachment; match the engine, e.g. vLLM `--max-num-seqs`) | 8 | 256 |
+| Agent queue | `agents.queue_size`, `agents.queue_timeout` | 32, 120s | as needed for bursts above the cap |
+| Proxy | `server.max_inflight_requests` | 64 | 512 |
+| Client key | `key create --concurrent-requests` | 8 | 256 or more |
+| Burst of new requests | `limits.global_burst`, `limits.global_requests_per_second` | 200, 100/s | 1000, 500/s |
+| Burst per source address | `limits.preauth_burst`, `limits.preauth_requests_per_second` | 200, 100/s | 1000, 500/s |
+
+Above `agents.max_concurrency`, requests wait in the agent's queue (shown
+as QUEUE in `mellomting top`); beyond the queue they get 503. A request
+over any other limit gets 429 or 503 at once.
+
+On the edge, `agent attached` lists each agent's models and context
+windows. `agent detached` gives the reason (connection closed or lost, agent
+key no longer active, discovery failed, edge shutting down), how long the
+agent was attached, and the requests it served. `mellomting top` adds an
+agents table: slots in use out of `max_concurrency`, queued requests, open
+streams, requests and transport failures per agent. Each request row names
+the agent serving it. Request log lines and accounting records name the
+agent as the backend (`agent-<key name>-<n>`).
+
+On the agent, `agent status` lines report active and total requests every
+minute while there is traffic, and `logging.level: debug` logs each
+relayed request's path, status, size and duration (never bodies).
+Revoking, disabling or expiring the agent key detaches its agents at once.
+A TLS terminator or reverse proxy in front of the edge must pass HTTP/1.1
+`Upgrade` requests through; the agent always requests HTTP/1.1.
+CDNs and WAFs may not: see `docs/AGENT_INTERMEDIARIES.md` (open problem).
+
 ## Installation
 
 To install just the binary from a local build:

@@ -71,6 +71,9 @@ type replica struct {
 	name     string
 	upstream string
 	weight   int
+	// contextLength is an attached replica's advertised window; 0 when
+	// unknown (PLAN §104, MODEL_METADATA_DESIGN §1).
+	contextLength int
 }
 
 type modelEntry struct {
@@ -94,6 +97,105 @@ type Router struct {
 
 	wrrMu sync.Mutex
 	wrr   map[string]*wrrState // per-model smooth weighted round-robin
+
+	// Attached-agent models (PLAN §104): public name -> its owning key
+	// and replicas, each an attachment's backend. Static models are
+	// immutable and take precedence; this table changes as agents attach
+	// and detach.
+	dynMu sync.RWMutex
+	dyn   map[string]dynModel
+}
+
+// dynModel is one attached model: the agent key that registered it and
+// the attachments serving it.
+type dynModel struct {
+	owner    string
+	replicas []replica
+}
+
+var (
+	// ErrStaticModel is returned when an attached agent advertises a
+	// name a configured model already uses: configuration always wins.
+	ErrStaticModel = errors.New("model name is configured statically")
+	// ErrModelOwned is returned when another agent key already serves
+	// the name: replicas may only join a name their own key registered,
+	// so one key cannot intercept another key's traffic.
+	ErrModelOwned = errors.New("model name is served by another agent key")
+)
+
+// AddDynamic routes publicModel to an attached agent's backend, which
+// serves it under upstream (PLAN §104). owner is the agent key's ID:
+// attachments of the same key may serve one name, balanced
+// least-inflight; another key cannot join it. contextLength is the
+// window the agent's server advertises, 0 when unknown.
+func (r *Router) AddDynamic(publicModel, backendName, upstream string, contextLength int, owner string) error {
+	if _, ok := r.models[publicModel]; ok {
+		return ErrStaticModel
+	}
+	r.dynMu.Lock()
+	defer r.dynMu.Unlock()
+	m, exists := r.dyn[publicModel]
+	if exists && m.owner != owner {
+		return ErrModelOwned
+	}
+	if slices.ContainsFunc(m.replicas, func(rep replica) bool { return rep.name == backendName }) {
+		return nil
+	}
+	m.owner = owner
+	m.replicas = append(m.replicas, replica{name: backendName, upstream: upstream, weight: 1, contextLength: contextLength})
+	r.dyn[publicModel] = m
+	return nil
+}
+
+// ContextLength returns the context window to advertise for a model: the
+// minimum of the windows its attached replicas report, since a request
+// may land on any of them; 0 when none reports one or the model is
+// configured statically (MODEL_METADATA_DESIGN §1).
+func (r *Router) ContextLength(publicModel string) int {
+	if _, ok := r.models[publicModel]; ok {
+		return 0
+	}
+	r.dynMu.RLock()
+	defer r.dynMu.RUnlock()
+	n := 0
+	for _, rep := range r.dyn[publicModel].replicas {
+		if rep.contextLength > 0 && (n == 0 || rep.contextLength < n) {
+			n = rep.contextLength
+		}
+	}
+	return n
+}
+
+// RemoveDynamic drops every route to an attached agent's backend; a
+// model left without replicas disappears.
+func (r *Router) RemoveDynamic(backendName string) {
+	r.dynMu.Lock()
+	defer r.dynMu.Unlock()
+	for name, m := range r.dyn {
+		m.replicas = slices.DeleteFunc(slices.Clone(m.replicas), func(rep replica) bool { return rep.name == backendName })
+		if len(m.replicas) == 0 {
+			delete(r.dyn, name)
+		} else {
+			r.dyn[name] = m
+		}
+	}
+	r.health.recordSuccess(backendName)
+}
+
+// lookup returns a model's entry, static first.
+func (r *Router) lookup(publicModel string) (modelEntry, bool) {
+	if e, ok := r.models[publicModel]; ok {
+		return e, true
+	}
+	r.dynMu.RLock()
+	defer r.dynMu.RUnlock()
+	m, ok := r.dyn[publicModel]
+	if !ok {
+		return modelEntry{}, false
+	}
+	// No type: a server's model list does not say whether a model
+	// generates or embeds, so both endpoints are left to the server.
+	return modelEntry{strategy: "least-inflight", replicas: slices.Clone(m.replicas)}, true
 }
 
 // wrrState is the classic smooth weighted round-robin state indexed by
@@ -106,7 +208,7 @@ type wrrState struct {
 // inflight reports current per-backend load for the *-inflight
 // strategies; it may be nil (treated as zero load).
 func New(cfg *config.Config, inflight func(string) int) (*Router, error) {
-	if len(cfg.Models) == 0 {
+	if len(cfg.Models) == 0 && !cfg.Agents.Enabled {
 		return nil, errors.New("routing: at least one public model is required")
 	}
 	if inflight == nil {
@@ -118,6 +220,7 @@ func New(cfg *config.Config, inflight func(string) int) (*Router, error) {
 		wrr:      make(map[string]*wrrState, len(cfg.Models)),
 		health:   newHealth(time.Now),
 		inflight: inflight,
+		dyn:      make(map[string]dynModel),
 	}
 	names := make([]string, 0, len(cfg.Models))
 	for name, m := range cfg.Models {
@@ -151,7 +254,7 @@ func New(cfg *config.Config, inflight func(string) int) (*Router, error) {
 // exclude removes the backends already tried for this request
 // (fallback never repeats a tried backend while others remain).
 func (r *Router) Select(publicModel string, exclude []string) (Target, error) {
-	entry, ok := r.models[publicModel]
+	entry, ok := r.lookup(publicModel)
 	if !ok {
 		return Target{}, ErrUnknownModel
 	}
@@ -276,34 +379,41 @@ func excluded(exclude []string, name string) bool {
 
 // Has reports whether the public model exists (without saying more).
 func (r *Router) Has(publicModel string) bool {
-	_, ok := r.models[publicModel]
+	_, ok := r.lookup(publicModel)
 	return ok
 }
 
-// List returns the public model names, sorted.
+// List returns the public model names, static and attached, sorted.
 func (r *Router) List() []string {
-	out := make([]string, len(r.order))
-	copy(out, r.order)
+	out := slices.Clone(r.order)
+	r.dynMu.RLock()
+	for name := range r.dyn {
+		out = append(out, name)
+	}
+	r.dynMu.RUnlock()
+	slices.Sort(out)
 	return out
 }
 
 // TypeOf returns the model type ("generation" or "embedding").
 func (r *Router) TypeOf(publicModel string) string {
-	e, ok := r.models[publicModel]
+	e, ok := r.lookup(publicModel)
 	if !ok {
 		return ""
 	}
 	return e.typ
 }
 
-// UpstreamFor returns the upstream model name a backend must serve.
-// A backend serves exactly one upstream model (its configuration).
-func (r *Router) UpstreamFor(backendName string) (string, bool) {
-	for _, name := range r.order {
-		for _, rep := range r.models[name].replicas {
-			if rep.name == backendName {
-				return rep.upstream, true
-			}
+// UpstreamForModel returns the upstream name backendName serves
+// publicModel under, for static and attached models alike.
+func (r *Router) UpstreamForModel(publicModel, backendName string) (string, bool) {
+	e, ok := r.lookup(publicModel)
+	if !ok {
+		return "", false
+	}
+	for _, rep := range e.replicas {
+		if rep.name == backendName {
+			return rep.upstream, true
 		}
 	}
 	return "", false
@@ -313,7 +423,32 @@ func (r *Router) UpstreamFor(backendName string) (string, bool) {
 // connection-level failure (PLAN §70). Cooldowns grow exponentially
 // with consecutive failures and are capped.
 func (r *Router) RecordFailure(backendName string) {
+	// A failure reported after an attachment's routes were removed would
+	// otherwise leave its state behind for good: attachment names are
+	// never reused. The lock keeps RemoveDynamic, which clears the
+	// state, from running between the check and the record.
+	r.dynMu.RLock()
+	defer r.dynMu.RUnlock()
+	if !r.routableLocked(backendName) {
+		return
+	}
 	r.health.recordFailure(backendName)
+}
+
+// routableLocked reports whether a model currently routes to
+// backendName. The caller holds dynMu.
+func (r *Router) routableLocked(backendName string) bool {
+	for _, e := range r.models {
+		if slices.ContainsFunc(e.replicas, func(rep replica) bool { return rep.name == backendName }) {
+			return true
+		}
+	}
+	for _, m := range r.dyn {
+		if slices.ContainsFunc(m.replicas, func(rep replica) bool { return rep.name == backendName }) {
+			return true
+		}
+	}
+	return false
 }
 
 // RecordSuccess clears a backend's passive-health state after a

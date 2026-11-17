@@ -28,6 +28,7 @@ import (
 
 	"mellomting/internal/accounting"
 	"mellomting/internal/adminapi"
+	"mellomting/internal/agent"
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -72,6 +73,7 @@ type daemon struct {
 	live      *inflight.Registry // in-flight requests, for `mellomting top`
 	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
 	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
+	agents    *agent.Registry    // attached agents (PLAN §104); nil when disabled
 }
 
 // serveCmd runs the proxy daemon.
@@ -100,6 +102,10 @@ func serveCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: serve: invalid logging configuration: %v\n", err)
 		return 1
+	}
+
+	if cfg.Attach != nil {
+		return serveAttach(cfg, log)
 	}
 
 	d, err := buildDaemon(cfg, log)
@@ -177,12 +183,20 @@ func serveCmd(args []string) int {
 		// the ingress, and the admin socket carries no client traffic
 		// to bound.
 		adminSrv := &http.Server{
-			Handler:           adminapi.Handler(d.live),
+			Handler:           adminapi.Handler(d.live, d.agentLister()),
 			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
 		}
 		go func() { _ = adminSrv.Serve(adminLn) }()
 		defer func() { _ = adminSrv.Close() }()
 		log.Info("admin socket ready", "address", cfg.Server.AdminSocket)
+	}
+
+	if d.agents != nil {
+		actx, stopAgents := context.WithCancel(context.Background())
+		go d.agents.Run(actx)
+		// Hijacked agent connections are invisible to srv.Shutdown;
+		// close them on every exit path.
+		defer func() { stopAgents(); d.agents.Close() }()
 	}
 
 	d.api.SetReady(true)
@@ -262,6 +276,47 @@ func serveCmd(args []string) int {
 		if err := d.acc.Close(); err != nil {
 			log.Error("accounting final-sync failed", "error", err)
 		}
+	}
+	log.Info("shutdown complete")
+	return 0
+}
+
+// serveAttach runs a daemon that attaches to an edge (PLAN §104): no
+// listener, keys or accounting, so nothing to reload on SIGHUP.
+func serveAttach(cfg *config.Config, log *slog.Logger) int {
+	attach, err := attachOptions(cfg.Attach, log)
+	if err != nil {
+		log.Error("startup failed", "error_class", "startup")
+		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
+		return 1
+	}
+	if err := applySandbox(cfg, nil, log); err != nil {
+		log.Error("sandbox enforcement failed", "error_class", "sandbox")
+		fmt.Fprintf(os.Stderr, "mellomting: serve: %v\n", err)
+		return 1
+	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+	att := startAttachments(attach, log)
+	log.Info("mellomting ready", "version", version.String(), "role", "attach")
+
+	for sig := range sigCh {
+		if sig != syscall.SIGHUP {
+			break
+		}
+	}
+	grace := cfg.Shutdown.GracePeriod.Duration()
+	log.Info("shutting down", "grace_period", grace.String())
+	detached := att.stop()
+	t := time.NewTimer(grace)
+	defer t.Stop()
+	select {
+	case <-detached:
+	case <-t.C:
+		log.Warn("grace period ended with attachments still draining")
+	case sig := <-sigCh:
+		log.Warn("second signal during drain; forcing shutdown", "signal", sig.String())
 	}
 	log.Info("shutdown complete")
 	return 0
@@ -595,12 +650,18 @@ func newHTTPServer(cfg *config.Config, api *httpapi.Server, log *slog.Logger) *h
 // confines itself to can be asserted on any host, not only one that
 // can enforce it.
 func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, error) {
+	// A daemon that attaches dials the edge and its local servers, as the
+	// proxy dials its backends, and reads nothing once confined.
 	urls := backendBaseURLs(cfg)
+	if a := cfg.Attach; a != nil {
+		urls = append([]string{a.Edge}, a.Servers...)
+	}
 	ports, err := sandbox.BackendPorts(urls...)
 	if err != nil {
 		return sandbox.Policy{}, fmt.Errorf("sandbox: %w", err)
 	}
-	pol := sandbox.Policy{
+	pol := sandbox.Policy{ConnectTCP: ports}
+	if cfg.ServesClients() {
 		// The users file's directory rather than the file: a Landlock
 		// rule binds to the inode behind the path, and every key
 		// mutation renames a new users file over the old one, so a rule
@@ -610,8 +671,7 @@ func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, er
 		// and the configuration, both already read at startup; an
 		// operator who wants the narrower grant gives the users file a
 		// directory of its own (PLAN §30, §58).
-		ReadPaths:  []string{filepath.Dir(cfg.Auth.UsersFile)},
-		ConnectTCP: ports,
+		pol.ReadPaths = []string{filepath.Dir(cfg.Auth.UsersFile)}
 	}
 	// A backend named by hostname is resolved per connection (PLAN
 	// §16.2), after confinement, so the resolver must keep working. An
@@ -751,9 +811,13 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, err
 	}
 
+	var agents *agent.Registry
 	router, err := routing.New(cfg, func(name string) int {
 		c, ok := clients[name]
 		if !ok {
+			if agents != nil {
+				return agents.Inflight(name)
+			}
 			return 0
 		}
 		return c.Inflight()
@@ -811,6 +875,17 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
 	api := httpapi.New(cfg, log, store, router, prox)
+	if cfg.Agents.Enabled {
+		agents = agent.NewRegistry(cfg.Agents, router, cfg.Server.MaxResponseBytes, log)
+		agents.SetActive(api.KeyActive)
+		prox.SetAgents(agents)
+		api.SetAgents(agents)
+		log.Info("agents enabled",
+			"max_attachments", cfg.Agents.MaxAttachments,
+			"max_concurrency", cfg.Agents.MaxConcurrency,
+			"max_models", cfg.Agents.MaxModels,
+		)
+	}
 
 	log.Info("configuration loaded",
 		"backends", len(cfg.Backends),
@@ -821,7 +896,7 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("no API keys configured; add one with mellomting key create")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher}, nil
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher, agents: agents}, nil
 }
 
 // parseStore validates users-file bytes and builds the key store the daemon
@@ -869,6 +944,9 @@ func (d *daemon) refreshUsers(force bool) {
 		return
 	}
 	d.api.ReloadStore(store)
+	if d.agents != nil {
+		d.agents.CheckKeys()
+	}
 	d.log.Info("users reloaded", "keys", len(users.Keys))
 	if len(users.Keys) == 0 {
 		d.log.Warn("no API keys configured; add one with mellomting key create")
@@ -936,4 +1014,14 @@ func sameUsersFile(a, b os.FileInfo) bool {
 	}
 	return os.SameFile(a, b) &&
 		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
+}
+
+// agentLister is the attached-agent view for the admin socket, nil when
+// agents are disabled. The nil check must happen here: a nil
+// *agent.Registry stored in the interface would not compare equal to nil.
+func (d *daemon) agentLister() adminapi.Agents {
+	if d.agents == nil {
+		return nil
+	}
+	return d.agents
 }

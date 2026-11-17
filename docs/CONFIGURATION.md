@@ -158,6 +158,53 @@ mellomting key create ci --config ./config.yaml --models my-model \
   --requests-per-second 10 --burst 20 --concurrent-requests 4
 ```
 
+## Agents
+
+An agent attaches an inference server the proxy cannot reach, for example a
+GPU instance without inbound access, by dialing out to the proxy. The models
+it advertises are registered automatically under its key's namespace; no
+configuration change or restart is needed per model. Enable it with:
+
+```yaml
+agents:
+  enabled: true
+  max_attachments: 16          # concurrently attached agents, all keys
+  max_attachments_per_key: 8   # one agent key's share
+  max_concurrency: 8           # requests forwarded at once per agent
+  queue_size: 32               # requests waiting for a slot, per agent
+  queue_timeout: 120s          # longest wait for a slot
+  max_models: 16               # models one agent may register; more refuses the attach
+```
+
+The values shown are the defaults; `config show-effective` prints what
+applies.
+
+With agents enabled, `servers` and `models` may be omitted, and the proxy
+serves attached models only. Configured models always take precedence over
+attached ones with the same name. See [Operations](OPERATIONS.md#agents) for
+keys and setting up an agent host, and PLAN §104 for the design.
+
+## Attach
+
+`attach` makes the daemon the other end: an agent that dials an edge with
+an agent key and serves the edge's requests from local inference servers.
+`mellomting init --edge` writes it:
+
+```yaml
+attach:
+  edge: https://edge.example.org
+  key_file: /etc/mellomting/agent.key
+  servers: ["http://127.0.0.1:8000"]
+  # backend_key_file: /etc/mellomting/backend.key   # bearer token for the servers
+  # ca_file: /etc/mellomting/edge-ca.pem            # CAs for the edge (default: system roots)
+  # insecure_edge: true                             # allow plain http off loopback
+```
+
+A daemon that attaches serves no clients, so a configuration with `attach`
+may set only `logging`, `shutdown`, and the sandbox modes under `security`;
+any other section is refused. `shutdown.grace_period` is the longest a
+restart waits for in-flight streams.
+
 ## Security and defaults
 
 Backend connections default to loopback addresses. Remote servers need an

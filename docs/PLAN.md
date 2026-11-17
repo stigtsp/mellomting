@@ -140,7 +140,8 @@ The main competitive advantage over products such as Bifrost or LiteLLM should b
 The initial product MUST NOT contain:
 
 - a web dashboard;
-- an HTTP management API;
+- an HTTP management API (the agent attach path, §104, is not one: it
+  carries inference traffic only and changes nothing);
 - browser login/session handling;
 - OAuth/OIDC;
 - PostgreSQL;
@@ -156,7 +157,8 @@ The initial product MUST NOT contain:
 - vector databases;
 - semantic caches;
 - prompt-management systems;
-- agent execution;
+- agent execution (unrelated to §104's agent backends, which execute
+  nothing);
 - billing or payment processing;
 - organizations/teams/customer hierarchies;
 - Kubernetes-specific control-plane logic;
@@ -3301,6 +3303,11 @@ internal/
     validate.go
     source.go
 
+  agent/          # §104: attach registry (edge) and the attaching client
+    edge.go
+    client.go
+    conn.go
+
   discovery/
     discovery.go
 
@@ -4082,3 +4089,231 @@ a small explicit feature whose security properties are easy to reason about
 choose the second.
 
 That is the point of Mellomting.
+
+---
+
+# 104. Agent backends
+
+Inference servers the proxy cannot reach attach themselves: a Mellomting
+configured to attach runs next to the server, dials the proxy, and the models the server
+advertises are served under the agent key's namespace with no
+configuration change. "Agent" means this attaching process, not the §3
+non-goal "agent execution": nothing is executed.
+
+## 104.1 Problem
+
+A backend on a host the proxy cannot reach (a rented GPU instance with no
+inbound access, a machine behind NAT) cannot be a configured server: the
+proxy would have to dial it. Adding each such backend to the
+configuration also means a restart per model.
+
+## 104.2 Mechanism
+
+- An agent is a `mellomting serve` whose configuration has an `attach`
+  section (edge URL, agent key file, local servers). It runs next to the
+  inference server and dials the proxy's ordinary ingress listener, one
+  connection per server. A daemon that attaches does nothing else: the
+  configuration may not also name a listener, keys, servers or models,
+  and the sandbox grants TCP connect to the edge's and servers' ports,
+  the resolver when one of them is named by hostname, and nothing else.
+  Agents and clients share the edge's listener; there is no second port.
+- It authenticates with an **agent key** and requests
+  `GET /v1/agent/attach` over HTTP/1.1 with `Connection: Upgrade` and
+  `Upgrade: mellomting-agent/1`. The proxy answers
+  `101 Switching Protocols`.
+- The roles then reverse: the proxy is the HTTP/2 client and the agent the
+  HTTP/2 server, speaking prior-knowledge HTTP/2 over that connection.
+  Each forwarded request is one stream; streaming, cancellation and flow
+  control come from the protocol.
+- The agent relays exactly the proxy's allow-listed routes (§11.1) to its
+  local server, with no encoded or dot segments and no query, and nothing
+  else.
+- On attach the proxy reads the agent's `GET /v1/models` with the same
+  strict parser `init` uses (§77a.4, `discovery.ParseModelCards`) and
+  registers each id as `<namespace>/<id>`, with the context window the
+  server reports (MODEL_METADATA_DESIGN §1, §3). `/v1/models` lists the
+  window as `context_length`, the minimum across replicas, and nothing
+  else from the card. A model list does not say whether a model generates
+  or embeds, so attached models have no type (§13) and both kinds of
+  endpoint reach them; the server rejects what it cannot serve.
+- An attachment can detach between routing and forwarding. The proxy then
+  routes the request to another replica without spending a retry attempt,
+  or answers 503 when none is left. A stored Responses API response lives
+  on the attachment that created it; once that attachment detaches,
+  follow-ups and retrieval answer "not found", even when the same agent
+  has attached again.
+- Attached backends go through the same admission, header and request
+  timeouts, response bounds, SSE handling, accounting and sanitized errors
+  as configured ones.
+
+## 104.2a Installation
+
+An agent host installs and runs like a proxy: the same binary, account,
+unit and `/etc/mellomting`. `mellomting init --edge URL` writes the
+attach-only configuration:
+- It reads the key from standard input and checks it with the proxy
+  first, using the attach path without the upgrade (426 means accepted).
+  Nothing is written if the key is refused.
+- It writes the key, and copies of `--ca-file` and `--backend-key-file`,
+  beside the configuration with init's create-only rules (§77a), so the
+  service account reads them wherever the originals were.
+
+`mellomting agent check` repeats the key check and probes the servers for
+an existing configuration.
+
+## 104.3 Recovery
+
+The agent recovers without operator action:
+
+- It attaches only once its local server lists a model, polling every 5
+  seconds, so it can start before the server has loaded its model.
+- While attached it re-checks the server every 15 seconds. A failed check
+  counts only while nothing is in flight and nothing was served recently:
+  a busy server answers the check slowly, and live traffic is better
+  evidence. After two counted failures in a row it detaches; it attaches
+  again when the server returns. If the model list changes, it opens a new
+  attachment first and detaches the old one once the edge has read the new
+  list and kept the connection open for 2 seconds (make before break): the
+  edge refuses a list by closing the connection after reading it. At
+  an attachment cap it replaces the old one in place instead: the old
+  one's GOAWAY frees its slot (draining attachments do not count against
+  the caps), and the new one attaches at once. If the new attachment
+  fails for any other reason, the old one keeps serving and the agent
+  tries again.
+- The agent never cuts streams it can let finish. Detaching for a model
+  change, a dead server or the agent stopping (SIGTERM) is a drain: HTTP/2
+  GOAWAY, then up to 5 minutes for in-flight streams; on shutdown the
+  daemon waits at most `shutdown.grace_period`. The
+  proxy recognizes the GOAWAY frame on the connection and stops routing new
+  requests to that attachment at once. Only a connection that is already
+  gone is closed outright.
+- Both ends send HTTP/2 keepalive pings (15 s interval, 15 s timeout). A
+  silent network loss is detected on both sides: the proxy drops the
+  models and the agent reconnects.
+- Reconnects back off exponentially from 1 to 30 seconds, jittered over
+  [d/2, d). The backoff resets after a connection that held for a minute,
+  or after a detach the agent chose.
+
+Attached models leave the routing table when the connection ends, when
+keepalive fails, and when the agent key no longer matches the key store:
+revoked, disabled, expired, its secret rotated or its namespace changed.
+The key check runs on every key-store reload (within about a second of a
+`key` command) and every 5 seconds.
+
+## 104.4 Agent keys and names
+
+- An agent key is a users-file record with `agent: <namespace>` and no
+  `models`, created only with the CLI
+  (`mellomting key create NAME --agent NAMESPACE`).
+- The namespace is the first segment of every name its agents register;
+  the agent cannot choose it. `*` registers advertised ids unprefixed, for
+  single-operator setups, and may not register ids containing `/`, so it
+  cannot reach into another namespace.
+- **Register list (amendment, 2026-11-16, Brev pilot).** An agent key may
+  carry `register:`, a list of `{id, as}` entries
+  (`key create NAME --agent NS --register ID[=ALIAS],...`). With a list,
+  only listed advertised ids register, each under `NS/<as>` (or `<as>`
+  for `*`), with `as` defaulting to the id; requests reach the server under
+  the advertised id, as configured models' `upstream_model` does (§13).
+  Without a list, behaviour is unchanged (every advertised id).
+  - The list is the edge operator's, like the namespace: an agent cannot
+    widen it. Unlisted ids are ignored with one log line; a listed id the
+    server does not advertise is logged and skipped.
+  - Aliases follow the advertised-id character rules and contain no `/`.
+    Under `*` the served name may not contain `/`, so a `*` key's
+    `org/model` id needs an alias. No id is listed twice, and no two
+    entries share a served name (validated by the CLI and at users-file
+    load, fail closed).
+  - The edge reads up to 1024 advertised models when a list is present and
+    applies `agents.max_models` to the listed matches only, so a server
+    holding many models (Ollama) can attach while serving a few.
+  - The list is part of the key record that attached agents are re-checked
+    against: changing it detaches the key's agents, which re-attach and
+    register under the new list.
+  - Ownership and precedence below apply to served names unchanged: the
+    first key wins a name, replicas share one key, a configured model wins.
+- A public name belongs to the agent key that registered it first.
+  Attachments of that key may serve it as replicas; another key cannot
+  join it, so one key cannot intercept another's traffic.
+- Advertised ids are ASCII letters, digits and `._:@+/-`, at most 256
+  bytes, so an agent cannot register lookalikes of other names.
+- An agent key MUST be rejected on every route except the attach path,
+  exactly like an unknown key (401). A client key MUST be rejected on the
+  attach path (401). With agents disabled the attach path is a 404 for any
+  authenticated caller.
+- Client keys grant a namespace with a `NAMESPACE/*` entry in `models`. It
+  also matches configured models whose names start with `NAMESPACE/`.
+  Configured model names cannot end in `/*`.
+- A configured model always wins over an attached one with the same name.
+
+## 104.5 Configuration
+
+```yaml
+agents:
+  enabled: true                # default false
+  max_attachments: 16          # all keys
+  max_attachments_per_key: 8   # one key's share
+  max_concurrency: 8           # admission cap per attachment
+  queue_size: 32               # requests waiting for a slot, per attachment
+  queue_timeout: 120s          # longest wait for a slot
+  max_models: 16               # models one attachment may register
+```
+
+The defaults live in `internal/config/validate.go`. With agents enabled,
+`servers` and `models` may be empty: an edge can serve attached models
+only.
+
+## 104.6 Security boundary
+
+- The attach path carries inference traffic only. It cannot create keys,
+  change configuration, policy or limits, or read anything back.
+- Authority to attach comes only from a key an operator created offline
+  (§29); the namespace is fixed by that key.
+- The proxy makes no outbound connection for an agent, so the sandbox's
+  connect rules are unchanged (§58). An agents-only edge grants no TCP
+  connect at all.
+
+## 104.7 Threats
+
+An agent's operator is not the proxy's operator. What an agent key
+allows, and what bounds it:
+
+- **Confidentiality.** An agent sees every request routed to it, prompts
+  included. Grant a namespace only to an agent you would trust with those
+  prompts. A stolen agent key exposes the prompts sent to that key's
+  models, but not to other keys' models while those keys' agents are
+  attached (§104.4 ownership). Keys may share a namespace, which makes the
+  namespace the trust boundary: when a name's last attachment detaches,
+  any key in the namespace (and, for unprefixed names, any `*` key) can
+  register it next, and clients granted `NAMESPACE/*` follow it.
+- **Integrity.** An agent chooses the responses for its models. A stolen
+  key can answer for that key's models until it is revoked or expires.
+  Keys should be per deployment and short-lived (`--expires`); this is
+  advice, not enforced.
+- **Usage and quotas.** An agent reports its own token usage. The proxy
+  charges an agent's request no more tokens than the bytes it carried (a
+  token is at least one byte), so a lying agent cannot exhaust a client
+  key's budget. The JSONL records the claim next to the charge.
+- **Headers.** Only `application/json` and `text/event-stream` content
+  types pass; anything else becomes `application/octet-stream`.
+  `Retry-After` must be a number of seconds and is capped at 60.
+- **Memory.** The proxy buffers at most 256 KiB per stream from an agent;
+  beyond that HTTP/2 flow control pushes back on the agent for that stream
+  alone, so clients that stop reading cannot grow the proxy or stall other
+  streams on the connection.
+- **Capacity.** Attach runs after the pre-auth, global and auth checks.
+  `max_attachments` and `max_attachments_per_key` bound live attachments;
+  draining ones are bounded too, at twice each cap. Beyond them the attach
+  is refused with 503 before the upgrade. An
+  attachment's streams are bounded by its `max_concurrency` and by the
+  usual header, idle and request timeouts. An agent's streams count
+  against `server.max_inflight_requests` like any backend's.
+- **Model lists.** Size-bounded, strictly parsed, capped by `max_models`
+  (a longer list refuses the attach), with no shadowing of configured
+  models.
+- **Transport.** The agent refuses a plain `http://` edge that is not a
+  loopback address unless `attach.insecure_edge` is set, so the key is
+  not sent in clear by accident. `localhost` counts as a name, not a
+  loopback address (§8.2). A TLS terminator or reverse proxy in front of the
+  ingress must pass the HTTP/1.1 `Upgrade` through; the agent forces
+  HTTP/1.1 over TLS so the upgrade is possible.

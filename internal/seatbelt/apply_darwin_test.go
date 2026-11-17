@@ -56,6 +56,10 @@ func TestGeneratedProfileCompiles(t *testing.T) {
 			Listeners:  []sandbox.Listener{{TCPPort: 8080}},
 			Resolve:    true,
 		}},
+		{"attach only", sandbox.Policy{
+			ConnectTCP: []uint16{443, 8000},
+			Resolve:    true,
+		}},
 		{"empty", sandbox.Policy{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

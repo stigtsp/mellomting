@@ -13,21 +13,37 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"mellomting/internal/agent"
 	"mellomting/internal/inflight"
 )
 
 // Snapshot is the response of GET /inflight.
 type Snapshot struct {
 	Requests []inflight.Record `json:"requests"`
+	// Agents lists attached agents (PLAN §104): null when agents are
+	// disabled, [] when enabled with none attached, so top can tell the
+	// two apart.
+	Agents []agent.Record `json:"agents"`
+}
+
+// Agents lists attached agents.
+type Agents interface {
+	Snapshot() []agent.Record
 }
 
 // Handler serves the admin routes. Like the ingress it is an explicit
 // route table with no catch-all (PLAN §11.3): this socket answers one
 // question and nothing else.
-func Handler(live *inflight.Registry) http.Handler {
+//
+// agents may be nil (agents disabled).
+func Handler(live *inflight.Registry, agents Agents) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /inflight", func(w http.ResponseWriter, _ *http.Request) {
-		body, err := json.Marshal(Snapshot{Requests: live.Snapshot()})
+		snap := Snapshot{Requests: live.Snapshot()}
+		if agents != nil {
+			snap.Agents = agents.Snapshot()
+		}
+		body, err := json.Marshal(snap)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

@@ -1198,7 +1198,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 		dir := newCommitDir(t)
 		args := commitTestArgs(t, dir, oneServer...)
 		arts := commitTestArtifacts(t, args, models)
-		temp := fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid())
+		temp := fmt.Sprintf(".mellomting-init-%d-auth.pepper.tmp", os.Getpid())
 		tempPath := filepath.Join(dir, temp)
 		replacement := filepath.Join(t.TempDir(), "replacement")
 		if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
@@ -1305,7 +1305,7 @@ func TestCommitInitArtifacts(t *testing.T) {
 		args := commitTestArgs(t, dir, oneServer...)
 		arts := commitTestArtifacts(t, args, models)
 		pepper := filepath.Join(dir, "auth.pepper")
-		pepperTemp := fmt.Sprintf(".mellomting-init-%d-pepper.tmp", os.Getpid())
+		pepperTemp := fmt.Sprintf(".mellomting-init-%d-auth.pepper.tmp", os.Getpid())
 		ops := &scriptedCommitOps{
 			inner:    defaultCommitOps(),
 			failOnce: map[string]bool{"unlinkInDir:" + pepperTemp: true},

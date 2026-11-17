@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"mellomting/internal/auth"
 	"mellomting/internal/config"
 )
 
@@ -331,6 +333,11 @@ func TestKeyParseFlagsErrors(t *testing.T) {
 		{"negative rps", "create", []string{"x", "-models", "m", "-requests-per-second", "-1"}},
 		{"negative burst", "create", []string{"x", "-models", "m", "-burst", "-1"}},
 		{"unexpected positional", "create", []string{"x", "-models", "m", "extra"}},
+		{"register without agent", "create", []string{"x", "-register", "m1"}},
+		{"register empty alias", "create", []string{"x", "-agent", "lab", "-register", "m1="}},
+		{"register slash under *", "create", []string{"x", "-agent", "*", "-register", "org/m1"}},
+		{"register duplicate alias", "create", []string{"x", "-agent", "lab", "-register", "m1=a,m2=a"}},
+		{"register only commas", "create", []string{"x", "-agent", "lab", "-register", ",,"}},
 		{"missing id", "revoke", nil},
 		{"missing id enable", "enable", nil},
 		{"missing id disable", "disable", nil},
@@ -374,6 +381,24 @@ func TestKeyParseFlagsValid(t *testing.T) {
 	c, code = keyParseFlags("create", []string{"x", "-expires", "2027-03-04"})
 	if code != 0 || c.expires == nil || !c.expires.Equal(time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("expires = %v (exit %d), want 2027-03-04T00:00:00Z", c.expires, code)
+	}
+}
+
+// --register parses ID and ID=ALIAS entries for an agent key.
+func TestKeyParseFlagsRegister(t *testing.T) {
+	c, code := keyParseFlags("create", []string{"ollama_a", "-agent", "*", "-register", "qwen3-coder:30b=coder, gpt-oss:20b ,org/m2=m2"})
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	want := []auth.AgentModel{{ID: "qwen3-coder:30b", As: "coder"}, {ID: "gpt-oss:20b"}, {ID: "org/m2", As: "m2"}}
+	if !slices.Equal(c.register, want) {
+		t.Fatalf("register = %+v, want %+v", c.register, want)
+	}
+	if got := agentAccess("*", c.register); got != "coder (qwen3-coder:30b), gpt-oss:20b, m2 (org/m2)" {
+		t.Fatalf("agentAccess = %q", got)
+	}
+	if got := agentAccess("lab", nil); got != "models under lab/" {
+		t.Fatalf("agentAccess without register = %q", got)
 	}
 }
 

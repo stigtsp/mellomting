@@ -64,8 +64,12 @@ var (
 	ErrQueueFull     = errors.New("backend_queue_full")
 	ErrQueueTimeout  = errors.New("backend_queue_timeout")
 	ErrDraining      = errors.New("backend_draining")
-	ErrPolicy        = errors.New("backend_network_policy")
-	ErrTooLarge      = errors.New("backend_response_too_large")
+	// ErrGone reports an attached backend whose connection was gone
+	// before the request was sent: nothing reached it, so another
+	// replica may take the request at no cost (PLAN §104).
+	ErrGone     = errors.New("backend_gone")
+	ErrPolicy   = errors.New("backend_network_policy")
+	ErrTooLarge = errors.New("backend_response_too_large")
 )
 
 // Upstream is a non-2xx response from the backend. The body is buffered
@@ -138,6 +142,16 @@ type Options struct {
 	// result would be an empty pool and every backend request failing
 	// verification against a certificate that is in fact trusted.
 	RootCAs *x509.CertPool
+	// Transport, when set, carries every request instead of a dialing
+	// transport: an attached agent (PLAN §104) is reached over the
+	// connection it opened, never by dialing out, so the egress policy,
+	// base URL host and connect timeout do not apply. The base URL only
+	// supplies the scheme and path prefix.
+	Transport http.RoundTripper
+	// Untrusted marks a backend whose operator is not this daemon's
+	// operator: an attached agent. The proxy bounds what such a backend
+	// can claim (PLAN §104.6).
+	Untrusted bool
 }
 
 // Client owns one backend's connection and admission state.
@@ -161,7 +175,12 @@ type Client struct {
 	// (X6: a 30s+ generation must not be truncated by header_timeout).
 	httpPlain *http.Client
 	adm       *Admission
+	untrusted bool
 }
+
+// Untrusted reports whether the backend is an attached agent, whose
+// reported usage and headers the proxy must bound (PLAN §104.6).
+func (c *Client) Untrusted() bool { return c.untrusted }
 
 // Admission is the PLAN §22 slot pool of one inference server: at most
 // max_concurrency requests in flight and queue_size waiting, however
@@ -221,7 +240,9 @@ func New(o Options) (*Client, error) {
 		return nil, fmt.Errorf("backend %s: %w", o.Name, err)
 	}
 	host, _ := splitHostPort(u)
-	if ip := net.ParseIP(host); ip != nil {
+	if o.Transport != nil {
+		// No dial happens, so there is no address to check.
+	} else if ip := net.ParseIP(host); ip != nil {
 		if !policy.allow(ip) {
 			return nil, fmt.Errorf("backend %s: %w", o.Name, ErrPolicy)
 		}
@@ -291,6 +312,15 @@ func New(o Options) (*Client, error) {
 	// request_timeout (the context deadline applies the same bound).
 	tPlain := t.Clone()
 	tPlain.ResponseHeaderTimeout = o.Cfg.RequestTimeout.Duration()
+	var rtStream, rtPlain http.RoundTripper = tStream, tPlain
+	if o.Transport != nil {
+		// An injected transport has no ResponseHeaderTimeout of its own,
+		// so the same split is applied around it: streams wait
+		// header_timeout for headers, non-streaming requests the whole
+		// request_timeout (X6).
+		rtStream = headerTimeout{rt: o.Transport, d: o.Cfg.HeaderTimeout.Duration()}
+		rtPlain = headerTimeout{rt: o.Transport, d: o.Cfg.RequestTimeout.Duration()}
+	}
 
 	return &Client{
 		name:             o.Name,
@@ -307,18 +337,19 @@ func New(o Options) (*Client, error) {
 		// Authorization header and body would be re-sent. A 3xx is
 		// returned to Forward and classified as an upstream error.
 		http: &http.Client{
-			Transport: tStream,
+			Transport: rtStream,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		},
 		httpPlain: &http.Client{
-			Transport: tPlain,
+			Transport: rtPlain,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		},
-		adm: adm,
+		adm:       adm,
+		untrusted: o.Untrusted,
 	}, nil
 }
 
@@ -775,7 +806,7 @@ func requestError(err error, stream bool) error {
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
 	}
-	if errors.Is(err, ErrConnect) || errors.Is(err, ErrPolicy) || errors.Is(err, ErrDialTimeout) {
+	if errors.Is(err, ErrConnect) || errors.Is(err, ErrPolicy) || errors.Is(err, ErrDialTimeout) || errors.Is(err, ErrGone) {
 		return err
 	}
 	if ne, ok := errors.AsType[net.Error](err); ok {
@@ -823,6 +854,12 @@ func (c *Client) Inflight() int {
 	return len(c.adm.queue) + len(c.adm.conc)
 }
 
+// Admitted reports the requests holding an admission slot.
+func (c *Client) Admitted() int { return len(c.adm.conc) }
+
+// Queued reports the requests waiting for an admission slot.
+func (c *Client) Queued() int { return len(c.adm.queue) }
+
 // StreamIdleTimeout is the backend stream-idle bound (PLAN §24).
 func (c *Client) StreamIdleTimeout() time.Duration { return c.streamIdle }
 
@@ -845,4 +882,60 @@ func PolicyFromConfig(bn config.BackendNetwork) (Policy, error) {
 		p.CIDRs = append(p.CIDRs, ipnet)
 	}
 	return parsePolicy(p)
+}
+
+// headerTimeout bounds the wait for response headers on a transport
+// that does not do it itself, the way http.Transport's
+// ResponseHeaderTimeout does: past d the request is canceled and fails
+// with a timeout error, which Forward classifies like any header
+// timeout. Once headers arrive the bound no longer applies; the body
+// is governed by the stream idle and request bounds.
+type headerTimeout struct {
+	rt http.RoundTripper
+	d  time.Duration
+}
+
+func (h headerTimeout) RoundTrip(req *http.Request) (*http.Response, error) {
+	if h.d <= 0 {
+		return h.rt.RoundTrip(req)
+	}
+	ctx, cancel := context.WithCancel(req.Context())
+	timer := time.AfterFunc(h.d, cancel)
+	resp, err := h.rt.RoundTrip(req.WithContext(ctx))
+	if !timer.Stop() {
+		// The timer fired: whatever came back is late.
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, errHeaderTimeout
+	}
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// errHeaderTimeout reports a response whose headers did not arrive in
+// time. It is a net.Error timeout, like http.Transport's own.
+var errHeaderTimeout error = headerTimeoutError{}
+
+type headerTimeoutError struct{}
+
+func (headerTimeoutError) Error() string   { return "timeout awaiting response headers" }
+func (headerTimeoutError) Timeout() bool   { return true }
+func (headerTimeoutError) Temporary() bool { return true }
+
+// cancelOnClose releases the request context when the body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }

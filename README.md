@@ -1,8 +1,10 @@
 # Mellomting
 
 Mellomting is a small OpenAI-compatible proxy for inference servers such as
-vLLM. It manages API keys, routes requests, and applies limits. It runs as one
-binary, without a database or telemetry.
+vLLM. It manages API keys, routes requests, and applies limits. Inference
+servers it cannot reach, such as cloud GPU instances without inbound access,
+can attach themselves: the same daemon, configured as an agent. It runs as
+one binary, without a database or telemetry.
 
 > **Early version.** Under active development; expect some breaking changes.
 
@@ -105,6 +107,39 @@ To validate your local file or inspect its defaults:
 bin/mellomting config check --config ./config.yaml
 bin/mellomting config show-effective --config ./config.yaml
 ```
+
+## Remote inference servers
+
+A server Mellomting cannot dial, such as a GPU instance behind NAT or
+without inbound ports, attaches itself instead. Enable agents in the proxy's
+configuration and create an agent key; its namespace prefixes every model
+the server advertises:
+
+```yaml
+agents:
+  enabled: true
+```
+
+```sh
+mellomting key create gpu_lab --agent lab      # on the proxy; prints the agent key
+mellomting key create alice --models 'lab/*'   # a client key for those models
+```
+
+Next to the inference server, install Mellomting the same way and let `init`
+write a configuration that attaches the server. The key is read from
+standard input and checked with the proxy first:
+
+```sh
+echo "$AGENT_KEY" | sudo mellomting init --edge https://proxy.example.org \
+  --server http://127.0.0.1:8000
+sudo systemctl enable --now mellomting
+```
+
+The agent dials out over the proxy's normal listener, so the server needs no
+inbound access. Its models appear as `lab/<id>` in `/v1/models`, with their
+context window, and leave when the agent disconnects. The agent reconnects
+by itself and drains in-flight streams before it stops. `mellomting top`
+lists attached agents. See [Agents](docs/OPERATIONS.md#agents) and PLAN §104.
 
 ## Key-file updates
 

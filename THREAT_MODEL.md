@@ -24,6 +24,14 @@ This summarizes the threats and limits defined in [the design](docs/PLAN.md).
    inference functionality they need, run as different unprivileged users,
    and keep admin/dev endpoints disabled (PLAN §67).
 
+4. Attached agents (PLAN §104) are backends that dial in, run by someone
+   other than the proxy's operator. An agent key authorizes serving models
+   under its namespace and nothing else. The agent sees every prompt
+   routed to it and chooses the responses. Its usage claims and response
+   headers are bounded, its model names cannot shadow configured models or
+   another key's, and attaching never makes the proxy dial out. Per
+   deployment, short-lived agent keys are advised (PLAN §104.7).
+
 ## What the sandbox does not solve
 
 If Mellomting is compromised, an attacker may still misuse what Mellomting

@@ -139,7 +139,7 @@ func TestParseModelsRejects(t *testing.T) {
 		{name: "trailing garbage", in: `{"object":"list","data":[]} x`, want: "exactly one JSON document"},
 		{name: "control character", in: `{"object":"list","data":[` + entry(`\u0000`) + `]}`, want: "model ID is invalid"},
 		{name: "control character 0x1f", in: `{"object":"list","data":[` + entry(`\u001f`) + `]}`, want: "model ID is invalid"},
-		{name: "bidi override", in: `{"object":"list","data":[` + entry(`\u202E`) + `]}`, want: "model ID is invalid"},
+		{name: "bidi override", in: `{"object":"list","data":[` + entry(`\u202E`) + `]}`, want: "model ID is invalid (entry 1)"},
 		{name: "zero width space", in: `{"object":"list","data":[` + entry(`\u200B`) + `]}`, want: "model ID is invalid"},
 		{name: "zero width joiner", in: `{"object":"list","data":[` + entry(`\u200D`) + `]}`, want: "model ID is invalid"},
 		{name: "word joiner format", in: `{"object":"list","data":[` + entry(`\u2060`) + `]}`, want: "model ID is invalid"},

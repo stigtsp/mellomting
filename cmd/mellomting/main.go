@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -52,6 +53,8 @@ func commandDispatch(argv []string) int {
 		return topCmd(argv[2:])
 	case "serve":
 		return serveCmd(argv[2:])
+	case "agent":
+		return agentCmd(argv[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "mellomting: %s\n", describeUnknownCommand(argv[1]))
 		usage(os.Stderr)
@@ -267,6 +270,8 @@ type keyFlags struct {
 	concurrentRequests int
 	requestsPerSecond  float64
 	burst              int
+	agent              string
+	register           []auth.AgentModel
 }
 
 // keyOperand names the positional argument of each subcommand; list
@@ -277,7 +282,7 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	var summary string
 	switch sub {
 	case "create":
-		summary = "Create an API key for NAME. The key is printed once, to stdout.\nIt may use every model unless --models narrows it."
+		summary = "Create an API key for NAME. The key is printed once, to stdout.\nIt may use every model unless --models narrows it.\nWith --agent it is an agent key instead: it attaches a daemon to this edge\nand registers models under NAMESPACE/, and can do nothing else.\n--register limits an agent key to the listed advertised ids, each\noptionally served under an alias: --register qwen3-coder:30b=coder,gpt-oss:20b"
 	case "list":
 		summary = "List keys and their status."
 	case "enable":
@@ -292,12 +297,15 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	c := &keyFlags{}
 	fs.StringVar(&c.configPath, "config", "", configFlagHelp)
 	var expires string
+	var register string
 	if sub == "create" {
 		fs.StringVar(&c.models, "models", config.ModelWildcard, "comma-separated `MODELS` the key may use; * means all")
 		fs.StringVar(&expires, "expires", "", "expiry `DATE`: YYYY-MM-DD or RFC3339")
 		fs.IntVar(&c.concurrentRequests, "concurrent-requests", 0, "maximum concurrent requests (0: use default)")
 		fs.Float64Var(&c.requestsPerSecond, "requests-per-second", 0, "request rate limit (0: no rate limit)")
 		fs.IntVar(&c.burst, "burst", 0, "rate-limit burst (defaults to one second of rate)")
+		fs.StringVar(&c.agent, "agent", "", "create an agent key registering models under `NAMESPACE`/ (* for no prefix)")
+		fs.StringVar(&register, "register", "", "with --agent: comma-separated advertised `IDS` the agent may register, each as ID or ID=ALIAS (default: all)")
 	}
 
 	// The operand may sit before or after the flags.
@@ -325,6 +333,40 @@ func keyParseFlags(sub string, rest []string) (*keyFlags, int) {
 	// entropy use or filesystem mutation.
 	if err := auth.ValidateUsername(c.operand); err != nil {
 		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+		return nil, 2
+	}
+	if c.agent != "" {
+		// An agent key uses no model ACL and is not subject to per-key
+		// request limits (it makes no requests); refuse flags that would
+		// silently do nothing.
+		var useless []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "models", "concurrent-requests", "requests-per-second", "burst":
+				useless = append(useless, "--"+f.Name)
+			}
+		})
+		if len(useless) > 0 {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: %s cannot be combined with --agent: an agent key has no model list or request limits\n", strings.Join(useless, ", "))
+			return nil, 2
+		}
+		if err := config.ValidateAgentNamespace(c.agent); err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: --agent: %v\n", err)
+			return nil, 2
+		}
+		if register != "" {
+			reg, err := parseRegister(register)
+			if err == nil {
+				err = auth.ValidateRegister(c.agent, reg)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "mellomting: key create: --register: %v\n", err)
+				return nil, 2
+			}
+			c.register = reg
+		}
+	} else if register != "" {
+		fmt.Fprintln(os.Stderr, "mellomting: key create: --register needs --agent: only an agent key registers models")
 		return nil, 2
 	}
 	if expires != "" {
@@ -392,16 +434,26 @@ func keyCreate(c *keyFlags) int {
 		return 1
 	}
 
-	models, err := splitModels(c.models)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
-		return 2
+	var models []string
+	if c.agent == "" {
+		models, err = splitModels(c.models)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: %v\n", err)
+			return 2
+		}
+	} else {
+		if !cfg.Agents.Enabled {
+			fmt.Fprintln(os.Stderr, "mellomting: key create: warning: agents.enabled is false; the key cannot attach until agents are enabled")
+		}
+		if len(c.register) > cfg.Agents.MaxModels {
+			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: %d register entries exceed agents.max_models (%d); an agent serving them all cannot attach\n", len(c.register), cfg.Agents.MaxModels)
+		}
 	}
 	// A model not present in the loaded config is legal (an ACL may name
 	// a model about to be added), but the operator should hear about it
 	// (T-L4).
 	for _, m := range models {
-		if _, ok := cfg.Models[m]; !ok && m != config.ModelWildcard {
+		if _, ok := cfg.Models[m]; !ok && m != config.ModelWildcard && !strings.HasSuffix(m, config.ModelPrefixWildcardSuffix) {
 			fmt.Fprintf(os.Stderr, "mellomting: key create: warning: model %q is not configured; access will apply when it is added\n", m)
 		}
 	}
@@ -431,6 +483,8 @@ func keyCreate(c *keyFlags) int {
 			ExpiresAt:  c.expires,
 			Models:     models,
 			Limits:     limits,
+			Agent:      c.agent,
+			Register:   c.register,
 		})
 		return nil
 	})
@@ -444,6 +498,11 @@ func keyCreate(c *keyFlags) int {
 	// human context goes to stderr: one ACL-confirmation line plus one apply
 	// instruction (PLAN §10, D16). The key is shown exactly once.
 	fmt.Fprintln(os.Stdout, key)
+	if c.agent != "" {
+		fmt.Fprintf(os.Stderr, "Created agent key %q for %s.\n", c.operand, agentAccess(c.agent, c.register))
+		fmt.Fprintln(os.Stderr, keyApplyInstruction)
+		return 0
+	}
 	access := strings.Join(models, ", ")
 	if access == config.ModelWildcard {
 		access = "all models"
@@ -498,10 +557,60 @@ func keyList(c *keyFlags) int {
 				status = "expired"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", k.ID, k.Name, status, expires, strings.Join(k.Models, ", "))
+		access := strings.Join(k.Models, ", ")
+		if k.IsAgent() {
+			access = "agent: " + agentAccess(k.Agent, k.Register)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", k.ID, k.Name, status, expires, access)
 	}
 	w.Flush()
 	return 0
+}
+
+// agentAccess describes what an agent key may register, for humans.
+func agentAccess(ns string, reg []auth.AgentModel) string {
+	if len(reg) == 0 {
+		return "models under " + agentScope(ns)
+	}
+	names := make([]string, len(reg))
+	for i, r := range reg {
+		public, _ := config.AgentRegisteredName(ns, r.ID, r.As)
+		names[i] = public
+		if r.As != "" {
+			names[i] += " (" + r.ID + ")"
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// parseRegister splits --register: comma-separated ID or ID=ALIAS.
+// Neither ids nor aliases may contain "," or "=" (ValidAgentModelID).
+func parseRegister(s string) ([]auth.AgentModel, error) {
+	var out []auth.AgentModel
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, alias, _ := strings.Cut(p, "=")
+		id, alias = strings.TrimSpace(id), strings.TrimSpace(alias)
+		if strings.Contains(p, "=") && alias == "" {
+			return nil, fmt.Errorf("%q: empty alias after =", p)
+		}
+		out = append(out, auth.AgentModel{ID: id, As: alias})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%q lists no ids", s)
+	}
+	return out, nil
+}
+
+// agentScope describes an agent key's namespace for humans.
+func agentScope(ns string) string {
+	if ns == config.AgentNamespaceWildcard {
+		return "any name (no prefix)"
+	}
+	return ns + "/"
 }
 
 // keyApplyInstruction is the one apply instruction printed after a key
@@ -606,8 +715,9 @@ func chooseKeyID(generate func() (key, id string, err error), uf *auth.UsersFile
 func usage(w io.Writer) {
 	fmt.Fprint(w, `Usage: mellomting <command> [flags]
 
-  init       Create configuration from inference servers
-  serve      Run the proxy
+  init       Create configuration from inference servers, or to attach them
+  serve      Run the proxy, attach to an edge, or both
+  agent      Check the attach section's key with the edge
   key        Manage API keys
   usage      Report token usage
   top        Watch requests in flight

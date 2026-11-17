@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"mellomting/internal/agent"
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
 	"mellomting/internal/limiter"
@@ -48,12 +49,35 @@ type Server struct {
 	sourceLimit *limiter.SourceRegistry
 	authLog     *limiter.Bucket
 	authDropped atomic.Int64
+	// attachLog bounds "agent attach refused" lines the same way.
+	attachLog     *limiter.Bucket
+	attachDropped atomic.Int64
 	// peers decides whose X-Forwarded-For the ingress believes
 	// (PLAN §18.1). Empty by default: the socket peer is the client.
 	peers       trustedPeers
 	ready       atomic.Bool
 	startedUnix int64
+	// agents accepts attaching agents (PLAN §104); nil when disabled.
+	agents Attacher
 }
+
+// Attacher takes over upgraded agent connections (PLAN §104). Its one
+// implementation is agent.Registry; the interface lets tests and the
+// daemon wire it in after construction.
+type Attacher interface {
+	// Reserve claims an attachment slot before the upgrade, or names the
+	// limit that refuses it.
+	Reserve(key *auth.Key, remote string) (*agent.Reservation, string)
+}
+
+// SetAgents enables the agent attach path. It is called once at
+// startup, before the server serves.
+func (s *Server) SetAgents(a Attacher) { s.agents = a }
+
+// KeyActive reports whether a key record is still in force unchanged in
+// the current key store, so attached agents can be re-checked after a
+// reload (PLAN §104).
+func (s *Server) KeyActive(k *auth.Key) bool { return s.snap.Load().store.Active(k) }
 
 // New builds the HTTP surface. All dependencies are final at this point
 // (configuration is immutable after startup, PLAN §30).
@@ -96,7 +120,12 @@ func New(cfg *config.Config, log *slog.Logger, store *auth.Store, router *routin
 	if err != nil {
 		panic("httpapi: invalid auth log rate: " + err.Error())
 	}
+	attachLog, err := limiter.NewBucket(alr, 3)
+	if err != nil {
+		panic("httpapi: invalid auth log rate: " + err.Error())
+	}
 	s := &Server{
+		attachLog:   attachLog,
 		cfg:         cfg,
 		log:         log,
 		router:      router,
@@ -271,6 +300,18 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	snap := s.snap.Load()
 	key, err := s.authorize(r, snap.store, remote)
 	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
+		return
+	}
+
+	// Agent keys attach agents and do nothing else (PLAN §104); every
+	// other route rejects them exactly like an unknown key, and the
+	// attach path accepts nothing but them.
+	if r.URL.Path == agent.AttachPath {
+		s.handleAttach(w, r, key, remote)
+		return
+	}
+	if key.IsAgent() {
 		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
 		return
 	}

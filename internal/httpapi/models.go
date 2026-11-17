@@ -19,12 +19,18 @@ func (s *Server) handleModels(w http.ResponseWriter, key *auth.Key) {
 		if !key.Allows(name) {
 			continue
 		}
-		data = append(data, map[string]any{
+		m := map[string]any{
 			"id":       name,
 			"object":   "model",
 			"created":  s.startedUnix,
 			"owned_by": "mellomting",
-		})
+		}
+		// Attached models carry the window their server reports, omitted
+		// when unknown (PLAN §104, MODEL_METADATA_DESIGN §3).
+		if n := s.router.ContextLength(name); n > 0 {
+			m["context_length"] = n
+		}
+		data = append(data, m)
 	}
 	out := map[string]any{"object": "list", "data": data}
 	w.Header().Set("Content-Type", "application/json")
