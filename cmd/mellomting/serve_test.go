@@ -3029,7 +3029,7 @@ func TestSandboxPolicyGrantsResolverOnlyForHostnames(t *testing.T) {
 	addrs := []net.Addr{&net.TCPAddr{Port: 8080}}
 	literal := &config.Config{
 		Auth:     config.Auth{UsersFile: "/etc/mellomting/users.yaml"},
-		Backends: map[string]config.Backend{"b1": {BaseURL: "http://10.0.9.130:8001"}},
+		Backends: map[string]config.Backend{"b1": {BaseURL: "http://192.0.2.10:8001"}},
 	}
 	pol, err := sandboxPolicy(literal, addrs)
 	if err != nil {
@@ -3042,8 +3042,8 @@ func TestSandboxPolicyGrantsResolverOnlyForHostnames(t *testing.T) {
 	named := &config.Config{
 		Auth: config.Auth{UsersFile: "/etc/mellomting/users.yaml"},
 		Backends: map[string]config.Backend{
-			"b1": {BaseURL: "http://10.0.9.130:8001"},
-			"b2": {BaseURL: "https://beep.example.ts.net:443"},
+			"b1": {BaseURL: "http://192.0.2.10:8001"},
+			"b2": {BaseURL: "https://gpu.example.org:443"},
 		},
 	}
 	pol, err = sandboxPolicy(named, addrs)

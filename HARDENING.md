@@ -86,6 +86,29 @@ sandbox. In `required` mode, this prevents startup.
 The sandbox limits the impact of a compromised proxy. It cannot protect
 resources the proxy is allowed to access. See [Threat model](THREAT_MODEL.md).
 
+## Attached agents
+
+Agents (PLAN §104) let servers the proxy cannot reach attach themselves.
+They are off by default (`agents.enabled`).
+- **Proxy dials nothing:** an agent dials in over the ingress listener, so
+  the proxy opens no connection for it. An agents-only proxy's sandbox
+  grants no TCP connect at all.
+- **Agent keys:** an agent key can only attach. It registers models under
+  its own namespace, cannot take over configured models or another key's
+  names while that key's agents are attached, and is refused everywhere
+  else. Keys that share a namespace share its trust: once a name is free,
+  any of them can register it.
+- **Untrusted output:** agents are treated as untrusted backends. Their
+  usage claims are bounded by the bytes transferred, their content types
+  are allow-listed, `Retry-After` is capped, and the proxy buffers at most
+  256 KiB per stream from them.
+- **Limits:** attachments per key and in total, models per attachment, and
+  each attachment's concurrency and queue are all bounded.
+- **Revocation:** revoking, disabling, expiring, rotating or re-scoping an
+  agent key detaches its agents.
+- **Confidentiality:** an agent sees the prompts routed to it, so grant a
+  namespace only to an agent you would trust with them.
+
 ## Logs and operator access
 
 Operational logs are structured JSON. Prompts, responses, API keys, backend

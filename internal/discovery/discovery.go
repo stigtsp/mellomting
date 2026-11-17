@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -27,14 +28,41 @@ import (
 // MaxModelIDBytes is the D7 byte bound for one discovered model ID.
 const MaxModelIDBytes = 256
 
-// ParseModels decodes the bounded D7 subset of an OpenAI /v1/models
-// response and returns the model IDs sorted by UTF-8 bytes.
-//
-// The reader is read with at most maxBytes+1 bytes so an oversized
-// response is detected without buffering more than the bound plus one.
-// maxModels bounds the accepted ID list. Errors are caller-agnostic: the
-// caller layer adds the server identity.
+// ParseModels returns the sorted model IDs of an OpenAI-shaped model
+// list. See ParseModelCards for the rules.
 func ParseModels(r io.Reader, maxBytes int64, maxModels int) ([]string, error) {
+	cards, err := ParseModelCards(r, maxBytes, maxModels)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(cards))
+	for i, c := range cards {
+		ids[i] = c.ID
+	}
+	return ids, nil
+}
+
+// Model is one entry of a model list: its ID and, when the server
+// reports one, its context window (MODEL_METADATA_DESIGN §1). Nothing
+// else from a card is kept.
+type Model struct {
+	ID string
+	// ContextLength is 0 when the server reports none.
+	ContextLength int
+}
+
+// maxContextLength bounds an accepted context window
+// (MODEL_METADATA_DESIGN §1: a JSON integer in [1, 2^31)).
+const maxContextLength = 1 << 31
+
+// ParseModelCards strictly parses an OpenAI-shaped model list, sorted by
+// ID. The server answering is not trusted: the body is size-bounded,
+// must be one JSON object with object "list" and a data array of at
+// most maxModels entries with object "model", unique and valid IDs (D7).
+// A card's window comes from max_model_len (vLLM), else context_length
+// (OpenRouter, LiteLLM); present but not a JSON integer in [1, 2^31) is
+// a malformed response, not a value to coerce, and absent is unknown.
+func ParseModelCards(r io.Reader, maxBytes int64, maxModels int) ([]Model, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("discovery response: maxBytes must be > 0")
 	}
@@ -50,20 +78,43 @@ func ParseModels(r io.Reader, maxBytes int64, maxModels int) ([]string, error) {
 		return nil, fmt.Errorf("discovery response exceeds %d bytes", maxBytes)
 	}
 
-	ids, err := parseModelList(bytes.NewReader(data), maxModels)
+	cards, err := parseModelList(bytes.NewReader(data), maxModels)
 	if err != nil {
 		return nil, err
 	}
-	slices.Sort(ids)
-	return ids, nil
+	slices.SortFunc(cards, func(a, b Model) int { return strings.Compare(a.ID, b.ID) })
+	return cards, nil
 }
 
 type modelEntry struct {
-	Object string          `json:"object"`
-	ID     json.RawMessage `json:"id"`
+	Object        string          `json:"object"`
+	ID            json.RawMessage `json:"id"`
+	MaxModelLen   json.RawMessage `json:"max_model_len"`
+	ContextLength json.RawMessage `json:"context_length"`
 }
 
-func parseModelList(r io.Reader, maxModels int) ([]string, error) {
+// contextWindow reads a card's window, 0 when absent.
+func contextWindow(e modelEntry) (int, error) {
+	raw := bytes.TrimSpace(e.MaxModelLen)
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = bytes.TrimSpace(e.ContextLength)
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			return 0, errors.New("discovery response: context window must be a positive JSON integer")
+		}
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil || n < 1 || n >= maxContextLength {
+		return 0, errors.New("discovery response: context window is out of range")
+	}
+	return int(n), nil
+}
+
+func parseModelList(r io.Reader, maxModels int) ([]Model, error) {
 	dec := json.NewDecoder(r)
 
 	tok, err := dec.Token()
@@ -77,8 +128,8 @@ func parseModelList(r io.Reader, maxModels int) ([]string, error) {
 	var object string
 	objectSeen := false
 	dataSeen := false
-	ids := make([]string, 0, maxModels)
-	seen := make(map[string]struct{}, maxModels)
+	cards := make([]Model, 0, min(maxModels, 64))
+	seen := make(map[string]struct{}, min(maxModels, 64))
 
 	for dec.More() {
 		tok, err := dec.Token()
@@ -108,12 +159,12 @@ func parseModelList(r io.Reader, maxModels int) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			for _, id := range parsed {
-				if _, dup := seen[id]; dup {
+			for _, c := range parsed {
+				if _, dup := seen[c.ID]; dup {
 					return nil, errors.New("discovery response: duplicate model ID")
 				}
-				seen[id] = struct{}{}
-				ids = append(ids, id)
+				seen[c.ID] = struct{}{}
+				cards = append(cards, c)
 			}
 		default:
 			var skip json.RawMessage
@@ -142,10 +193,10 @@ func parseModelList(r io.Reader, maxModels int) ([]string, error) {
 		return nil, errors.New("discovery response: exactly one JSON document is allowed")
 	}
 
-	return ids, nil
+	return cards, nil
 }
 
-func parseData(dec *json.Decoder, maxModels int) ([]string, error) {
+func parseData(dec *json.Decoder, maxModels int) ([]Model, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, invalidJSON(err)
@@ -154,9 +205,9 @@ func parseData(dec *json.Decoder, maxModels int) ([]string, error) {
 		return nil, errors.New("discovery response: data must be an array")
 	}
 
-	ids := make([]string, 0, maxModels)
+	cards := make([]Model, 0, min(maxModels, 64))
 	for dec.More() {
-		if len(ids) >= maxModels {
+		if len(cards) >= maxModels {
 			return nil, fmt.Errorf("discovery response exceeds %d models", maxModels)
 		}
 
@@ -169,9 +220,15 @@ func parseData(dec *json.Decoder, maxModels int) ([]string, error) {
 		}
 		id, err := decodeJSONString(entry.ID)
 		if err != nil || !validModelID(id) {
-			return nil, errors.New("discovery response: model ID is invalid")
+			// Name the entry's position so an operator can find it,
+			// never its content: errors do not echo the response.
+			return nil, fmt.Errorf("discovery response: model ID is invalid (entry %d)", len(cards)+1)
 		}
-		ids = append(ids, id)
+		window, err := contextWindow(entry)
+		if err != nil {
+			return nil, err
+		}
+		cards = append(cards, Model{ID: id, ContextLength: window})
 	}
 
 	tok, err = dec.Token()
@@ -182,7 +239,7 @@ func parseData(dec *json.Decoder, maxModels int) ([]string, error) {
 		return nil, errors.New("discovery response: data array is not closed")
 	}
 
-	return ids, nil
+	return cards, nil
 }
 
 // validModelID applies the D7 model-ID rules: valid UTF-8, non-empty, at

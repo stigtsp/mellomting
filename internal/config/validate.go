@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,12 @@ const (
 	defaultAffinityTTL        = 2 * time.Hour
 	defaultMaxAffinityEntries = 10000
 
+	defaultAgentMaxAttachments       = 16
+	defaultAgentMaxAttachmentsPerKey = 8
+	defaultAgentMaxModels            = 16
+	maxAgentAttachments              = 256
+	maxAgentModels                   = 256
+
 	defaultRetryMaxAttempts    = 1
 	defaultRetryMaxAttemptsMax = 8
 	defaultRetryInitialBackoff = 100 * time.Millisecond
@@ -162,6 +169,17 @@ func applyDefaults(c *Config) {
 	c.Retry.InitialBackoff = cmp.Or(c.Retry.InitialBackoff, Duration(defaultRetryInitialBackoff))
 	c.Retry.MaxBackoff = cmp.Or(c.Retry.MaxBackoff, Duration(defaultRetryMaxBackoff))
 
+	// Agent limits default only when agents are enabled, like
+	// accounting: validate rejects them when agents are off.
+	if a := &c.Agents; a.Enabled {
+		a.MaxAttachments = cmp.Or(a.MaxAttachments, defaultAgentMaxAttachments)
+		a.MaxAttachmentsPerKey = cmp.Or(a.MaxAttachmentsPerKey, min(defaultAgentMaxAttachmentsPerKey, a.MaxAttachments))
+		a.MaxConcurrency = cmp.Or(a.MaxConcurrency, defaultMaxConcurrency)
+		a.MaxModels = cmp.Or(a.MaxModels, defaultAgentMaxModels)
+		a.QueueSize = cmp.Or(a.QueueSize, defaultBackendQueueSize)
+		a.QueueTimeout = cmp.Or(a.QueueTimeout, Duration(defaultQueueTimeout))
+	}
+
 	for name, b := range c.Backends {
 		b.ConnectTimeout = cmp.Or(b.ConnectTimeout, Duration(defaultConnectTimeout))
 		b.HeaderTimeout = cmp.Or(b.HeaderTimeout, Duration(defaultHeaderTimeout))
@@ -196,8 +214,11 @@ func validate(c *Config) error {
 	if c.Version != 1 {
 		errs = append(errs, fmt.Sprintf("version: %d is not supported (want 1)", c.Version))
 	}
-	errs = append(errs, validateServer(&c.Server)...)
-	errs = append(errs, validateAuth(&c.Auth)...)
+	if c.ServesClients() {
+		errs = append(errs, validateServer(&c.Server)...)
+		errs = append(errs, validateAuth(&c.Auth)...)
+	}
+	errs = append(errs, validateAttach(c.Attach)...)
 	errs = append(errs, validateSecurity(&c.Security)...)
 	errs = append(errs, validateLogging(&c.Logging)...)
 	errs = append(errs, validateAccounting(&c.Accounting)...)
@@ -205,8 +226,12 @@ func validate(c *Config) error {
 	errs = append(errs, validateShutdown(&c.Shutdown)...)
 	errs = append(errs, validateResponses(&c.Responses)...)
 	errs = append(errs, validateRetry(&c.Retry)...)
-	errs = append(errs, validateBackends(c.Backends, c.Security.BackendNetwork)...)
-	errs = append(errs, validateModels(c.Models, c.Backends)...)
+	errs = append(errs, validateAgents(&c.Agents)...)
+	// Nothing to serve is fine for an edge of attached models only, and
+	// for a daemon that serves no clients.
+	optional := c.Agents.Enabled || !c.ServesClients()
+	errs = append(errs, validateBackends(c.Backends, c.Security.BackendNetwork, optional)...)
+	errs = append(errs, validateModels(c.Models, c.Backends, optional)...)
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
@@ -510,6 +535,132 @@ func validateResponses(r *Responses) []string {
 	return errs
 }
 
+func validateAgents(a *Agents) []string {
+	if !a.Enabled {
+		if a.MaxAttachments != 0 || a.MaxAttachmentsPerKey != 0 || a.MaxConcurrency != 0 || a.MaxModels != 0 ||
+			a.QueueSize != 0 || a.QueueTimeout != 0 {
+			return []string{"agents: limits are set but agents.enabled is false"}
+		}
+		return nil
+	}
+	var errs []string
+	if a.MaxAttachments < 1 || a.MaxAttachments > maxAgentAttachments {
+		errs = append(errs, fmt.Sprintf("agents.max_attachments: must be between 1 and %d, got %d", maxAgentAttachments, a.MaxAttachments))
+	}
+	if a.MaxAttachmentsPerKey < 1 || a.MaxAttachmentsPerKey > a.MaxAttachments {
+		errs = append(errs, fmt.Sprintf("agents.max_attachments_per_key: must be between 1 and max_attachments (%d), got %d", a.MaxAttachments, a.MaxAttachmentsPerKey))
+	}
+	if a.MaxConcurrency < 1 || a.MaxConcurrency > maxServerConcurrency {
+		errs = append(errs, fmt.Sprintf("agents.max_concurrency: must be between 1 and %d, got %d", maxServerConcurrency, a.MaxConcurrency))
+	}
+	if a.QueueSize < 1 || a.QueueSize > maxServerQueueSize {
+		errs = append(errs, fmt.Sprintf("agents.queue_size: must be between 1 and %d, got %d", maxServerQueueSize, a.QueueSize))
+	}
+	if d := a.QueueTimeout.Duration(); d <= 0 || d > defaultRequestTimeout {
+		errs = append(errs, fmt.Sprintf("agents.queue_timeout: must be > 0 and at most request_timeout (%s), got %s", defaultRequestTimeout, d))
+	}
+	if a.MaxModels < 1 || a.MaxModels > maxAgentModels {
+		errs = append(errs, fmt.Sprintf("agents.max_models: must be between 1 and %d, got %d", maxAgentModels, a.MaxModels))
+	}
+	return errs
+}
+
+// AgentBackend is the backend configuration an attached agent is served
+// under: the agents block's admission cap, the default queue, and the
+// static timeouts every configured backend gets. Only those fields
+// matter: an agent is reached over its own connection, so nothing is
+// dialed, and the base URL only supplies the scheme the transport needs.
+func AgentBackend(a Agents) Backend {
+	return Backend{
+		BaseURL:           "http://agent.invalid",
+		HeaderTimeout:     Duration(defaultHeaderTimeout),
+		RequestTimeout:    Duration(defaultRequestTimeout),
+		StreamIdleTimeout: Duration(defaultStreamIdleTimeout),
+		MaxConcurrency:    a.MaxConcurrency,
+		QueueSize:         a.QueueSize,
+		QueueTimeout:      a.QueueTimeout,
+	}
+}
+
+// AgentNamespaceWildcard lets an agent key register models under the
+// names its server advertises, without a namespace prefix.
+const AgentNamespaceWildcard = "*"
+
+// agentNamespacePattern is the grammar of an agent key's namespace: the
+// first segment of every public name the key's agents register.
+var agentNamespacePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+
+// ValidateAgentNamespace checks an agent key's namespace.
+func ValidateAgentNamespace(ns string) error {
+	if ns == AgentNamespaceWildcard || agentNamespacePattern.MatchString(ns) {
+		return nil
+	}
+	return errors.New("invalid agent namespace: use 1-64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, or * for no prefix")
+}
+
+// AgentModelName is the public name an attached model is served under:
+// "<namespace>/<advertised id>", or the advertised id itself for the
+// wildcard namespace.
+func AgentModelName(ns, id string) string {
+	if ns == AgentNamespaceWildcard {
+		return id
+	}
+	return ns + "/" + id
+}
+
+// ValidAgentModelID narrows discovery's ID rules for attached models to
+// the ASCII characters ids use in practice (vLLM, NIM, llama.cpp,
+// Ollama): an agent's operator is not the edge's, and Unicode would let
+// it register lookalikes of other models' names (PLAN §104.6). Aliases
+// in an agent key's register list follow the same rule.
+func ValidAgentModelID(id string) bool {
+	if id == "" || len(id) > maxAgentModelIDBytes {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("._:@+/-", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// maxAgentModelIDBytes bounds an advertised id or alias (PLAN §104.4).
+const maxAgentModelIDBytes = 256
+
+// MaxAgentRegister bounds an agent key's register list.
+const MaxAgentRegister = maxAgentModels
+
+// AgentRegisteredName is the public name for one entry of an agent key's
+// register list (PLAN §104.4): the alias when set, else the advertised
+// id, under the key's namespace. The alias is a bare name (no "/"), and
+// under the wildcard namespace the result may not contain "/" either,
+// so a list cannot reach into another namespace.
+func AgentRegisteredName(ns, id, alias string) (string, error) {
+	if !ValidAgentModelID(id) {
+		return "", fmt.Errorf("register id %q: use 1-256 ASCII letters, digits or ._:@+/-", id)
+	}
+	base := id
+	if alias != "" {
+		if !ValidAgentModelID(alias) || strings.Contains(alias, "/") {
+			return "", fmt.Errorf("register alias %q: use 1-256 ASCII letters, digits or ._:@+- (no /)", alias)
+		}
+		base = alias
+	}
+	if ns == AgentNamespaceWildcard && strings.Contains(base, "/") {
+		return "", fmt.Errorf("register id %q: a * agent key cannot register names containing /; give it an alias", id)
+	}
+	public := AgentModelName(ns, base)
+	if err := ValidateModelName(public); err != nil {
+		return "", fmt.Errorf("register %q: %v", base, err)
+	}
+	return public, nil
+}
+
 func validateRetry(r *Retry) []string {
 	var errs []string
 	if r.MaxAttempts < 1 || r.MaxAttempts > defaultRetryMaxAttemptsMax {
@@ -527,9 +678,11 @@ func validateRetry(r *Retry) []string {
 	return errs
 }
 
-func validateBackends(backends map[string]Backend, bn BackendNetwork) []string {
+// validateBackends checks the configured backends. With agents enabled
+// there may be none: an edge can serve attached models only.
+func validateBackends(backends map[string]Backend, bn BackendNetwork, optional bool) []string {
 	var errs []string
-	if len(backends) == 0 {
+	if len(backends) == 0 && !optional {
 		return []string{"backends: at least one backend is required"}
 	}
 
@@ -629,6 +782,10 @@ var SupportedStrategies = []string{
 // (PLAN §31).
 const ModelWildcard = "*"
 
+// ModelPrefixWildcardSuffix ends a key ACL entry that grants every model
+// under a namespace: "exp1/*" grants "exp1/<anything>" (PLAN §104).
+const ModelPrefixWildcardSuffix = "/*"
+
 // ValidateModelName rejects a public model name that would mean
 // something else once written into a key's model ACL: the wildcard
 // itself, and a name holding the separator `key create --models` splits
@@ -640,13 +797,15 @@ func ValidateModelName(name string) error {
 		return fmt.Errorf("%q is the ACL wildcard and cannot name a model", ModelWildcard)
 	case strings.Contains(name, ","):
 		return errors.New("a model name cannot contain a comma, which separates entries in a key's model list")
+	case strings.HasSuffix(name, ModelPrefixWildcardSuffix):
+		return fmt.Errorf("a model name cannot end in %q, which grants a namespace in a key's model list", ModelPrefixWildcardSuffix)
 	}
 	return nil
 }
 
-func validateModels(models map[string]Model, backends map[string]Backend) []string {
+func validateModels(models map[string]Model, backends map[string]Backend, optional bool) []string {
 	var errs []string
-	if len(models) == 0 {
+	if len(models) == 0 && !optional {
 		return []string{"models: at least one public model is required"}
 	}
 

@@ -18,7 +18,7 @@ func TestNamesHost(t *testing.T) {
 		{nil, false},
 		{[]string{"http://127.0.0.1:8001", "http://[::1]:8002", "https://[fd00::5]:443"}, false},
 		{[]string{"http://[fe80::1%25eth0]:8001"}, false},
-		{[]string{"http://127.0.0.1:8001", "https://beep.example.ts.net:443"}, true},
+		{[]string{"http://127.0.0.1:8001", "https://gpu.example.org:443"}, true},
 		{[]string{"http://localhost:8001"}, true},
 	} {
 		if got := NamesHost(tc.urls...); got != tc.want {

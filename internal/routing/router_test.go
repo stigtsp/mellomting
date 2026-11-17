@@ -347,11 +347,14 @@ func TestSelectUnknownAndAccessors(t *testing.T) {
 	if r.TypeOf("embed-small") != "embedding" {
 		t.Fatalf("TypeOf = %q", r.TypeOf("embed-small"))
 	}
-	if up, ok := r.UpstreamFor("back-a"); !ok || up != "Up/A" {
-		t.Fatalf("UpstreamFor = %q %v", up, ok)
+	if up, ok := r.UpstreamForModel("qwen-coder", "back-a"); !ok || up != "Up/A" {
+		t.Fatalf("UpstreamForModel = %q %v", up, ok)
 	}
-	if _, ok := r.UpstreamFor("ghost"); ok {
-		t.Fatal("UpstreamFor ghost should fail")
+	if _, ok := r.UpstreamForModel("qwen-coder", "ghost"); ok {
+		t.Fatal("UpstreamForModel ghost should fail")
+	}
+	if _, ok := r.UpstreamForModel("nope", "back-a"); ok {
+		t.Fatal("UpstreamForModel of an unknown model should fail")
 	}
 }
 

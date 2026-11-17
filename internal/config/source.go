@@ -84,6 +84,8 @@ type sourceDoc struct {
 	Shutdown   Shutdown                `yaml:"shutdown"`
 	Responses  Responses               `yaml:"responses"`
 	Retry      Retry                   `yaml:"retry"`
+	Agents     Agents                  `yaml:"agents,omitempty"`
+	Attach     *Attach                 `yaml:"attach,omitempty"`
 	Servers    map[string]sourceServer `yaml:"servers"`
 	Models     map[string]sourceModel  `yaml:"models"`
 }
@@ -121,6 +123,8 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 		Shutdown:   doc.Shutdown,
 		Responses:  doc.Responses,
 		Retry:      doc.Retry,
+		Agents:     doc.Agents,
+		Attach:     doc.Attach,
 		Backends:   make(map[string]Backend, len(doc.Servers)),
 		Models:     make(map[string]Model, len(doc.Models)),
 	}
@@ -137,10 +141,14 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 	}
 
 	referenced := make(map[string]bool, len(doc.Servers))
-	if len(doc.Servers) == 0 {
+	// With agents enabled, an edge may serve only attached models; a
+	// daemon that attaches serves no clients at all.
+	errs = append(errs, attachExcludes(doc)...)
+	needModels := !doc.Agents.Enabled && doc.Attach == nil
+	if len(doc.Servers) == 0 && needModels {
 		errs = append(errs, "servers: at least one server is required")
 	}
-	if len(doc.Models) == 0 {
+	if len(doc.Models) == 0 && needModels {
 		errs = append(errs, "models: at least one model is required")
 	}
 	for _, publicName := range sortedModelKeys(doc.Models) {
@@ -238,7 +246,7 @@ type effectiveModel struct {
 // synthetic internal backend names.
 type effectiveDoc struct {
 	Version    int                        `yaml:"version"`
-	Server     Server                     `yaml:"server"`
+	Server     *Server                    `yaml:"server,omitempty"`
 	Auth       *Auth                      `yaml:"auth,omitempty"`
 	Security   *Security                  `yaml:"security,omitempty"`
 	Logging    *Logging                   `yaml:"logging,omitempty"`
@@ -247,8 +255,10 @@ type effectiveDoc struct {
 	Shutdown   *Shutdown                  `yaml:"shutdown,omitempty"`
 	Responses  *Responses                 `yaml:"responses,omitempty"`
 	Retry      *Retry                     `yaml:"retry,omitempty"`
-	Servers    map[string]effectiveServer `yaml:"servers"`
-	Models     map[string]effectiveModel  `yaml:"models"`
+	Agents     *Agents                    `yaml:"agents,omitempty"`
+	Attach     *Attach                    `yaml:"attach,omitempty"`
+	Servers    map[string]effectiveServer `yaml:"servers,omitempty"`
+	Models     map[string]effectiveModel  `yaml:"models,omitempty"`
 }
 
 // effectiveSource builds the fully defaulted source projection from the
@@ -286,9 +296,19 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 		}
 	}
 
+	if cfg.Attach != nil {
+		// Only what applies to a daemon that attaches (attachExcludes).
+		return effectiveDoc{
+			Version:  cfg.Version,
+			Security: &Security{Landlock: cfg.Security.Landlock, Seatbelt: cfg.Security.Seatbelt},
+			Logging:  &cfg.Logging,
+			Shutdown: &cfg.Shutdown,
+			Attach:   cfg.Attach,
+		}
+	}
 	return effectiveDoc{
 		Version:    cfg.Version,
-		Server:     cfg.Server,
+		Server:     &cfg.Server,
 		Auth:       &cfg.Auth,
 		Security:   &cfg.Security,
 		Logging:    &cfg.Logging,
@@ -297,6 +317,7 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 		Shutdown:   &cfg.Shutdown,
 		Responses:  &cfg.Responses,
 		Retry:      &cfg.Retry,
+		Agents:     effectiveAgents(cfg.Agents),
 		Servers:    servers,
 		Models:     models,
 	}
@@ -306,4 +327,13 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 // deterministic YAML.
 func (e effectiveDoc) MarshalEffectiveSource() ([]byte, error) {
 	return yaml.Marshal(e)
+}
+
+// effectiveAgents omits the agents block when agents are disabled, so a
+// configuration that never mentions them shows none.
+func effectiveAgents(a Agents) *Agents {
+	if !a.Enabled {
+		return nil
+	}
+	return &a
 }

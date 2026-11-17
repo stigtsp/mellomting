@@ -6,9 +6,11 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 Mellomting is a small, security-conscious, OpenAI-compatible LLM proxy and
 multiplexer written in Go. It authenticates clients with opaque bearer keys,
-applies per-key policy and rate limits, routes public model names to local
-inference backends (vLLM), streams SSE responses correctly, accounts token
-usage into JSONL, and confines itself with Landlock after startup.
+applies per-key policy and rate limits, routes public model names to
+inference backends (vLLM) that are configured or that attach themselves
+through another Mellomting configured with `attach` (PLAN §104), streams
+SSE responses correctly, accounts token usage into JSONL, and confines
+itself with Landlock after startup.
 
 - One Go binary: `mellomting`
 - One YAML config + one YAML API-key file
@@ -235,6 +237,18 @@ configured certificate/key before the sandbox is applied (PLAN §57 step 9),
 enforces a TLS 1.2 minimum, and the TCP ingress listener is wrapped with
 `tls.NewListener` before Landlock enforcement; certificate reload requires a
 process restart in v1.
+
+Agent backends (PLAN §104): `internal/agent` holds both
+sides. The edge's `Registry` takes over connections upgraded on
+`/v1/agent/attach`, speaks reversed prior-knowledge HTTP/2 to the agent,
+registers the models it advertises under the agent key's namespace in a
+dynamic routing table, and detaches on disconnect, keepalive failure or
+key change. The other end is `serve` with an `attach` section (written
+by `init --edge`) and nothing else to serve: it relays the edge's
+allow-listed routes to its local servers and recovers from backend,
+edge and network failures by itself. Attached backends are marked
+untrusted: the proxy bounds their usage claims and response headers. `mellomting
+top` lists attachments from the admin socket.
 
 Shelved beyond the first release: the qualifier framework (PLAN §96) and
 native ACME (PLAN §68). Neither has a key in the source schema, so a
