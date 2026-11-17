@@ -32,7 +32,7 @@ jobs:
       # reads the compiler's export data for stdlib imports, and a
       # release that predates the toolchain fails every package with
       # "export data version N is greater than maximum supported
-      # version M" before it analyses anything. v0.8.2 reads Go 1.27.3.
+      # version M" before it analyses anything. v0.8.2 reads Go 1.27.4.
       - name: Static check (staticcheck v0.8.2)
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
