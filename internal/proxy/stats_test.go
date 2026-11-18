@@ -82,3 +82,18 @@ func TestDrainingRecordedAsRefusal(t *testing.T) {
 		t.Fatalf("refusals %v", e.Global.Refusals)
 	}
 }
+
+// Reported usage is clamped to 2^40 per field and a charge can reach the
+// response bound, so the scaling must not multiply them as integers.
+func TestScaleTokensNoOverflow(t *testing.T) {
+	in, out := scaleTokens(1<<40, 1<<40, 1<<26)
+	if in < 0 || out < 0 || in+out > 1<<26 || in != out || in < (1<<25)-1 {
+		t.Fatalf("scaled to in=%d out=%d", in, out)
+	}
+	if in, out := scaleTokens(3, 1, 100); in != 3 || out != 1 {
+		t.Fatalf("under the charge: %d %d", in, out)
+	}
+	if in, out := scaleTokens(0, 0, 50); in != 0 || out != 50 {
+		t.Fatalf("no split reported: %d %d", in, out)
+	}
+}

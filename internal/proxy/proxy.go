@@ -1566,14 +1566,7 @@ func (p *Proxy) record(q *Req, out result, dur, ttfb time.Duration) {
 	if p.stats == nil {
 		return
 	}
-	in, outTok := out.usage.Input, out.usage.Output
-	if total := charged(out); in+outTok > total {
-		if in+outTok > 0 && total > 0 {
-			in, outTok = in*total/(in+outTok), outTok*total/(in+outTok)
-		} else {
-			in, outTok = 0, total
-		}
-	}
+	in, outTok := scaleTokens(out.usage.Input, out.usage.Output, charged(out))
 	server := out.backend
 	if b, ok := p.cfg.Backends[out.backend]; ok && b.Server != "" {
 		server = b.Server
@@ -1584,4 +1577,21 @@ func (p *Proxy) record(q *Req, out result, dur, ttfb time.Duration) {
 		BytesIn: int64(max(out.bytesIn, 0)), BytesOut: int64(max(out.bytesOut, 0)),
 		TokensIn: in, TokensOut: outTok, TTFB: ttfb, Duration: dur,
 	})
+}
+
+// scaleTokens fits a reported input/output split to the charged total.
+// The arithmetic is in float64: each reported value may be up to 2^40
+// and the charge up to the response bound, whose product overflows
+// int64. With no split reported the whole charge counts as output.
+func scaleTokens(in, out, total int64) (int64, int64) {
+	in, out, total = max(in, 0), max(out, 0), max(total, 0)
+	if in+out <= total {
+		if in+out == 0 {
+			return 0, total
+		}
+		return in, out
+	}
+	f := float64(total) / (float64(in) + float64(out))
+	si := min(int64(float64(in)*f), total)
+	return si, min(int64(float64(out)*f), total-si)
 }
