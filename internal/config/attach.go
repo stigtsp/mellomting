@@ -30,7 +30,15 @@ type Attach struct {
 	// InsecureEdge allows a plain http edge off loopback, which sends the
 	// agent key unencrypted.
 	InsecureEdge bool `yaml:"insecure_edge,omitempty"`
+	// Metrics false refuses the edge's requests for the local servers'
+	// load reports (PLAN §104): the agent's operator may not want the
+	// edge's to see them. Absent means on.
+	Metrics *bool `yaml:"metrics,omitempty"`
 }
+
+// MetricsEnabled reports whether the edge may read the local servers'
+// load reports.
+func (a *Attach) MetricsEnabled() bool { return a.Metrics == nil || *a.Metrics }
 
 // ServesClients reports whether the daemon runs the proxy: it does
 // unless it attaches, and a daemon that attaches does nothing else.

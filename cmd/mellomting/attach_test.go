@@ -16,6 +16,7 @@ import (
 	"mellomting/internal/auth"
 	"mellomting/internal/config"
 	"mellomting/internal/systemd"
+	"mellomting/internal/testsupport"
 )
 
 // modelsBackend is an inference server advertising model "m".
@@ -265,5 +266,21 @@ func TestSetScaffoldAside(t *testing.T) {
 	restore(true)
 	if _, err := os.Lstat(scaffold); err != nil {
 		t.Fatalf("edited configuration moved: %v", err)
+	}
+}
+
+func TestAttachOptionsCarryMetricsSwitch(t *testing.T) {
+	off := false
+	a := &config.Attach{Edge: "https://edge.example.org", KeyFile: "/k", Servers: []string{"http://127.0.0.1:8000"}, Metrics: &off}
+	opts, err := attachOptionsWithKey(a, "key", testsupport.DiscardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts[0].Metrics {
+		t.Fatal("attach.metrics: false not passed to the agent")
+	}
+	a.Metrics = nil
+	if opts, _ = attachOptionsWithKey(a, "key", testsupport.DiscardLogger()); !opts[0].Metrics {
+		t.Fatal("metrics not on by default")
 	}
 }

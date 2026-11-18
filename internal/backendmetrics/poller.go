@@ -85,7 +85,7 @@ func (p *Poller) pollOne(ctx context.Context, name string) time.Duration {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	fetch := p.fetch[name]
-	r, ok, err := p.read(ctx, fetch)
+	r, ok, err := Read(ctx, fetch)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
@@ -101,7 +101,9 @@ func (p *Poller) pollOne(ctx context.Context, name string) time.Duration {
 	return Interval
 }
 
-func (p *Poller) read(ctx context.Context, fetch Fetch) (Reading, bool, error) {
+// Read takes one server's report: /metrics for vLLM and SGLang, else
+// /api/ps for Ollama. ok is false when it publishes neither.
+func Read(ctx context.Context, fetch Fetch) (Reading, bool, error) {
 	status, body, err := fetch(ctx, "/metrics", MaxBody+1)
 	if err != nil {
 		return Reading{}, false, err

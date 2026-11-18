@@ -65,6 +65,7 @@ func attachOptionsWithKey(a *config.Attach, key string, log *slog.Logger) ([]age
 			RootCAs:        roots,
 			BackendRootCAs: system,
 			UserAgent:      "mellomting-agent/" + version.String(),
+			Metrics:        a.MetricsEnabled(),
 			Log:            log.With("component", "agent", "backend", u.Redacted()),
 		})
 	}

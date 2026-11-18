@@ -46,7 +46,10 @@ type Options struct {
 	BackendRootCAs *x509.CertPool
 	// UserAgent identifies the agent in the attach request.
 	UserAgent string
-	Log       *slog.Logger
+	// Metrics lets the edge read the local server's load report
+	// (attach.metrics, default on).
+	Metrics bool
+	Log     *slog.Logger
 }
 
 // drainTimeout bounds a graceful detach: in-flight streams of a few
@@ -812,7 +815,12 @@ func backendHandler(o Options, st *stats) http.Handler {
 			_, _ = w.Write([]byte(`{"error":{"message":"agent backend unavailable","type":"api_error","code":"backend_unavailable"}}`))
 		},
 	}
+	metrics := metricsHandler(o.Metrics, localFetch(o))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == MetricsPath {
+			metrics.ServeHTTP(w, r)
+			return
+		}
 		if !relayable(r) {
 			http.NotFound(w, r)
 			return

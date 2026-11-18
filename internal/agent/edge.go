@@ -88,6 +88,9 @@ type attachment struct {
 	client *backend.Client
 	models []Model
 
+	// metrics is the agent's latest report of its server's load.
+	metrics atomic.Pointer[backendmetrics.Reading]
+
 	reason   atomic.Pointer[string] // why the attachment ended, if it did
 	draining atomic.Bool            // no new requests routed to it
 	ready    chan struct{}          // closed once conn is set
@@ -218,6 +221,7 @@ func (g *Registry) Snapshot() []Record {
 			Streams:        a.counters.active.Load(),
 			Requests:       a.counters.requests.Load(),
 			Failures:       a.counters.failures.Load(),
+			Metrics:        a.metrics.Load(),
 		}
 		if a.client != nil {
 			r.State = "serving"

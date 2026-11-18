@@ -169,3 +169,21 @@ servers:
 		t.Fatalf("show-effective does not parse: %v", err)
 	}
 }
+
+func TestAttachMetricsKey(t *testing.T) {
+	base := "version: 1\nattach:\n  edge: https://edge.example.org\n  key_file: /etc/m/agent.key\n  servers: [\"http://127.0.0.1:8000\"]\n%s"
+	cfg, err := Parse([]byte(fmt.Sprintf(base, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Attach.MetricsEnabled() {
+		t.Fatal("metrics off by default")
+	}
+	cfg, err = Parse([]byte(fmt.Sprintf(base, "  metrics: false\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Attach.MetricsEnabled() {
+		t.Fatal("metrics: false ignored")
+	}
+}

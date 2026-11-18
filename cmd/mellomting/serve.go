@@ -196,6 +196,9 @@ func serveCmd(args []string) int {
 		defer stopSampler()
 		go runSampler(sctx, d.stats)
 		go d.stats.poller.Run(sctx)
+		if d.agents != nil {
+			go d.agents.PollMetrics(sctx)
+		}
 		log.Info("admin socket ready", "address", cfg.Server.AdminSocket)
 	}
 
