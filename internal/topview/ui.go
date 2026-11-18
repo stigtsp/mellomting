@@ -33,8 +33,11 @@ func (v View) String() string {
 
 // Options configure Run and Plain.
 type Options struct {
-	Redact   bool
-	NoColor  bool
+	Redact  bool
+	NoColor bool
+	// Color lets Plain mark headings and attention lines, for --once on
+	// a terminal; never set for a pipe.
+	Color    bool
 	Interval time.Duration
 	// Rows bounds the requests Plain prints; 0 prints all.
 	Rows int

@@ -210,6 +210,12 @@ on `server.admin_socket`, a 0600 Unix socket bound before the sandbox and
 deliberately off the ingress; `mellomting top` renders it. The completed
 `request` log line is the matching access log. With no admin socket
 configured the registry is not created and nothing is tracked.
+`internal/stats` adds the per-second window behind `GET /stats` (throughput,
+refusals by limit, gauges), `internal/backendmetrics` reads vLLM, SGLang and
+Ollama load reports (agents relay theirs on demand), `internal/usagehist`
+reads the accounting log for the Usage view, and `internal/topview` is the
+interactive viewer (`term` beneath it, `sim` for `--simulate` and golden
+frames).
 
 Phase 4 adds Landlock hardening (PLAN §95): `internal/landlock` builds
 the minimal post-startup policy from config (users-file read, accounting

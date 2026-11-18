@@ -587,6 +587,10 @@ For example, a client must never be able to reach backend endpoints such as:
 
 merely because the backend happens to expose them.
 
+The daemon reading a server's `/metrics` (or Ollama's `/api/ps`) itself,
+for `mellomting top` (§43.2), is not forwarding: no client request reaches
+those paths, and nothing read there is returned to a client.
+
 ---
 
 # 12. Compatibility strategy: shallow parse, broad pass-through
@@ -1913,6 +1917,35 @@ use, which the proxy's own clients must not be able to read. Unconfigured,
 no in-flight tracking happens at all.
 
 Phases are `reading`, `routing`, `queued`, `waiting`, `streaming`, `sending`.
+
+Beside `GET /inflight` (unchanged, for older clients), the socket serves
+`GET /stats?since=<seq>`: the last five minutes per second (`internal/stats`),
+globally and per key, model and server, bounded in series and reply size;
+the limits beside their live use (key concurrency, rate and token quota,
+server admission, cooldowns); and each server's own load report. `seq` is
+the newest complete second; a client passes it back to get only newer
+buckets, and a daemon restart (a new `started_ms`) means asking again with
+`since=0`.
+
+A request a limit turns away is a refusal, counted apart from errors and
+from completed requests, with the limit that refused it: it never enters the
+in-flight list, so without this count a key held at `concurrent_requests`
+looks idle. Tokens are what accounting charged; an untrusted agent's
+reported split is scaled to the charge.
+
+Server reports are read only with an admin socket configured, every five
+seconds, through the server's backend client (its network policy and
+credential): `/metrics` for vLLM and SGLang, `/api/ps` for Ollama. A server
+that publishes neither, such as another Mellomting, is asked again every
+five minutes and logs nothing above debug. `servers.<name>.metrics: false`
+turns it off. Pages are bounded and only allow-listed series are kept.
+
+`top` opens on a dashboard that ranks what is holding traffic back, naming
+the limit and the item; other views list keys, models, servers, live
+requests and accounting history (read by `top` from the accounting log and
+its rotations, not served by the daemon). It never changes anything.
+`--redact` (or `r`) replaces IP addresses with stable labels for screen
+sharing; `--simulate` shows a made-up daemon.
 
 ---
 
@@ -4272,6 +4305,13 @@ only.
 - The proxy makes no outbound connection for an agent, so the sandbox's
   connect rules are unchanged (§58). An agents-only edge grants no TCP
   connect at all.
+- With an admin socket configured, the edge asks each serving agent for
+  its server's load at `GET /mellomting/backend-metrics`, which the agent
+  answers itself (read from its server on demand, cached 2 s) and never
+  relays. The poll bypasses admission and the attachment's counters; the
+  reply is size-bounded, strictly decoded and clamped. `attach.metrics:
+  false` lets the agent's operator refuse (404), and an older agent's 404
+  means no metrics.
 
 ## 104.7 Threats
 

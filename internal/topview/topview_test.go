@@ -401,3 +401,20 @@ func TestRunInputIndependentOfPoll(t *testing.T) {
 		t.Fatal("q did not quit")
 	}
 }
+
+// Colour on a terminal marks headings and attention only; the tables
+// carry none, so they still align.
+func TestPlainColorIsSparing(t *testing.T) {
+	_, st := simModel(t)
+	var b bytes.Buffer
+	Plain(&b, st, Options{Color: true})
+	out := b.String()
+	if !strings.Contains(out, "\x1b[1mATTENTION\x1b[0m") || !strings.Contains(out, "\x1b[38;5;203m●") {
+		t.Fatalf("no colour on headings or attention:\n%q", out)
+	}
+	tables := out[strings.Index(out, "KEYS"):]
+	// The KEYS heading's reset, then BACKENDS, MODELS and REQUESTS.
+	if strings.Count(tables, "\x1b[") != 1+2*3 {
+		t.Fatalf("colour inside tables:\n%q", tables)
+	}
+}

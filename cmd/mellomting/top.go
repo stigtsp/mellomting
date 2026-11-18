@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,26 +20,36 @@ import (
 	"mellomting/internal/agent"
 	"mellomting/internal/config"
 	"mellomting/internal/inflight"
+	"mellomting/internal/topview"
+	"mellomting/internal/topview/sim"
+	"mellomting/internal/topview/term"
+	"mellomting/internal/usagehist"
 )
 
-// maxTopUserAgent bounds the user agent column so one client's long
-// string cannot push every other column off the screen.
+// maxTopUserAgent bounds the user agent column of the legacy table, so
+// one client's long string cannot push every other column off the
+// screen.
 const maxTopUserAgent = 28
 
-// topCmd runs `mellomting top`: a live view of the requests the daemon
-// is serving.
+// maxStatsReply bounds a /stats reply; the daemon caps it lower.
+const maxStatsReply = 4 << 20
+
+// topCmd runs `mellomting top`: the interactive viewer of the daemon's
+// admin socket (PLAN §43.2), plain text on a pipe or with --once.
 //
 // Exit codes: 0 ok, 1 the daemon could not be reached, 2 usage error.
 func topCmd(args []string) int {
-	fs := commandFlags("top", "Watch active requests. Requires server.admin_socket.")
+	fs := commandFlags("top", "Watch what the daemon is doing and what holds it back. Requires server.admin_socket.")
 	var configPath string
 	var interval time.Duration
-	var once bool
+	var once, redact, simulate bool
 	var rows int
 	fs.StringVar(&configPath, "config", "", configFlagHelp)
 	fs.DurationVar(&interval, "interval", time.Second, "refresh `INTERVAL`")
-	fs.BoolVar(&once, "once", false, "print one snapshot and exit")
-	fs.IntVar(&rows, "rows", 40, "most requests to show (default 40 live; --once shows all unless given)")
+	fs.BoolVar(&once, "once", false, "print one snapshot as plain text and exit")
+	fs.IntVar(&rows, "rows", 0, "most requests --once prints (default all)")
+	fs.BoolVar(&redact, "redact", false, "replace IP addresses with stable labels (toggle with r)")
+	fs.BoolVar(&simulate, "simulate", false, "show a made-up busy daemon, to try the view without one")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return flagExitCode(err)
 	}
@@ -47,48 +57,126 @@ func topCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "mellomting: top: unexpected arguments %q\n", fs.Args())
 		return 2
 	}
-	if rows < 1 {
-		fmt.Fprintln(os.Stderr, "mellomting: top: --rows must be positive")
+	if rows < 0 {
+		fmt.Fprintln(os.Stderr, "mellomting: top: --rows must not be negative")
 		return 2
 	}
 	if interval <= 0 {
 		fmt.Fprintln(os.Stderr, "mellomting: top: --interval must be positive")
 		return 2
 	}
+	opt := topview.Options{Redact: redact, Interval: interval, Rows: rows, NoColor: os.Getenv("NO_COLOR") != ""}
 
-	cfg, err := config.Load(ResolveConfigPath(configPath))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
-		return 1
-	}
-	sock := cfg.Server.AdminSocket
-	if sock == "" {
-		fmt.Fprint(os.Stderr, "mellomting: top: add server.admin_socket to your configuration and restart Mellomting:\n\n"+
-			"  server:\n    admin_socket: /run/mellomting/admin.sock\n")
-		return 1
-	}
+	// SIGHUP too: a closed terminal must still restore and exit.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 
-	client := unixClient(sock)
-	if once {
-		snap, err := fetchInflight(context.Background(), client)
+	var src topview.Source
+	if simulate {
+		s := sim.New(1, time.Now(), time.Now)
+		src = s
+		if path, cleanup, err := simUsage(s); err == nil {
+			defer cleanup()
+			opt.Usage, _ = usagehist.Open(path, time.Now())
+			opt.BackendServer = sim.BackendServer
+		}
+	} else {
+		cfg, err := config.Load(ResolveConfigPath(configPath))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
 			return 1
 		}
-		limit := 0
-		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "rows" {
-				limit = rows
-			}
-		})
-		render(os.Stdout, snap, time.Now(), false, limit)
-		return 0
+		sock := cfg.Server.AdminSocket
+		if sock == "" {
+			fmt.Fprint(os.Stderr, "mellomting: top: add server.admin_socket to your configuration and restart Mellomting:\n\n"+
+				"  server:\n    admin_socket: /run/mellomting/admin.sock\n")
+			return 1
+		}
+		src = newAdminSource(unixClient(sock))
+		if !once {
+			opt.Usage, opt.UsageErr = openUsage(cfg)
+			opt.BackendServer = backendServers(cfg)
+		}
 	}
 
-	// Ctrl-C leaves the alternate screen behind it, so the terminal the
-	// operator gets back is the one they left.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if once || !term.IsTerminal(os.Stdout) || !term.IsTerminal(os.Stdin) {
+		opt.Color = !opt.NoColor && term.IsTerminal(os.Stdout)
+		if once {
+			return topOnce(ctx, os.Stdout, os.Stderr, src, opt)
+		}
+		// Not a terminal: a snapshot per interval, like top -b.
+		for {
+			if code := topOnce(ctx, os.Stdout, os.Stderr, src, opt); code != 0 {
+				return code
+			}
+			select {
+			case <-ctx.Done():
+				return 0
+			case <-time.After(interval):
+			}
+			fmt.Fprintln(os.Stdout)
+		}
+	}
+
+	// Ask once before taking over the terminal, so an old daemon or a
+	// missing socket is reported on a normal screen.
+	if _, err := src.Stats(ctx, 0); err != nil {
+		if errors.Is(err, errOldDaemon) {
+			fmt.Fprintln(os.Stderr, "mellomting: top: the daemon is older than this top and serves only the request table; upgrade it for the full view")
+			return legacyTop(ctx, src.(*adminSource).client, interval)
+		}
+		fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
+		return 1
+	}
+	sess, err := term.Start(os.Stdin, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
+		return 1
+	}
+	defer sess.Restore()
+	opt.In = os.Stdin
+	if err := topview.Run(ctx, src, sess, opt); err != nil {
+		sess.Restore()
+		fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// topOnce prints one snapshot. Against a daemon older than /stats it
+// says so and prints the request table that daemon can serve.
+func topOnce(ctx context.Context, w, errw io.Writer, src topview.Source, opt topview.Options) int {
+	st, err := src.Stats(ctx, 0)
+	if errors.Is(err, errOldDaemon) {
+		fmt.Fprintln(errw, "mellomting: top: the daemon is older than this top and serves only the request table; upgrade it for the full view")
+		snap, err := fetchInflight(ctx, src.(*adminSource).client)
+		if err != nil {
+			fmt.Fprintf(errw, "mellomting: top: %v\n", err)
+			return 1
+		}
+		if opt.Redact {
+			red := topview.NewRedactor()
+			for i := range snap.Requests {
+				snap.Requests[i].Remote = red.Apply(snap.Requests[i].Remote)
+				snap.Requests[i].UserAgent = red.Apply(snap.Requests[i].UserAgent)
+			}
+			for i := range snap.Agents {
+				snap.Agents[i].Remote = red.Apply(snap.Agents[i].Remote)
+			}
+		}
+		render(w, snap, time.Now(), false, opt.Rows)
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintf(errw, "mellomting: top: %v\n", err)
+		return 1
+	}
+	topview.Plain(w, st, opt)
+	return 0
+}
+
+// legacyTop is the request table, redrawn, for a daemon without /stats.
+func legacyTop(ctx context.Context, client *http.Client, interval time.Duration) int {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -100,13 +188,99 @@ func topCmd(args []string) int {
 			fmt.Fprintf(os.Stderr, "mellomting: top: %v\n", err)
 			return 1
 		}
-		render(os.Stdout, snap, time.Now(), true, rows)
+		render(os.Stdout, snap, time.Now(), true, 40)
 		select {
 		case <-ctx.Done():
 			return 0
 		case <-ticker.C:
 		}
 	}
+}
+
+// errOldDaemon is a daemon that answers /stats with 404.
+var errOldDaemon = oldDaemon{}
+
+type oldDaemon struct{}
+
+func (oldDaemon) Error() string { return "the daemon does not serve /stats" }
+func (oldDaemon) Banner() string {
+	return "the daemon no longer serves /stats (downgraded?)"
+}
+
+// adminSource reads GET /stats over the admin socket.
+type adminSource struct{ client *http.Client }
+
+func newAdminSource(c *http.Client) *adminSource { return &adminSource{client: c} }
+
+func (a *adminSource) Stats(ctx context.Context, since int64) (adminapi.Stats, error) {
+	var st adminapi.Stats
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://admin/stats?since="+strconv.FormatInt(since, 10), nil)
+	if err != nil {
+		return st, err
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return st, fmt.Errorf("cannot reach the admin socket: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return st, errOldDaemon
+	}
+	if resp.StatusCode != http.StatusOK {
+		return st, fmt.Errorf("admin socket returned %s", resp.Status)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxStatsReply)).Decode(&st); err != nil {
+		return st, fmt.Errorf("invalid admin response: %w", err)
+	}
+	return st, nil
+}
+
+// openUsage opens the accounting log for the Usage view, or says why
+// it cannot: top runs as the operator, who may not be able to read it.
+func openUsage(cfg *config.Config) (*usagehist.History, string) {
+	if !cfg.Accounting.Enabled || cfg.Accounting.Path == "" {
+		return nil, "accounting is off in this configuration"
+	}
+	h, err := usagehist.Open(cfg.Accounting.Path, time.Now())
+	switch {
+	case err == nil:
+		return h, ""
+	case os.IsPermission(err):
+		return nil, "cannot read the accounting log: permission denied (run top as a user who can read it)"
+	case os.IsNotExist(err):
+		return nil, "the accounting log does not exist yet"
+	}
+	return nil, "cannot read the accounting log"
+}
+
+// backendServers maps each generated backend name to its server, so
+// the Usage view lists servers.
+func backendServers(cfg *config.Config) map[string]string {
+	out := make(map[string]string, len(cfg.Backends))
+	for name, b := range cfg.Backends {
+		if b.Server != "" {
+			out[name] = b.Server
+		}
+	}
+	return out
+}
+
+// simUsage writes the simulator's history to a temporary file.
+func simUsage(s *sim.Sim) (string, func(), error) {
+	f, err := os.CreateTemp("", "mellomting-sim-usage-*.jsonl")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { os.Remove(f.Name()) }
+	err = s.WriteUsage(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return f.Name(), cleanup, nil
 }
 
 // unixClient talks HTTP over the admin socket. The host in the URL is

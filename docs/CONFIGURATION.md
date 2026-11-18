@@ -73,6 +73,16 @@ business. Leave it off unless the server and every client routed to it are
 equally trusted, because a rejection message can quote the request that caused
 it. See [Operations](OPERATIONS.md) for the operator-only alternative.
 
+With `server.admin_socket` set, the daemon reads each server's own load
+report for `mellomting top`. To stop that for one server:
+
+```yaml
+servers:
+  a:
+    url: http://127.0.0.1:8000
+    metrics: false
+```
+
 Each server admits a bounded number of requests at once and queues the rest.
 Set the cap to what the engine runs concurrently — for vLLM, its
 `--max-num-seqs`:
@@ -198,6 +208,7 @@ attach:
   # backend_key_file: /etc/mellomting/backend.key   # bearer token for the servers
   # ca_file: /etc/mellomting/edge-ca.pem            # CAs for the edge (default: system roots)
   # insecure_edge: true                             # allow plain http off loopback
+  # metrics: false                                  # refuse the edge's reads of the servers' load
 ```
 
 A daemon that attaches serves no clients, so a configuration with `attach`

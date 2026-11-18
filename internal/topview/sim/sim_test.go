@@ -3,8 +3,12 @@ package sim
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"mellomting/internal/usagehist"
 )
 
 var start = time.Date(2026, 11, 18, 13, 23, 34, 0, time.UTC)
@@ -32,5 +36,45 @@ func TestSimAdvancesWithClock(t *testing.T) {
 	}
 	if first.Stats.Global.Refusals["key_concurrency"] == 0 || len(first.Agents) != 1 || first.Agents[0].Metrics.Waiting < 16 {
 		t.Fatal("the screenshot scenario is missing")
+	}
+}
+
+// Within one five-minute cycle every incident the attention box ranks
+// shows up, so --simulate exercises all of it.
+func TestSimScriptedIncidents(t *testing.T) {
+	now := start
+	s := New(3, start, func() time.Time { return now })
+	var dropped, cooldown, queueing bool
+	for range 300 {
+		now = now.Add(time.Second)
+		st, _ := s.Stats(context.Background(), 0)
+		dropped = dropped || st.Global.Accounting.Dropped > 0
+		for _, srv := range st.Servers {
+			cooldown = cooldown || len(srv.Health) > 0
+		}
+		queueing = queueing || st.Agents[0].Metrics.Waiting > 0
+	}
+	if !dropped || !cooldown || !queueing {
+		t.Fatalf("dropped=%v cooldown=%v queueing=%v", dropped, cooldown, queueing)
+	}
+}
+
+func TestSimUsageHistory(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "usage.jsonl")
+	f, _ := os.Create(p)
+	if err := New(3, start, nil).WriteUsage(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	h, err := usagehist.Open(p, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, _ := h.Covers()
+	if start.Sub(from) < 6*24*time.Hour || len(h.Totals(usagehist.ByServer, usagehist.Span, start)) < 3 {
+		t.Fatalf("history covers from %v, servers %v", from, h.Totals(usagehist.ByServer, usagehist.Span, start))
+	}
+	if BackendServer["auto-gpu1-6a1d0c3e9b27"] != "gpu1" {
+		t.Fatal("no backend → server map for the generated names")
 	}
 }

@@ -8,8 +8,11 @@
 package sim
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -176,6 +179,15 @@ func (s *Sim) gauges(r *rand.Rand) stats.Gauges {
 	}
 }
 
+// dropped scripts a disk stall: for half a minute of every five, the
+// accounting writer drops records.
+func dropped(t time.Time) int64 {
+	if c := t.Unix() % 300; c >= 200 && c < 230 {
+		return (c - 199) * 7
+	}
+	return 0
+}
+
 func (s *Sim) gpu1() int       { return 10 + int(load(s.now)/6) }
 func (s *Sim) labWaiting() int { return 16 + int(s.now.Unix()%5) }
 func (s *Sim) inflight() int   { return 8 + 7 + 3 + 1 + s.gpu1() + 2 }
@@ -203,7 +215,7 @@ func (s *Sim) Snapshot(since int64) adminapi.Stats {
 		NowMillis:     now.UnixMilli(),
 		StartedMillis: s.started.UnixMilli(),
 		Global: adminapi.GlobalInfo{MaxInflight: 256, Inflight: s.inflight(), RPS: 200, Burst: 400,
-			Accounting: adminapi.AccountingInfo{Enabled: true}},
+			Accounting: adminapi.AccountingInfo{Enabled: true, Dropped: dropped(now)}},
 		Stats: s.store.Since(since, adminapi.MaxStatsBytes),
 	}
 	hour := now.Truncate(time.Hour).Add(time.Hour)
@@ -292,4 +304,58 @@ func bracket(ip string) string {
 		}
 	}
 	return ip
+}
+
+// BackendServer maps the generated backend names in the simulated
+// accounting log to their servers, as top builds it from configuration.
+var BackendServer = map[string]string{
+	"auto-gpu1-6a1d0c3e9b27":    "gpu1",
+	"auto-gpu1-0f9e8d7c6b5a":    "gpu1",
+	"auto-gpu2-1f2e3d4c5b6a":    "gpu2",
+	"auto-ollama1-3c4d5e6f7a8b": "ollama1",
+	"auto-edge2-9a8b7c6d5e4f":   "edge2",
+}
+
+var usageBackend = map[string][]string{
+	"chat-large":  {"auto-gpu1-6a1d0c3e9b27", "agent-lab-3", "agent-lab-6"},
+	"chat-fast":   {"auto-gpu1-0f9e8d7c6b5a"},
+	"local-30b":   {"auto-ollama1-3c4d5e6f7a8b"},
+	"embed-small": {"auto-gpu2-1f2e3d4c5b6a", "auto-edge2-9a8b7c6d5e4f"},
+}
+
+// WriteUsage writes seven days of accounting records ending at the
+// current simulated second, busier in working hours, in the daemon's
+// usage.jsonl format.
+func (s *Sim) WriteUsage(w io.Writer) error {
+	bw := bufio.NewWriter(w)
+	enc := json.NewEncoder(bw)
+	r := rand.New(rand.NewPCG(s.seed, 99))
+	end := s.now
+	for t := end.Add(-7 * 24 * time.Hour).Truncate(time.Hour); t.Before(end); t = t.Add(time.Hour) {
+		busy := 0.3 + 0.7*math.Max(0, math.Sin(float64(t.Hour()-6)/24*2*math.Pi))
+		for _, k := range keys {
+			if k.share == 0 {
+				continue
+			}
+			for range poisson(r, 30*busy*k.share) {
+				model := k.models[r.IntN(len(k.models))]
+				bs := usageBackend[model]
+				in, out := int64(400+r.IntN(3000)), int64(80+r.IntN(900))
+				status := "exact"
+				if r.Float64() < 0.01 {
+					status = "unknown"
+				}
+				rec := map[string]any{
+					"time": t.Add(time.Duration(r.IntN(3600)) * time.Second).Format(time.RFC3339Nano), "request_id": "sim",
+					"key_id": k.id, "model": model, "backend": bs[r.IntN(len(bs))], "endpoint": "/v1/chat/completions",
+					"status": 200, "input_tokens": in, "output_tokens": out, "total_tokens": in + out,
+					"cached_tokens": in / 4, "usage_status": status, "charged_tokens": in + out,
+				}
+				if err := enc.Encode(rec); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return bw.Flush()
 }

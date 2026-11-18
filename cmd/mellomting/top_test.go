@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"mellomting/internal/auth"
+	"mellomting/internal/topview"
 )
 
 // `top` answers the question an operator asks while something is slow:
@@ -176,4 +178,62 @@ func newSlowBackend(t *testing.T, started chan<- struct{}, release <-chan struct
 	}))
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// --simulate needs no configuration or daemon, and --once on a pipe
+// prints the plain view without escape sequences.
+func TestTopSimulateOnce(t *testing.T) {
+	bin := buildCLI(t)
+	dir := t.TempDir()
+	code, out, stderr := runCLI(t, bin, dir, "top", "--simulate", "--once")
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q", code, stderr)
+	}
+	for _, want := range []string{"in flight", "ATTENTION", "coding_agents", "refused", "agent-lab-6", "REQUESTS"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.ContainsRune(out, 0x1b) {
+		t.Fatal("escape sequence on a pipe")
+	}
+}
+
+func TestTopRedactFlag(t *testing.T) {
+	bin := buildCLI(t)
+	code, out, _ := runCLI(t, bin, t.TempDir(), "top", "--simulate", "--once", "--redact")
+	if code != 0 || !strings.Contains(out, "REDACTED") || strings.Contains(out, "192.0.2.") || strings.Contains(out, "198.51.100.") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// A daemon from before /stats answers 404: top says so and shows the
+// table it can.
+func TestTopOldDaemonFallback(t *testing.T) {
+	old := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/inflight" {
+			w.Write([]byte(`{"requests":[{"request_id":"r1","key_id":"k","key_name":"old-key","remote":"192.0.2.9:1","endpoint":"/v1/chat/completions","phase":"waiting","age_ms":1500}],"agents":null}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
+	client := &http.Client{Transport: handlerTransport{old}}
+	var out, errw strings.Builder
+	code := topOnce(context.Background(), &out, &errw, newAdminSource(client), topview.Options{Redact: true})
+	if code != 0 || !strings.Contains(errw.String(), "older") || !strings.Contains(out.String(), "old-key") {
+		t.Fatalf("exit %d\nstdout %s\nstderr %s", code, out.String(), errw.String())
+	}
+	if strings.Contains(out.String(), "192.0.2.9") {
+		t.Fatal("legacy table ignores --redact")
+	}
+}
+
+// handlerTransport serves requests from a handler in-process, standing
+// in for the admin socket.
+type handlerTransport struct{ h http.Handler }
+
+func (t handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	w := httptest.NewRecorder()
+	t.h.ServeHTTP(w, r)
+	return w.Result(), nil
 }

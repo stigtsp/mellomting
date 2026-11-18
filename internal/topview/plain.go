@@ -19,22 +19,40 @@ func Plain(w io.Writer, st adminapi.Stats, opt Options) {
 	show := func(s string) string { return m.show(&ui, s) }
 	g := &m.global
 	reason, _ := m.recentRefusal(10)
-	fmt.Fprintf(w, "mellomting %s", m.now().Format("15:04:05"))
+	// Colour, when on, marks only what to look at: the title, section
+	// headings and attention lines. Tables stay plain so they align.
+	paint := func(sgr, s string) string {
+		if !opt.Color {
+			return s
+		}
+		return "\x1b[" + sgr + "m" + s + "\x1b[0m"
+	}
+	heading := func(s string) string { return paint("1", s) }
+	fmt.Fprintf(w, "%s %s  %d in flight", paint("1;38;5;75", "mellomting"), m.now().Format("15:04:05"), len(st.Requests))
 	if opt.Redact {
-		fmt.Fprint(w, " REDACTED")
+		fmt.Fprint(w, " "+paint("1;38;5;214", "REDACTED"))
 	}
 	fmt.Fprintf(w, "  inflight %d/%d  offered %s/s  completed %s/s  errors %s/s  refused %s/s",
 		st.Global.Inflight, st.Global.MaxInflight, num(m.rate(g, offered)), num(m.rate(g, completed)), num(m.rate(g, failed)), num(m.rate(g, refused)))
 	if reason != "" {
 		fmt.Fprintf(w, " (%s)", reason)
 	}
-	fmt.Fprintf(w, "  tok/s %s\n\nATTENTION\n", num(m.rate(g, tokOut)))
+	fmt.Fprintf(w, "  tok/s %s\n\n%s\n", num(m.rate(g, tokOut)), heading("ATTENTION"))
 	for _, a := range attention(m) {
-		fmt.Fprintf(w, "  %s\n", show(a.text))
+		sgr := "38;5;114"
+		switch a.st.FG {
+		case bad.FG:
+			sgr = "38;5;203"
+		case warn.FG:
+			sgr = "38;5;214"
+		case 0:
+			sgr = "2"
+		}
+		fmt.Fprintf(w, "  %s %s\n", paint(sgr, "●"), show(a.text))
 	}
 
 	table := func(title string, cols []col, rows []row, limit int) {
-		fmt.Fprintf(w, "\n%s\n", title)
+		fmt.Fprintf(w, "\n%s\n", heading(title))
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		var heads []string
 		var keep []int

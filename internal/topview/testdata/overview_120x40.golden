@@ -5,12 +5,12 @@
 │ out 80.5 KB/s          ⣠⣤⣶⣶⣶⣷⣶⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣴⣦⣴⣤⣤⣤⣤  ← key_concurrency      ⣴⣷⣦⣿⣷⣶⣴⣤⣀⣠⣴⣄⣀⣤⣠⣴⣸⣿⣾⣾⣶⣴⣄⣴⣧⣀⣀⣀⣀⣠⣾⣧⣴⣶ │
 │ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s · completed 24/s · errors 0.6/s           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭┤Attention · 3 more├──────────────────────────────────────────────────────────────────────────────────────────────────╮
+╭┤Attention · 4 more├──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ● accounting dropped 105 records: the disk is not keeping up                                                         │
 │ ● gpu2 in cooldown 26s for embed-small                                                                               │
 │ ● coding_agents refused 162/min by concurrent_requests (8)                                                           │
 │ ● batch_jobs refused 50/min by requests_per_second (2)                                                               │
 │ ● agent-lab-6 vLLM queueing 20 (6 running, KV 94%)                                                                   │
-│ ● gpu2 failing 33/min (backend_connect)                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤Keys├────────────────────────────────╮╭┤Servers├─────────────────────────────╮╭┤Models├──────────────────────────────╮
 │  KEY               INFLIGHT    REQ/S ││  SERVER        SLOTS          ENGINE ││  MODEL         REQ/S  TOK/S LAST 5M  │

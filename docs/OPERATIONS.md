@@ -370,40 +370,52 @@ request totals. Use the supplied logrotate policy for the JSONL file; it uses
 `copytruncate` because the sandbox retains access to the open file. Renaming
 the file does not redirect the running writer to a replacement.
 
-## Watching requests in flight
+## Watching the daemon
 
-To watch active requests, configure an admin socket:
+`mellomting top` shows what the daemon is doing and what is holding it back.
+Configure an admin socket:
 
 ```yaml
 server:
   admin_socket: /run/mellomting/admin.sock
 ```
 
-Restart the daemon, then run:
+Restart the daemon, then run `mellomting top`. To try the view without a
+daemon, run `mellomting top --simulate`.
 
-```sh
-mellomting top
-```
+It opens on **Overview**: throughput graphs for the last five minutes, an
+attention box listing what is holding traffic back (a key refused at its
+`concurrent_requests`, a server in cooldown, vLLM queueing behind the edge,
+accounting dropping records), the busiest keys, servers and models, and the
+live requests. A refusal is counted apart from errors: it never reaches a
+backend, so the gap between *offered* and *completed* requests is traffic a
+limit turned away.
 
-```
-mellomting 14:02:11 — 2 in flight
+The other views are **Keys** (in flight against `concurrent_requests`, rate
+against `requests_per_second`, token quota), **Models**, **Backends** (edge
+admission beside the server's own report: vLLM and SGLang running, waiting
+and KV cache use; Ollama's loaded models), **Requests**, and **Usage** (token
+use per key, model or server over 1 hour, 24 hours and 7 days, from the
+accounting log). Enter opens a detail box for the selected item. The keys are
+listed in the bottom border.
 
-AGE   PHASE      KEY    MODEL     TOKENS  IN    OUT   CLIENT          USER-AGENT
-8.4s  streaming  ci     my-model  412     712B  4.0K  198.51.100.9    codex-cli/1.2.3
-0.9s  waiting    alice  my-model  -       680B  -     198.51.100.14   curl/8.7.1
-```
+Server reports come from `/metrics` (vLLM; SGLang started with
+`--enable-metrics`) or `/api/ps` (Ollama). A server that publishes neither
+shows "no metrics". To stop reading one, set `metrics: false` on it. An
+agent's operator can refuse with `attach.metrics: false`.
 
-`PHASE` is where the request is: `reading` its body, `routing`, `queued` for a
-backend, `waiting` for the first response byte, `streaming` events back, or
-`sending` a buffered response. `TOKENS` stays `-` until the backend reports
-usage, which for a stream is at the end.
+The Usage view reads the accounting log and its rotations directly, so run
+`top` as a user who can read it; if it cannot, that view says so and the rest
+still work.
 
-`--interval` sets the refresh (default `1s`), and `--once` prints a single
-snapshot without clearing the screen, for scripts and pipes.
+`r` (or `--redact`) replaces IP addresses with labels such as `ip-1`, the same
+for the whole session, for screenshots and screen sharing. `--once`, or output
+that is not a terminal, prints plain text; `NO_COLOR` turns colour off. A
+daemon older than this `top` gets the old request table.
 
 The socket has mode `0600`, restricting access to the service account and
-root. It exposes client addresses, user agents, and token usage. Request
-tracking is disabled when no admin socket is configured.
+root. It exposes client addresses, user agents, and token usage. Nothing is
+tracked when no admin socket is configured.
 
 ## Troubleshooting
 

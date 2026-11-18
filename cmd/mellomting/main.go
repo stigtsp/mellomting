@@ -720,7 +720,7 @@ func usage(w io.Writer) {
   agent      Check the attach section's key with the edge
   key        Manage API keys
   usage      Report token usage
-  top        Watch requests in flight
+  top        Watch traffic, limits and backends (--simulate to try it)
   config     Check or inspect configuration
   sandbox    Check sandbox support
   install    Install the binary or systemd service

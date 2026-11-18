@@ -92,6 +92,21 @@ Renaming the log would leave the daemon writing to the old file.
 A line can be duplicated or lost between copying and truncating. Token
 accounting is intended for usage tracking and quota enforcement.
 
+## Server load reports
+
+`mellomting top` reads these, and nothing else, from each server (PLAN §43.2);
+unknown names are ignored, so a renamed series shows as "no metrics" rather
+than breaking anything. The allow-list is in `internal/backendmetrics/parse.go`.
+
+- vLLM `/metrics`: `vllm:num_requests_running`, `vllm:num_requests_waiting`,
+  `vllm:kv_cache_usage_perc` (older releases: `vllm:gpu_cache_usage_perc`),
+  token and preemption counters.
+- SGLang `/metrics`, only when started with `--enable-metrics`:
+  `sglang:num_running_reqs`, `sglang:num_queue_reqs`, `sglang:token_usage`,
+  token counters.
+- Ollama has no `/metrics`; `/api/ps` gives loaded models, their VRAM and
+  when each unloads. It reports no queue.
+
 ## Test coverage
 
 Automated compatibility tests use a simulated OpenAI-compatible backend.
