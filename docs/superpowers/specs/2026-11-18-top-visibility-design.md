@@ -390,3 +390,10 @@ implementer's call, not the operator's, unless marked.
    IPv6, including inside user agents and names), with stable `ip-N`
    labels. Backend URLs are not in the admin data and are not shown, so
    there is nothing more to redact there. Hostnames are left visible.
+
+9. **Engines: vLLM, SGLang and Ollama** (operator's request). vLLM and
+   SGLang publish Prometheus `/metrics` under their own names (SGLang only
+   with `--enable-metrics`); both map to running, waiting, cache use and
+   token totals. Ollama has no `/metrics`; its `/api/ps` gives the loaded
+   models, their VRAM and when each unloads, and no queue depth, so an
+   Ollama row shows loaded models instead of running/waiting.
