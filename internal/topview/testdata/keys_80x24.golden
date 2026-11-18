@@ -1,0 +1,24 @@
+╭┤ mellomting 13:23:34 up 17h09m ├──────────────────────────────┤ 1-6 2 Keys ├─╮
+│ req/s          24 ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄⣀⣀⣠↑77  tok/s out   11.4k ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄↑35.3k │
+│ net in 214.1 KB/s ⣀⣠⣤⣤⣄⣤⣦⣤⣤⣶⣶⣤↑989 KB  refused/s       5 ⣠⣠⣤⣀⣀⣀⣀⣀⣀⣤⣤⣄⣀⣀⣀⣀↑13 │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭┤Keys · 5 · sort refused├─────────────────────────────────────────────────────╮
+│  KEY                  INFLIGHT          REQ/S REFUSED/MIN              TOK/S │
+│▶ coding_agents        ■■■■■ 8/8        9.3/10 162 key_concurrency      22.6k │
+│  batch_jobs           2                 3.9/2 50 key_rate               9.6k │
+│  doc_indexer          ■■■·· 5/8        6.3/10 3 backend_queue          14.2k │
+│  dashboard            0                   2.9 0                           6k │
+│  notebooks            ■···· 1/4           1.8 0                         3.4k │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭┤key coding_agents├───────────────────────────────────────────────────────────╮
+│ concurrent_requests 8/8 in flight (at limit 100% of 5m)                      │
+│ requests_per_second 10 burst 20                                              │
+│ req/s 9.3 · tok/s 22.6k · refused 162/min                                    │
+│ refused 5m: key_concurrency 980                                              │
+│ errors 5m: backend_timeout 31                                                │
+│ live models chat-fast (4), chat-large (4)                                    │
+│ live servers gpu1 (8)                                                        │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s sort  / filter  q quit ├─────╯

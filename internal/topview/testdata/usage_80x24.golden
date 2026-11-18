@@ -1,0 +1,24 @@
+╭┤ mellomting 13:23:34 up 17h09m ├─────────────────────────────┤ 1-6 6 Usage ├─╮
+│ req/s          24 ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄⣀⣀⣠↑77  tok/s out   11.4k ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄↑35.3k │
+│ net in 214.1 KB/s ⣀⣠⣤⣤⣄⣤⣦⣤⣤⣶⣶⣤↑989 KB  refused/s       5 ⣠⣠⣤⣀⣀⣀⣀⣀⣀⣤⣤⣄⣀⣀⣀⣀↑13 │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭┤Usage · keys├────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│ accounting history is not available                                          │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s keys/models/servers  q quit ├╯

@@ -1,0 +1,40 @@
+╭┤ mellomting 13:23:34 up 17h09m ├────────────────────┤ 1 Overview  2 Keys  3 Models  4 Backends  5 Requests  6 Usage ├╮
+│ req/s               24           ⢀⣀⣀⡀⣀ ⢠⣴⣶⡆           ↑77  tok/s out        11.4k           ⢀⣀⣀⣀⣀ ⣠⣴⣶⣄        ↑35.3k │
+│ offered 29 · err 0.6   ⣠⣤⣶⣶⣷⣷⣶⣿⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣤⣴⣴⣶⣶⣴⣤⣤⣤⣶  in 44.3k/s             ⣠⣤⣷⣶⣿⣷⣾⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣶⣶⣴⣦⣠⣤⣶ │
+│ net in      214.1 KB/s           ⢀⣀⣀ ⣀ ⣠⣴⣤⡄       ↑989 KB  refused/s            5    ⣀             ⢀⢀            ↑13 │
+│ out 80.5 KB/s          ⣠⣤⣶⣶⣶⣷⣶⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣴⣦⣴⣤⣤⣤⣤  ← key_concurrency      ⣴⣷⣦⣿⣷⣶⣴⣤⣀⣠⣴⣄⣀⣤⣠⣴⣸⣿⣾⣾⣶⣴⣄⣴⣧⣀⣀⣀⣀⣠⣾⣧⣴⣶ │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s · completed 24/s · errors 0.6/s           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭┤Attention · 3 more├──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ● gpu2 in cooldown 26s for embed-small                                                                               │
+│ ● coding_agents refused 162/min by concurrent_requests (8)                                                           │
+│ ● batch_jobs refused 50/min by requests_per_second (2)                                                               │
+│ ● agent-lab-6 vLLM queueing 20 (6 running, KV 94%)                                                                   │
+│ ● gpu2 failing 33/min (backend_connect)                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭┤Keys├────────────────────────────────╮╭┤Servers├─────────────────────────────╮╭┤Models├──────────────────────────────╮
+│  KEY               INFLIGHT    REQ/S ││  SERVER        SLOTS          ENGINE ││  MODEL         REQ/S  TOK/S LAST 5M  │
+│▶ coding_agents     ■■■■■ 8/8  9.3/10 ││  agent-lab-6   ■■■■■ 24/24    6r 20w ││  chat-large       10  24.4k ⣠⣤⣴⣶⣷⣄⣤⣀ │
+│  doc_indexer       ■■■·· 5/8  6.3/10 ││  ollama1       ■■■·· 2/4    2 loaded ││  chat-fast         7  16.7k ⣠⣤⣴⣶⣷⣄⣤⣀ │
+│  batch_jobs        2           3.9/2 ││  gpu1          ■■··· 14/32    14r 0w ││  local-30b       3.7     9k ⣠⣤⣴⣶⣷⣄⣤⣀ │
+│  dashboard         0             2.9 ││  gpu2          ■···· 1/8    cooldown ││  embed-small     3.1   5.6k ⣠⣤⣶⣶⣧⣤⣤⣄ │
+│  notebooks         ■···· 1/4     1.8 ││  edge2         ····· 1/16          – ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+╭┤Live · 18 in flight├─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ reading 1 · routing 0 · queued 1 · waiting 7 · streaming 8 · sending 1 · oldest 55s (coding_agents)                  │
+│  KEY                MODEL                             SERVER         PHASE         AGE   TTFB REMOTE                 │
+│  coding_agents      chat-large                        gpu1           waiting       55s      – 192.0.2.10:48782       │
+│  coding_agents      chat-fast                         gpu1           streaming     27s   1.3s 192.0.2.10:44543       │
+│  coding_agents      chat-large                        gpu1           streaming     10s  926ms 192.0.2.10:46589       │
+│  coding_agents      chat-fast                         gpu1           waiting       16s      – 192.0.2.10:45218       │
+│  coding_agents      chat-large                        gpu1           streaming     15s   1.7s 192.0.2.10:53705       │
+│  coding_agents      chat-fast                         gpu1           streaming     39s   1.5s 192.0.2.10:49952       │
+│  coding_agents      chat-large                        gpu1           waiting      9.0s      – 192.0.2.10:54233       │
+│  coding_agents      chat-fast                         gpu1           streaming     56s   1.4s 192.0.2.10:54844       │
+│  doc_indexer        chat-large                        agent-lab-6    streaming     46s  726ms 198.51.100.7:44738     │
+│  doc_indexer        chat-large                        agent-lab-6    streaming   2m40s  415ms 198.51.100.7:58249     │
+│  doc_indexer        chat-large                        agent-lab-6    waiting       47s      – 198.51.100.7:57691     │
+│  doc_indexer        chat-large                        agent-lab-6    waiting     2m04s      – 198.51.100.7:50452     │
+│  doc_indexer        chat-large                        agent-lab-6    waiting     1m00s      – 198.51.100.7:40654     │
+│  doc_indexer        chat-large                        agent-lab-6    waiting     1m17s      – 198.51.100.7:42136     │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  r redact  p pause  q quit ├────────────────────────────────────────────╯

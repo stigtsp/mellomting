@@ -1,0 +1,24 @@
+╭┤ mellomting 13:23:34 up 17h09m ├──────────────────────────┤ 1-6 4 Backends ├─╮
+│ req/s          24 ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄⣀⣀⣠↑77  tok/s out   11.4k ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄↑35.3k │
+│ net in 214.1 KB/s ⣀⣠⣤⣤⣄⣤⣦⣤⣤⣶⣶⣤↑989 KB  refused/s       5 ⣠⣠⣤⣀⣀⣀⣀⣀⣀⣤⣤⣄⣀⣀⣀⣀↑13 │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭┤Backends · 5 · sort load├────────────────────────────────────────────────────╮
+│  SERVER         SLOTS           QUEUE ENGINE                           REQ/S │
+│▶ agent-lab-6    ■■■■■ 24/24         – vLLM 6 run 20 wait KV 94%          6.1 │
+│  ollama1        ■■■·· 2/4        0/16 Ollama 2 loaded 19.6 GB            3.7 │
+│  gpu1           ■■··· 14/32      0/64 vLLM 14 run 0 wait KV 23%           11 │
+│  gpu2           ■···· 1/8        0/16 cooldown 26s embed-small           1.5 │
+│  edge2          ····· 1/16       0/64 no metrics                         1.6 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s sort  / filter  q quit ├─────╯

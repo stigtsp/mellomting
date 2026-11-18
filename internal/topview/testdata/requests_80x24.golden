@@ -1,0 +1,24 @@
+╭┤ mellomting 13:23:34 up 17h09m ├──────────────────────────┤ 1-6 5 Requests ├─╮
+│ req/s          24 ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄⣀⣀⣠↑77  tok/s out   11.4k ⣀⣠⣤⣤⣄⣤⣶⣤⣤⣶⣶⣤⣄↑35.3k │
+│ net in 214.1 KB/s ⣀⣠⣤⣤⣄⣤⣦⣤⣤⣶⣶⣤↑989 KB  refused/s       5 ⣠⣠⣤⣀⣀⣀⣀⣀⣀⣤⣤⣄⣀⣀⣀⣀↑13 │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭┤Requests · 18 · sort age├────────────────────────────────────────────────────╮
+│  KEY              MODEL                PHASE         AGE IN PHASE   TTFB     │
+│▶ doc_indexer      chat-large           streaming   2m40s    2m39s  415ms     │
+│  doc_indexer      chat-large           waiting     2m04s    2m03s      –     │
+│  doc_indexer      chat-large           waiting     1m17s    1m16s      –     │
+│  doc_indexer      chat-large           waiting     1m00s      59s      –     │
+│  coding_agents    chat-fast            streaming     56s      54s   1.4s     │
+│  coding_agents    chat-large           waiting       55s      54s      –     │
+│  doc_indexer      chat-large           waiting       47s      46s      –     │
+│  doc_indexer      chat-large           streaming     46s      45s  726ms     │
+│  coding_agents    chat-fast            streaming     39s      37s   1.5s     │
+│  coding_agents    chat-fast            streaming     27s      25s   1.3s     │
+│  coding_agents    chat-fast            waiting       16s      15s      –     │
+│  coding_agents    chat-large           streaming     15s      13s   1.7s     │
+│  coding_agents    chat-large           streaming     10s     9.1s  926ms     │
+│  coding_agents    chat-large           waiting      9.0s     8.8s      –     │
+│  batch_jobs       local-30b            streaming    4.0s     1.9s   2.1s     │
+│  batch_jobs       chat-fast            queued       1.2s     1.2s      –     │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s sort  / filter  q quit ├─────╯

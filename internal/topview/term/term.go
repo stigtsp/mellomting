@@ -88,3 +88,15 @@ func (s *Session) Size() (w, h int) {
 	}
 	return w, h
 }
+
+// FakeSession is a session on no terminal, w×h cells, writing to out:
+// for testing code that draws.
+func FakeSession(out io.Writer, w, h int) *Session {
+	return &Session{tty: fixedTTY{w, h}, out: out}
+}
+
+type fixedTTY struct{ w, h int }
+
+func (fixedTTY) makeRaw() error            { return nil }
+func (fixedTTY) restore() error            { return nil }
+func (t fixedTTY) size() (int, int, error) { return t.w, t.h, nil }

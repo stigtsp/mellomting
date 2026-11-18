@@ -1,0 +1,40 @@
+╭┤ mellomting 13:23:34 up 17h09m ├────────────────────┤ 1 Overview  2 Keys  3 Models  4 Backends  5 Requests  6 Usage ├╮
+│ req/s               24           ⢀⣀⣀⡀⣀ ⢠⣴⣶⡆           ↑77  tok/s out        11.4k           ⢀⣀⣀⣀⣀ ⣠⣴⣶⣄        ↑35.3k │
+│ offered 29 · err 0.6   ⣠⣤⣶⣶⣷⣷⣶⣿⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣤⣴⣴⣶⣶⣴⣤⣤⣤⣶  in 44.3k/s             ⣠⣤⣷⣶⣿⣷⣾⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣶⣶⣴⣦⣠⣤⣶ │
+│ net in      214.1 KB/s           ⢀⣀⣀ ⣀ ⣠⣴⣤⡄       ↑989 KB  refused/s            5    ⣀             ⢀⢀            ↑13 │
+│ out 80.5 KB/s          ⣠⣤⣶⣶⣶⣷⣶⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣴⣦⣴⣤⣤⣤⣤  ← key_concurrency      ⣴⣷⣦⣿⣷⣶⣴⣤⣀⣠⣴⣄⣀⣤⣠⣴⣸⣿⣾⣾⣶⣴⣄⣴⣧⣀⣀⣀⣀⣠⣾⣧⣴⣶ │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s · completed 24/s · errors 0.6/s           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭┤Requests · 18 · sort age├────────────────────────────────────────────────────────────────────────────────────────────╮
+│  KEY              REMOTE               MODEL                SERVER       PHASE         AGE IN PHASE   TTFB      OUT  │
+│▶ doc_indexer      198.51.100.7:58249   chat-large           agent-lab-6  streaming   2m40s    2m39s  415ms  31.5 KB  │
+│  doc_indexer      198.51.100.7:50452   chat-large           agent-lab-6  waiting     2m04s    2m03s      –      0 B  │
+│  doc_indexer      198.51.100.7:42136   chat-large           agent-lab-6  waiting     1m17s    1m16s      –      0 B  │
+│  doc_indexer      198.51.100.7:40654   chat-large           agent-lab-6  waiting     1m00s      59s      –      0 B  │
+│  coding_agents    192.0.2.10:54844     chat-fast            gpu1         streaming     56s      54s   1.4s   5.3 KB  │
+│  coding_agents    192.0.2.10:48782     chat-large           gpu1         waiting       55s      54s      –      0 B  │
+│  doc_indexer      198.51.100.7:57691   chat-large           agent-lab-6  waiting       47s      46s      –      0 B  │
+│  doc_indexer      198.51.100.7:44738   chat-large           agent-lab-6  streaming     46s      45s  726ms    24 KB  │
+│  coding_agents    192.0.2.10:49952     chat-fast            gpu1         streaming     39s      37s   1.5s  34.2 KB  │
+│  coding_agents    192.0.2.10:44543     chat-fast            gpu1         streaming     27s      25s   1.3s  21.1 KB  │
+│  coding_agents    192.0.2.10:45218     chat-fast            gpu1         waiting       16s      15s      –      0 B  │
+│  coding_agents    192.0.2.10:53705     chat-large           gpu1         streaming     15s      13s   1.7s  32.1 KB  │
+│  coding_agents    192.0.2.10:46589     chat-large           gpu1         streaming     10s     9.1s  926ms  19.5 KB  │
+│  coding_agents    192.0.2.10:54233     chat-large           gpu1         waiting      9.0s     8.8s      –      0 B  │
+│  batch_jobs       [2001:db8::17]:50618 local-30b            ollama1      streaming    4.0s     1.9s   2.1s  17.3 KB  │
+│  batch_jobs       [2001:db8::17]:42733 chat-fast            gpu1         queued       1.2s     1.2s      –      0 B  │
+│  notebooks        198.51.100.23:48555  embed-small          edge2        sending     300ms    300ms      –      0 B  │
+│  dashboard        192.0.2.44:40927     local-30b            ollama1      reading      80ms     80ms      –      0 B  │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s sort  / filter  r redact  p pause  q quit ├──────────────────────────╯

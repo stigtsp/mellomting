@@ -1,0 +1,40 @@
+╭┤ mellomting 13:23:34 up 17h09m ├────────────────────┤ 1 Overview  2 Keys  3 Models  4 Backends  5 Requests  6 Usage ├╮
+│ req/s               24           ⢀⣀⣀⡀⣀ ⢠⣴⣶⡆           ↑77  tok/s out        11.4k           ⢀⣀⣀⣀⣀ ⣠⣴⣶⣄        ↑35.3k │
+│ offered 29 · err 0.6   ⣠⣤⣶⣶⣷⣷⣶⣿⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣤⣴⣴⣶⣶⣴⣤⣤⣤⣶  in 44.3k/s             ⣠⣤⣷⣶⣿⣷⣾⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣶⣶⣴⣦⣠⣤⣶ │
+│ net in      214.1 KB/s           ⢀⣀⣀ ⣀ ⣠⣴⣤⡄       ↑989 KB  refused/s            5    ⣀             ⢀⢀            ↑13 │
+│ out 80.5 KB/s          ⣠⣤⣶⣶⣶⣷⣶⣾⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣾⣶⣤⣤⣴⣴⣴⣦⣴⣤⣤⣤⣤  ← key_concurrency      ⣴⣷⣦⣿⣷⣶⣴⣤⣀⣠⣴⣄⣀⣤⣠⣴⣸⣿⣾⣾⣶⣴⣄⣴⣧⣀⣀⣀⣀⣠⣾⣧⣴⣶ │
+│ refused 5/s mostly by concurrent_requests · inflight 35/256 · offered 29/s · completed 24/s · errors 0.6/s           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭┤Usage · keys├────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                      │
+│ accounting history is not available                                                                                  │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰┤ ↑↓ select  ⏎ detail  esc close  ←→ 1-6 view  s keys/models/servers  / filter  r redact  p pause  q quit ├───────────╯
