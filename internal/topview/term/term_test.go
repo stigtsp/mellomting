@@ -182,3 +182,23 @@ func TestSessionRestoresOnPanic(t *testing.T) {
 		t.Fatalf("size %dx%d", w, h)
 	}
 }
+
+func TestSessionDrawDiffs(t *testing.T) {
+	var out bytes.Buffer
+	s, _ := start(&fakeTTY{}, &out)
+	a := NewScreen(10, 2)
+	a.Text(0, 0, "x", Style{})
+	s.Draw(a)
+	out.Reset()
+	b := NewScreen(10, 2)
+	b.Text(0, 0, "x", Style{})
+	s.Draw(b)
+	if out.Len() != 0 {
+		t.Fatalf("unchanged frame wrote %q", out.String())
+	}
+	s.Redraw()
+	s.Draw(b)
+	if !strings.Contains(out.String(), "\x1b[2J") {
+		t.Fatal("Redraw did not force a full frame")
+	}
+}

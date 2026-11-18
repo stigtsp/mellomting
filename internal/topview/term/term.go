@@ -21,7 +21,20 @@ type Session struct {
 	tty  tty
 	out  io.Writer
 	once sync.Once
+	prev *Screen // the frame on the terminal, for Diff
 }
+
+// Draw puts scr on the terminal, writing only what changed since the
+// last Draw.
+func (s *Session) Draw(scr *Screen) error {
+	err := scr.Diff(s.prev, s.out)
+	s.prev = scr
+	return err
+}
+
+// Redraw makes the next Draw rewrite every cell, after a resize or
+// anything else that may have disturbed the terminal.
+func (s *Session) Redraw() { s.prev = nil }
 
 // Start puts the terminal on in into raw mode and switches out to the
 // alternate screen with the cursor hidden. Restore undoes both; call
