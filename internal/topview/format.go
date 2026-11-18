@@ -81,6 +81,8 @@ func limitName(reason string) string {
 		return "backend queue"
 	case "auth":
 		return "authentication"
+	case "body_budget":
+		return "request memory budget"
 	}
 	return reason
 }

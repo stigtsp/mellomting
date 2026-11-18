@@ -1571,8 +1571,13 @@ func (p *Proxy) record(q *Req, out result, dur, ttfb time.Duration) {
 	if b, ok := p.cfg.Backends[out.backend]; ok && b.Server != "" {
 		server = b.Server
 	}
+	// A model no route knows is the client's string; it gets no series.
+	model := out.model
+	if !p.router.Has(model) {
+		model = ""
+	}
 	p.stats.Record(stats.Sample{
-		KeyID: q.Key.ID, KeyName: q.Key.Name, Model: out.model, Server: server,
+		KeyID: q.Key.ID, KeyName: q.Key.Name, Model: model, Server: server,
 		Status: out.status, ErrorClass: out.class,
 		BytesIn: int64(max(out.bytesIn, 0)), BytesOut: int64(max(out.bytesOut, 0)),
 		TokensIn: in, TokensOut: outTok, TTFB: ttfb, Duration: dur,

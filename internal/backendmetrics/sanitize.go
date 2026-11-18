@@ -5,11 +5,12 @@ import (
 	"math"
 )
 
-// MaxValue caps every figure taken from a report the edge does not
-// trust (an agent's), so a lying agent cannot draw absurd graphs.
+// MaxValue caps every figure taken from a server's or an agent's
+// report, so neither can draw absurd graphs or produce an +Inf that
+// /stats cannot encode.
 const MaxValue = 1e12
 
-// Sanitize checks a reading that came from an agent: a known engine,
+// Sanitize checks a reading, from a server or an agent: a known engine,
 // every figure finite and within [0, MaxValue], cache use at most
 // 100 %, at most MaxLoaded models with clean names.
 func Sanitize(r *Reading) error {

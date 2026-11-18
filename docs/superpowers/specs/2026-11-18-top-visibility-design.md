@@ -141,6 +141,7 @@ Refusal reasons, each a fixed string:
 | `quota` | token quota (429) | key, model |
 | `backend_queue` | backend queue full or queue timeout | key, model, backend |
 | `draining` | daemon draining (503) | key |
+| `body_budget` | request-body memory budget exhausted (503) | key |
 
 A per-key refusal also counts in the global series.
 

@@ -2,6 +2,7 @@ package backendmetrics
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -88,5 +89,20 @@ func TestLatestDropsStale(t *testing.T) {
 	p.mu.Unlock()
 	if _, ok := p.Latest()["gpu1"]; ok {
 		t.Fatal("stale reading returned")
+	}
+}
+
+// Huge series sum to +Inf, which JSON cannot carry: a server's own page
+// must not be able to make /stats fail, so every reading is clamped.
+func TestReadClampsServerValues(t *testing.T) {
+	page := "vllm:num_requests_running{a=\"1\"} 1e308\nvllm:num_requests_running{a=\"2\"} 1e308\nvllm:kv_cache_usage_perc 7\n"
+	r, ok, err := Read(context.Background(), func(_ context.Context, path string, _ int64) (int, []byte, error) {
+		return 200, []byte(page), nil
+	})
+	if err != nil || !ok {
+		t.Fatalf("ok %v err %v", ok, err)
+	}
+	if _, err := json.Marshal(r); err != nil || r.Running != MaxValue || r.KVPercent > 100 {
+		t.Fatalf("reading %+v, marshal %v", r, err)
 	}
 }

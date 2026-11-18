@@ -70,7 +70,6 @@ func (s *Store) Since(seq int64, maxBytes int) Export {
 	}
 	now := s.clock().Unix()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.pruneLocked(now)
 	e := Export{
 		Seq:          now - 1,
@@ -90,11 +89,20 @@ func (s *Store) Since(seq int64, maxBytes int) Export {
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
+	// The export holds copies; sizing it marshals, which is too slow to
+	// do while every request waits on the lock.
+	s.mu.Unlock()
 	e.truncate(maxBytes)
 	return e
 }
 
+// testHookTruncate runs as truncate starts, for tests.
+var testHookTruncate func()
+
 func (e *Export) truncate(maxBytes int) {
+	if testHookTruncate != nil {
+		testHookTruncate()
+	}
 	size := func(v any) int {
 		b, _ := json.Marshal(v)
 		return len(b)

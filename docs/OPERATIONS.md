@@ -316,6 +316,7 @@ names the setting to look at:
 | `backend_timeout` | `request_timeout` on a non-streaming request |
 | `queue_full` | `queue_size`: no slot to wait in |
 | `queue_timeout` | `queue_timeout`: waited, but no concurrency slot came free |
+| `body_budget` | memory for request bodies being read, `max_buffered_request_bytes` × `max_inflight_requests` |
 
 The timeouts in force for each backend are logged at startup on the
 `backend admission` line. When the class alone is not enough — to tell a chat-template

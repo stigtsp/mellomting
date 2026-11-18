@@ -2,6 +2,7 @@ package stats
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,6 +92,7 @@ func TestTerminalClassification(t *testing.T) {
 		{"queue_timeout", 503, BackendQueue},
 		{"token_quota", 429, Quota},
 		{"overload", 503, Draining},
+		{"body_budget", 503, BodyBudget},
 	} {
 		s, c := newTestStore()
 		smp := ok("k", "m", "srv")
@@ -242,5 +244,39 @@ func TestSinceOmitsCurrentSecond(t *testing.T) {
 	next := s.Since(first.Seq, 1<<20)
 	if len(next.Global.Buckets) != 1 || next.Global.Buckets[0].OK != 2 {
 		t.Fatalf("completed second %+v", next.Global.Buckets)
+	}
+}
+
+// IDs and names are capped, so a caller that forgets to bound them
+// cannot pin memory through the store.
+func TestLookupCapsIDLength(t *testing.T) {
+	s, _ := newTestStore()
+	long := strings.Repeat("m", 100000)
+	s.Record(Sample{Model: long, Status: 200})
+	for _, se := range s.dims[dimModel] {
+		if len(se.id) > MaxID || len(se.name) > MaxID {
+			t.Fatalf("id %d bytes, name %d bytes", len(se.id), len(se.name))
+		}
+	}
+}
+
+// Sizing the reply marshals it, which is slow for a full export; it
+// must not hold the lock that every request's Record takes.
+func TestSinceSizesOutsideLock(t *testing.T) {
+	s, c := newTestStore()
+	s.Record(ok("k1", "m", "srv"))
+	c.add(time.Second)
+	held := false
+	testHookTruncate = func() {
+		if s.mu.TryLock() {
+			s.mu.Unlock()
+		} else {
+			held = true
+		}
+	}
+	t.Cleanup(func() { testHookTruncate = nil })
+	s.Since(0, 1<<20)
+	if held {
+		t.Fatal("Since holds the store lock while sizing the reply")
 	}
 }

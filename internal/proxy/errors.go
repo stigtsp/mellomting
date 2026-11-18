@@ -27,7 +27,7 @@ type apiError struct {
 // hostname, a filesystem path, a Go error, or an upstream body.
 var (
 	errDraining           = apiError{503, "overload_error", "server_overloaded", "server is shutting down", "overload"}
-	errOverloaded         = apiError{503, "overload_error", "server_overloaded", "server is overloaded", "overload"}
+	errOverloaded         = apiError{503, "overload_error", "server_overloaded", "server is overloaded", "body_budget"}
 	errNoBackend          = apiError{503, "overload_error", "server_overloaded", "no backend is available", "no_backend_available"}
 	errUnsupported        = apiError{415, "invalid_request_error", "unsupported_media_type", "request compression is not supported", "bad_request"}
 	errBodyTooBig         = apiError{413, "invalid_request_error", "body_too_large", "request body exceeds the size limit", "bad_request"}

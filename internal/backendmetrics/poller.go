@@ -111,6 +111,8 @@ func Read(ctx context.Context, fetch Fetch) (Reading, bool, error) {
 	if status == 200 {
 		r, ok, err := Parse(bytes.NewReader(body))
 		if err != nil || ok {
+			// Sums of huge series reach +Inf, which /stats cannot encode.
+			Sanitize(&r)
 			return r, ok, err
 		}
 	}
@@ -126,6 +128,7 @@ func Read(ctx context.Context, fetch Fetch) (Reading, bool, error) {
 		// A 200 that is not Ollama's shape: nothing to show.
 		return Reading{}, false, nil
 	}
+	Sanitize(&r)
 	return r, true, nil
 }
 

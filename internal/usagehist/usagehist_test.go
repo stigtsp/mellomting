@@ -3,6 +3,7 @@ package usagehist
 import (
 	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +204,27 @@ func TestLargeCurrentFileKeepsNewest(t *testing.T) {
 	h.Refresh(now)
 	if r := total(h.Totals(ByKey, Span, now), "new"); r.Requests != 2 {
 		t.Fatalf("tail after cut %+v", r)
+	}
+}
+
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// A run without newlines, such as a decompressed bomb in a rotated
+// file, is skipped within the byte budget, not read to its end.
+func TestLongLineSkipKeepsBudget(t *testing.T) {
+	c := &countReader{r: strings.NewReader(strings.Repeat("x", 10<<20))}
+	h := &History{}
+	_, _, cut, err := h.scan(c, now.Add(-Span), 64<<10, false)
+	if err != nil || !cut || c.n > 64<<10+2*maxLine {
+		t.Fatalf("read %d bytes, cut %v, err %v", c.n, cut, err)
 	}
 }

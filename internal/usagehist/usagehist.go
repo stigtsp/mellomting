@@ -202,6 +202,9 @@ func (h *History) scan(r io.Reader, bound time.Time, budget int, tail bool) (int
 		if errors.Is(err, bufio.ErrBufferFull) {
 			skipped := int64(len(line))
 			for errors.Is(err, bufio.ErrBufferFull) {
+				if budget >= 0 && consumed+skipped >= int64(budget) {
+					return consumed + skipped, newest, true, nil
+				}
 				line, err = br.ReadSlice('\n')
 				skipped += int64(len(line))
 			}

@@ -108,3 +108,40 @@ func steppedStore() (*stats.Store, func()) {
 	now := time.Now()
 	return stats.New(func() time.Time { return now }), func() { now = now.Add(time.Second) }
 }
+
+// A model no route knows is the client's string, not a model: it must
+// not become a stats series, or junk names would pin memory and push
+// real models into (other).
+func TestUnknownModelNotASeries(t *testing.T) {
+	p, _ := agentProxy(t, []string{"agent-a-1"}, func(cfg *config.Config) fakeAgents {
+		return fakeAgents{"agent-a-1": agentClient(t, cfg, "agent-a-1")}
+	})
+	st, later := steppedStore()
+	p.SetStats(st)
+	junk := strings.Repeat("\x1bjunk", 2000)
+	if w := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"`+strings.ReplaceAll(junk, "\x1b", `\u001b`)+`","messages":[]}`, labKey()); w.Code == 200 {
+		t.Fatal("unknown model served")
+	}
+	later()
+	for _, s := range st.Since(0, 1<<20).Series {
+		if s.Dim == "model" {
+			t.Fatalf("unknown model recorded as series %.40q", s.ID)
+		}
+	}
+}
+
+// An exhausted request-memory budget is not a drain: top must name the
+// limit that refused, not tell the operator the daemon is stopping.
+func TestBodyBudgetRefusalNamed(t *testing.T) {
+	p, _ := agentProxy(t, nil, func(*config.Config) fakeAgents { return fakeAgents{} })
+	st, later := steppedStore()
+	p.SetStats(st)
+	p.budget = newBudget(1)
+	if w := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"lab/m","messages":[]}`, labKey()); w.Code != 503 {
+		t.Fatalf("status %d", w.Code)
+	}
+	later()
+	if r := st.Since(0, 1<<20).Global.Refusals; r["body_budget"] != 1 || r["draining"] != 0 {
+		t.Fatalf("refusals %v", r)
+	}
+}

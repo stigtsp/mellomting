@@ -17,6 +17,7 @@ package stats
 import (
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +29,10 @@ const (
 	// attachments, which reconnect under new names, so neither is
 	// bounded by configuration.
 	MaxSeries = 64
+
+	// MaxID bounds a series ID or name in bytes. Callers pass routed
+	// names; this is the backstop if one passes a client's string.
+	MaxID = 256
 	// OtherID names the series that collects whatever is past
 	// MaxSeries.
 	OtherID = "(other)"
@@ -50,9 +55,12 @@ const (
 	Quota          Refusal = "quota"
 	BackendQueue   Refusal = "backend_queue"
 	Draining       Refusal = "draining"
+	// BodyBudget is the memory shared by request bodies being read
+	// (max_buffered_request_bytes × max_inflight_requests).
+	BodyBudget Refusal = "body_budget"
 )
 
-var refusals = [...]Refusal{GlobalInflight, SourceRate, GlobalRate, Auth, KeyRate, KeyConcurrency, Quota, BackendQueue, Draining}
+var refusals = [...]Refusal{GlobalInflight, SourceRate, GlobalRate, Auth, KeyRate, KeyConcurrency, Quota, BackendQueue, Draining, BodyBudget}
 
 func refusalIndex(r Refusal) int {
 	for i, x := range refusals {
@@ -73,6 +81,8 @@ func terminalRefusal(class string) (Refusal, bool) {
 		return Quota, true
 	case "overload":
 		return Draining, true
+	case "body_budget":
+		return BodyBudget, true
 	}
 	return "", false
 }
@@ -208,6 +218,7 @@ func (s *Store) lookup(dim int, id, name string) *series {
 	if id == "" {
 		return nil
 	}
+	id, name = clip(id), clip(name)
 	m := s.dims[dim]
 	if se, ok := m[id]; ok {
 		if name != "" && se.name != name {
@@ -224,6 +235,19 @@ func (s *Store) lookup(dim int, id, name string) *series {
 	se := &series{id: id, name: name}
 	m[id] = se
 	return se
+}
+
+// clip cuts s to MaxID bytes on a rune boundary. Unchanged strings are
+// returned as is, so the common path does not allocate.
+func clip(s string) string {
+	if len(s) <= MaxID {
+		return s
+	}
+	n := MaxID
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func (se *series) addError(class string, sec int64) {
