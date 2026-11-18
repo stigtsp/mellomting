@@ -12,6 +12,7 @@ package adminapi
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"mellomting/internal/agent"
 	"mellomting/internal/inflight"
@@ -35,8 +36,9 @@ type Agents interface {
 // route table with no catch-all (PLAN §11.3): this socket answers one
 // question and nothing else.
 //
-// agents may be nil (agents disabled).
-func Handler(live *inflight.Registry, agents Agents) http.Handler {
+// agents may be nil (agents disabled); st may be nil (no statistics),
+// which leaves GET /stats a 404 like any unknown route.
+func Handler(live *inflight.Registry, agents Agents, st StatsSource) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /inflight", func(w http.ResponseWriter, _ *http.Request) {
 		snap := Snapshot{Requests: live.Snapshot()}
@@ -51,5 +53,25 @@ func Handler(live *inflight.Registry, agents Agents) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 	})
+	if st != nil {
+		mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
+			var since int64
+			if v := r.URL.Query().Get("since"); v != "" {
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil || n < 0 {
+					http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
+					return
+				}
+				since = n
+			}
+			body, err := json.Marshal(st.Stats(since))
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+		})
+	}
 	return mux
 }

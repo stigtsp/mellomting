@@ -579,3 +579,26 @@ func TestReplayKeepsWholeFirstLineWhenWindowIsAligned(t *testing.T) {
 		t.Fatal("the aligned first line was discarded: 22 tokens were not replayed")
 	}
 }
+
+func TestQuotaUsage(t *testing.T) {
+	q := NewQuota()
+	now := time.Date(2026, 11, 18, 13, 25, 0, 0, time.UTC)
+	q.Settle("k1", 100, now)
+	hour, day, hr, dr := q.Usage("k1", now)
+	if hour != 100 || day != 100 {
+		t.Fatalf("usage hour=%d day=%d", hour, day)
+	}
+	if !hr.Equal(time.Date(2026, 11, 18, 14, 0, 0, 0, time.UTC)) || !dr.Equal(time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("resets %v %v", hr, dr)
+	}
+	if hour, _, _, _ := q.Usage("k1", now.Add(time.Hour)); hour != 0 {
+		t.Fatalf("next hour still shows %d", hour)
+	}
+	if h, d, _, _ := q.Usage("unknown", now); h != 0 || d != 0 {
+		t.Fatal("unknown key has usage")
+	}
+	var nilQ *Quota
+	if h, _, _, _ := nilQ.Usage("k1", now); h != 0 {
+		t.Fatal("nil quota has usage")
+	}
+}

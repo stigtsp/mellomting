@@ -18,6 +18,7 @@ import (
 
 	"mellomting/internal/auth"
 	"mellomting/internal/backend"
+	"mellomting/internal/backendmetrics"
 	"mellomting/internal/config"
 	"mellomting/internal/discovery"
 	"mellomting/internal/routing"
@@ -121,6 +122,9 @@ type Record struct {
 	Streams        int64   `json:"streams"`
 	Requests       int64   `json:"requests"`
 	Failures       int64   `json:"failures"`
+	// Metrics is the agent's report of its server's load (PLAN §104),
+	// nil until the edge has read one.
+	Metrics *backendmetrics.Reading `json:"metrics,omitempty"`
 }
 
 // NewRegistry builds an empty registry. maxResponseBytes is the server's

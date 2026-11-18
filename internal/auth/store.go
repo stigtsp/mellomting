@@ -318,6 +318,19 @@ type Store struct {
 	now       func() time.Time
 }
 
+// Keys returns the key records without their secret hashes, ordered by
+// name, for the admin view.
+func (s *Store) Keys() []Key {
+	out := make([]Key, 0, len(s.byID))
+	for _, k := range s.byID {
+		c := *k
+		c.SecretHash = ""
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b Key) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
 // HasID reports membership for pruning reload state; it does not authenticate.
 func (s *Store) HasID(id string) bool {
 	_, ok := s.byID[id]

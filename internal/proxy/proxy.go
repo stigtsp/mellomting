@@ -32,6 +32,7 @@ import (
 	"mellomting/internal/config"
 	"mellomting/internal/inflight"
 	"mellomting/internal/routing"
+	"mellomting/internal/stats"
 )
 
 // Req is one authenticated request as seen by the proxy.
@@ -105,6 +106,7 @@ type Proxy struct {
 	acc        *accounting.Writer // JSONL writer (PLAN §42); nil = disabled
 	usageOptIn bool               // stream_options.include_usage injection is not disabled (§38)
 	inflight   *inflight.Registry // live-request view for `mellomting top`; nil = untracked
+	stats      *stats.Store       // throughput history for `mellomting top`; nil = unrecorded
 	draining   atomic.Bool
 	// agents resolves attached-agent backends (PLAN §104); nil when
 	// agents are disabled.
@@ -123,6 +125,10 @@ type AgentClients interface {
 // SetAgents installs the attached-agent client lookup. It is called once
 // at startup, before the proxy serves.
 func (p *Proxy) SetAgents(a AgentClients) { p.agents = a }
+
+// SetStats records finished requests into st for `mellomting top`. It
+// is called once at startup; nil records nothing.
+func (p *Proxy) SetStats(st *stats.Store) { p.stats = st }
 
 // client returns the configured or attached backend client by name.
 func (p *Proxy) client(name string) (*backend.Client, bool) {
@@ -279,6 +285,7 @@ func (p *Proxy) dispatch(q *Req, o operation) {
 		// their non-2xx status means account settles nothing, so a
 		// reject never touches quota.
 		p.account(q, o, start, out)
+		p.record(q, out, time.Since(start), live.TTFB())
 	}()
 
 	fail := func(e apiError) {
@@ -1499,10 +1506,9 @@ func windowLimits(l auth.KeyLimits) accounting.WindowLimit {
 // successful request conservatively charges the configured reservation;
 // the charged amount is recorded in charged_tokens so replay restores it
 // (PLAN §40). Errors settle nothing.
-func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
-	if p.quota == nil && p.acc == nil {
-		return
-	}
+// charged is the token count a finished request settles against quota
+// and records in accounting.
+func charged(out result) int64 {
 	total := out.usage.Total
 	if out.usageStatus == accounting.UsageUnknown {
 		if out.status >= 200 && out.status < 300 {
@@ -1519,6 +1525,14 @@ func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 	if out.untrusted {
 		total = min(total, int64(max(out.bytesIn, 0))+int64(max(out.bytesOut, 0)))
 	}
+	return total
+}
+
+func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
+	if p.quota == nil && p.acc == nil {
+		return
+	}
+	total := charged(out)
 	if p.quota != nil && total > 0 {
 		p.quota.Settle(q.Key.ID, total, time.Now())
 	}
@@ -1542,4 +1556,32 @@ func (p *Proxy) account(q *Req, o operation, start time.Time, out result) {
 			ChargedTokens:   total,
 		})
 	}
+}
+
+// record adds a finished request to the throughput history. Tokens are
+// what accounting charged; an untrusted backend's reported split is
+// scaled down to that charge, so a claim accounting bounded cannot
+// inflate the view either.
+func (p *Proxy) record(q *Req, out result, dur, ttfb time.Duration) {
+	if p.stats == nil {
+		return
+	}
+	in, outTok := out.usage.Input, out.usage.Output
+	if total := charged(out); in+outTok > total {
+		if in+outTok > 0 && total > 0 {
+			in, outTok = in*total/(in+outTok), outTok*total/(in+outTok)
+		} else {
+			in, outTok = 0, total
+		}
+	}
+	server := out.backend
+	if b, ok := p.cfg.Backends[out.backend]; ok && b.Server != "" {
+		server = b.Server
+	}
+	p.stats.Record(stats.Sample{
+		KeyID: q.Key.ID, KeyName: q.Key.Name, Model: out.model, Server: server,
+		Status: out.status, ErrorClass: out.class,
+		BytesIn: int64(max(out.bytesIn, 0)), BytesOut: int64(max(out.bytesOut, 0)),
+		TokensIn: in, TokensOut: outTok, TTFB: ttfb, Duration: dur,
+	})
 }

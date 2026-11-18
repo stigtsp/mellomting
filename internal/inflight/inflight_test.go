@@ -3,6 +3,7 @@ package inflight
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegistryTracksAndForgets(t *testing.T) {
@@ -108,5 +109,32 @@ func TestConcurrentUpdatesAndSnapshots(t *testing.T) {
 	wg.Wait()
 	if got := r.Snapshot(); got[0].BytesOut != 8*200 {
 		t.Fatalf("bytes lost under concurrency: %d", got[0].BytesOut)
+	}
+}
+
+func TestPhaseAndTTFB(t *testing.T) {
+	r := New()
+	q := r.Begin("req_1", "K1", "alice", "", "", "POST /v1/chat/completions")
+	time.Sleep(30 * time.Millisecond)
+	if rec := r.Snapshot()[0]; rec.PhaseMillis < 30 || rec.TTFBMillis != 0 {
+		t.Fatalf("before any change: %+v", rec)
+	}
+	q.Phase(PhaseWaiting)
+	if rec := r.Snapshot()[0]; rec.PhaseMillis >= 30 {
+		t.Fatalf("phase change kept the old phase's time: %+v", rec)
+	}
+	q.Wrote(10)
+	first := r.Snapshot()[0].TTFBMillis
+	if first < 30 {
+		t.Fatalf("ttfb %d, want at least the 30ms before it", first)
+	}
+	time.Sleep(20 * time.Millisecond)
+	q.Wrote(10)
+	if got := r.Snapshot()[0].TTFBMillis; got != first {
+		t.Fatalf("a later write moved ttfb from %d to %d", first, got)
+	}
+	var nilReq *Request
+	if nilReq.TTFB() != 0 {
+		t.Fatal("nil request has a ttfb")
 	}
 }

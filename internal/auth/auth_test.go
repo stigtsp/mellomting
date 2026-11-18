@@ -622,3 +622,21 @@ func TestNewStoreAppliesDefaultConcurrency(t *testing.T) {
 		t.Fatalf("store mutated the users file: %d", uf.Keys[0].Limits.ConcurrentRequests)
 	}
 }
+
+func TestStoreKeysOmitsSecrets(t *testing.T) {
+	pepper := []byte("0123456789abcdef")
+	k, id, err := Generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(&UsersFile{Version: 1, Keys: []Key{
+		{ID: id, Name: "alice", SecretHash: FormatHashValue(Hash(pepper, k)), Enabled: true, Models: []string{"*"}},
+	}}, pepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := store.Keys()
+	if len(keys) != 1 || keys[0].Name != "alice" || keys[0].SecretHash != "" {
+		t.Fatalf("keys %+v", keys)
+	}
+}

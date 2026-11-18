@@ -100,6 +100,30 @@ func (q *Quota) Settle(keyID string, tokens int64, now time.Time) {
 	st.day = satAdd(st.day, tokens)
 }
 
+// Usage reports a key's settled tokens in the current UTC hour and day,
+// and when each window resets. It creates no state.
+func (q *Quota) Usage(keyID string, now time.Time) (hour, day int64, hourResets, dayResets time.Time) {
+	hourResets = now.UTC().Truncate(time.Hour).Add(time.Hour)
+	y, m, d := now.UTC().Date()
+	dayResets = time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
+	if q == nil {
+		return 0, 0, hourResets, dayResets
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	st, ok := q.states[keyID]
+	if !ok {
+		return 0, 0, hourResets, dayResets
+	}
+	if st.hourKey == hourKey(now) {
+		hour = st.hour
+	}
+	if st.dayKey == dayKey(now) {
+		day = st.day
+	}
+	return hour, day, hourResets, dayResets
+}
+
 // stateFor returns (creating if needed) the key's quota state, resetting
 // the windows when they have rolled into a new fixed period.
 func (q *Quota) stateFor(keyID string, now time.Time) *keyQuota {

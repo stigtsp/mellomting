@@ -89,6 +89,13 @@ func NewConcurrency(limit int) *Concurrency {
 
 // Acquire takes one slot non-blockingly. It returns a release function
 // (a no-op when unbounded) and ok; ok is false only when every slot is
+// InUse reports the slots held; 0 for an unbounded bound, which keeps
+// no count.
+func (c *Concurrency) InUse() int { return len(c.ch) }
+
+// Limit reports the bound; 0 is unbounded.
+func (c *Concurrency) Limit() int { return c.limit }
+
 // held, which the caller maps to a 429.
 func (c *Concurrency) Acquire() (release func(), ok bool) {
 	if c.ch == nil {
@@ -195,6 +202,15 @@ func NewRegistryCarrying(prev *Registry, keep func(string) bool) *Registry {
 		}
 	}
 	return &Registry{keys: make(map[string]*KeyState), carry: carry, carryConc: carryConc}
+}
+
+// Peek returns a key's limit state without creating it, for observers
+// that must not materialize state for keys that never made a request.
+func (r *Registry) Peek(keyID string) (*KeyState, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ks, ok := r.keys[keyID]
+	return ks, ok
 }
 
 // For returns the limit state of a key, creating it on first use.

@@ -23,6 +23,7 @@ import (
 	"mellomting/internal/limiter"
 	"mellomting/internal/proxy"
 	"mellomting/internal/routing"
+	"mellomting/internal/stats"
 )
 
 // snapshot is the key store together with the limit registry built for
@@ -59,6 +60,9 @@ type Server struct {
 	startedUnix int64
 	// agents accepts attaching agents (PLAN §104); nil when disabled.
 	agents Attacher
+	// stats counts refusals for `mellomting top`; nil without an admin
+	// socket, and every call on nil is a no-op.
+	stats *stats.Store
 }
 
 // Attacher takes over upgraded agent connections (PLAN §104). Its one
@@ -73,6 +77,21 @@ type Attacher interface {
 // SetAgents enables the agent attach path. It is called once at
 // startup, before the server serves.
 func (s *Server) SetAgents(a Attacher) { s.agents = a }
+
+// SetStats records refusals into st. It is called once at startup,
+// before the server serves.
+func (s *Server) SetStats(st *stats.Store) { s.stats = st }
+
+// Limits reports the current generation's per-key limit state, for the
+// admin view. The registry is swapped on reload, so the caller must not
+// keep it.
+func (s *Server) Limits() *limiter.Registry { return s.snap.Load().limits }
+
+// Inflight reports the requests holding a global in-flight slot.
+func (s *Server) Inflight() int { return len(s.inflight) }
+
+// Store reports the current key store, for the admin view.
+func (s *Server) Store() *auth.Store { return s.snap.Load().store }
 
 // KeyActive reports whether a key record is still in force unchanged in
 // the current key store, so attached agents can be re-checked after a
@@ -273,6 +292,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	case s.inflight <- struct{}{}:
 		defer func() { <-s.inflight }()
 	default:
+		s.stats.Refuse(stats.GlobalInflight, "", "", "", "")
 		writeErr(w, http.StatusServiceUnavailable, "overload_error", "server_overloaded", msgOverload)
 		return
 	}
@@ -283,6 +303,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	// 429 legit keys on the global bucket, and invalid-auth attempts
 	// never materialize per-key state.
 	if ok, ra := s.sourceLimit.Allow(remote, time.Now()); !ok {
+		s.stats.Refuse(stats.SourceRate, "", "", "", "")
 		writeRateLimit(w, ra)
 		return
 	}
@@ -290,6 +311,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	// Global request-rate limit (PLAN §32–§34), checked before paying
 	// the authentication cost beyond the inflight bound above.
 	if ok, ra := s.globalRPS.Allow(time.Now()); !ok {
+		s.stats.Refuse(stats.GlobalRate, "", "", "", "")
 		writeRateLimit(w, ra)
 		return
 	}
@@ -300,6 +322,7 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	snap := s.snap.Load()
 	key, err := s.authorize(r, snap.store, remote)
 	if err != nil {
+		s.stats.Refuse(stats.Auth, "", "", "", "")
 		writeErr(w, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msgBadAuth)
 		return
 	}
@@ -321,11 +344,13 @@ func routeBody(s *Server, w http.ResponseWriter, r *http.Request, remote string)
 	// point) so a single key cannot pile up resources (PLAN §35).
 	ks := snap.limits.For(key)
 	if ok, ra := ks.AllowRate(time.Now()); !ok {
+		s.stats.Refuse(stats.KeyRate, key.ID, key.Name, "", "")
 		writeRateLimit(w, ra)
 		return
 	}
 	releaseKey, ok := ks.AcquireConcurrency()
 	if !ok {
+		s.stats.Refuse(stats.KeyConcurrency, key.ID, key.Name, "", "")
 		// No computable wait for a concurrency slot, so use the same
 		// conservative default as the proxy quota 429 (PLAN §34, T-Q12:
 		// every 429 carries Retry-After; FIX-10).

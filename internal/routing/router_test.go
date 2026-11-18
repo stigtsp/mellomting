@@ -495,3 +495,25 @@ func TestUnimplementedStrategyIsNotSilent(t *testing.T) {
 		t.Fatal("Select accepted an unimplemented strategy instead of failing closed")
 	}
 }
+
+func TestCooldownUntil(t *testing.T) {
+	cfg := &config.Config{
+		Backends: map[string]config.Backend{"back-a": {BaseURL: "http://127.0.0.1:8001", UpstreamModel: "Up/A"}},
+		Models:   map[string]config.Model{"m": {Type: "generation", Strategy: "single", Backends: []config.BackendRef{{Name: "back-a"}}}},
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.CooldownUntil("back-a"); ok {
+		t.Fatal("healthy backend reported in cooldown")
+	}
+	r.RecordFailure("back-a")
+	if until, ok := r.CooldownUntil("back-a"); !ok || !until.After(time.Now()) {
+		t.Fatalf("after failure: %v %v", until, ok)
+	}
+	r.RecordSuccess("back-a")
+	if _, ok := r.CooldownUntil("back-a"); ok {
+		t.Fatal("success left the cooldown")
+	}
+}

@@ -457,6 +457,19 @@ func (r *Router) RecordSuccess(backendName string) {
 	r.health.recordSuccess(backendName)
 }
 
+// CooldownUntil reports when a backend in passive-health cooldown
+// becomes eligible again, for the admin view.
+func (r *Router) CooldownUntil(backendName string) (time.Time, bool) {
+	h := r.health
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s, ok := h.states[backendName]
+	if !ok || !s.until.After(h.now()) {
+		return time.Time{}, false
+	}
+	return s.until, true
+}
+
 // --- passive health (PLAN §70) ---
 
 type hState struct {

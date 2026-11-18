@@ -55,8 +55,15 @@ type Record struct {
 	Phase     Phase  `json:"phase"`
 	// AgeMillis is how long the request has been in the daemon.
 	AgeMillis int64 `json:"age_ms"`
-	BytesIn   int64 `json:"bytes_in"`
-	BytesOut  int64 `json:"bytes_out"`
+	// PhaseMillis is how long it has been in its current phase, so a
+	// request queued 0.2s and waiting 2m reads differently from one
+	// queued 2m.
+	PhaseMillis int64 `json:"phase_ms"`
+	// TTFBMillis is when its first response byte was relayed, measured
+	// from the start; 0 until then.
+	TTFBMillis int64 `json:"ttfb_ms,omitempty"`
+	BytesIn    int64 `json:"bytes_in"`
+	BytesOut   int64 `json:"bytes_out"`
 	// Tokens is what the backend has reported so far. It stays 0 until
 	// a response carries usage, which for a stream is its final chunk —
 	// an unfinished request has no token count to show, and inventing
@@ -84,13 +91,15 @@ type Request struct {
 	requestID, keyID, keyName   string
 	remote, userAgent, endpoint string
 
-	mu       sync.Mutex
-	phase    Phase
-	model    string
-	backend  string
-	bytesIn  int64
-	bytesOut int64
-	tokens   int64
+	mu         sync.Mutex
+	phase      Phase
+	phaseSince time.Time
+	firstByte  time.Duration
+	model      string
+	backend    string
+	bytesIn    int64
+	bytesOut   int64
+	tokens     int64
 }
 
 // Begin records a request that has just been admitted. The returned
@@ -110,6 +119,7 @@ func (r *Registry) Begin(requestID, keyID, keyName, remote, userAgent, endpoint 
 		endpoint:  endpoint,
 		phase:     PhaseReading,
 	}
+	req.phaseSince = req.started
 	r.mu.Lock()
 	r.live[req] = struct{}{}
 	r.mu.Unlock()
@@ -132,7 +142,9 @@ func (q *Request) Phase(p Phase) {
 		return
 	}
 	q.mu.Lock()
-	q.phase = p
+	if q.phase != p {
+		q.phase, q.phaseSince = p, time.Now()
+	}
 	q.mu.Unlock()
 }
 
@@ -163,7 +175,21 @@ func (q *Request) Wrote(n int) {
 	}
 	q.mu.Lock()
 	q.bytesOut += int64(n)
+	if q.firstByte == 0 {
+		q.firstByte = max(time.Since(q.started), time.Millisecond)
+	}
 	q.mu.Unlock()
+}
+
+// TTFB reports when the first response byte was relayed, measured from
+// the start; 0 until then.
+func (q *Request) TTFB() time.Duration {
+	if q == nil {
+		return 0
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.firstByte
 }
 
 // Tokens records the token count a backend has reported.
@@ -203,18 +229,20 @@ func (q *Request) record(now time.Time) Record {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return Record{
-		RequestID: q.requestID,
-		KeyID:     q.keyID,
-		KeyName:   q.keyName,
-		Remote:    q.remote,
-		UserAgent: q.userAgent,
-		Endpoint:  q.endpoint,
-		Model:     q.model,
-		Backend:   q.backend,
-		Phase:     q.phase,
-		AgeMillis: now.Sub(q.started).Milliseconds(),
-		BytesIn:   q.bytesIn,
-		BytesOut:  q.bytesOut,
-		Tokens:    q.tokens,
+		RequestID:   q.requestID,
+		KeyID:       q.keyID,
+		KeyName:     q.keyName,
+		Remote:      q.remote,
+		UserAgent:   q.userAgent,
+		Endpoint:    q.endpoint,
+		Model:       q.model,
+		Backend:     q.backend,
+		Phase:       q.phase,
+		AgeMillis:   now.Sub(q.started).Milliseconds(),
+		PhaseMillis: now.Sub(q.phaseSince).Milliseconds(),
+		TTFBMillis:  q.firstByte.Milliseconds(),
+		BytesIn:     q.bytesIn,
+		BytesOut:    q.bytesOut,
+		Tokens:      q.tokens,
 	}
 }

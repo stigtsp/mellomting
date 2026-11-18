@@ -41,6 +41,7 @@ import (
 	"mellomting/internal/sandbox"
 	"mellomting/internal/seatbelt"
 	"mellomting/internal/securefile"
+	"mellomting/internal/stats"
 	"mellomting/internal/tlsconfig"
 	"mellomting/internal/version"
 )
@@ -74,6 +75,9 @@ type daemon struct {
 	pepper    []byte             // HMAC pepper, loaded once at startup (PLAN §27)
 	tlsConfig *tls.Config        // static listener TLS (PLAN §67); nil when absent
 	agents    *agent.Registry    // attached agents (PLAN §104); nil when disabled
+	// stats serves throughput history on the admin socket; nil without
+	// one, so nothing is recorded that nobody can read.
+	stats *statsSource
 }
 
 // serveCmd runs the proxy daemon.
@@ -183,11 +187,14 @@ func serveCmd(args []string) int {
 		// the ingress, and the admin socket carries no client traffic
 		// to bound.
 		adminSrv := &http.Server{
-			Handler:           adminapi.Handler(d.live, d.agentLister()),
+			Handler:           adminapi.Handler(d.live, d.agentLister(), d.statsLister()),
 			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
 		}
 		go func() { _ = adminSrv.Serve(adminLn) }()
 		defer func() { _ = adminSrv.Close() }()
+		sctx, stopSampler := context.WithCancel(context.Background())
+		defer stopSampler()
+		go runSampler(sctx, d.stats)
 		log.Info("admin socket ready", "address", cfg.Server.AdminSocket)
 	}
 
@@ -896,7 +903,15 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 	if len(users.Keys) == 0 {
 		log.Warn("no API keys configured; add one with mellomting key create")
 	}
-	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher, agents: agents}, nil
+	var src *statsSource
+	if live != nil {
+		st := stats.New(nil)
+		api.SetStats(st)
+		prox.SetStats(st)
+		src = &statsSource{cfg: cfg, started: time.Now(), store: st, api: api, clients: clients,
+			router: router, quota: quota, acc: writer, live: live, agents: agents}
+	}
+	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher, agents: agents, stats: src}, nil
 }
 
 // parseStore validates users-file bytes and builds the key store the daemon
@@ -1014,6 +1029,15 @@ func sameUsersFile(a, b os.FileInfo) bool {
 	}
 	return os.SameFile(a, b) &&
 		a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size() && a.Mode() == b.Mode()
+}
+
+// statsLister is the /stats source for the admin socket; see
+// agentLister for why the nil check is here.
+func (d *daemon) statsLister() adminapi.StatsSource {
+	if d.stats == nil {
+		return nil
+	}
+	return d.stats
 }
 
 // agentLister is the attached-agent view for the admin socket, nil when

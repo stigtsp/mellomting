@@ -414,3 +414,31 @@ func TestConcurrencyBoundCarriesAcrossReloadWhenUnchanged(t *testing.T) {
 		t.Fatalf("changed limit granted %d slots, want 5 (it must apply immediately)", held)
 	}
 }
+
+func TestConcurrencyInUse(t *testing.T) {
+	c := NewConcurrency(2)
+	rel, _ := c.Acquire()
+	if got := c.InUse(); got != 1 {
+		t.Fatalf("InUse = %d, want 1", got)
+	}
+	rel()
+	if got := c.InUse(); got != 0 {
+		t.Fatalf("InUse after release = %d", got)
+	}
+	if got := NewConcurrency(0).InUse(); got != 0 {
+		t.Fatalf("unbounded InUse = %d", got)
+	}
+}
+
+func TestRegistryPeek(t *testing.T) {
+	r := NewRegistry()
+	if _, ok := r.Peek("k1"); ok {
+		t.Fatal("Peek created state")
+	}
+	key := &auth.Key{ID: "k1", Limits: auth.KeyLimits{ConcurrentRequests: 3}}
+	r.For(key)
+	ks, ok := r.Peek("k1")
+	if !ok || ks.Concur.Limit() != 3 {
+		t.Fatalf("Peek = %+v, %v", ks, ok)
+	}
+}
