@@ -270,8 +270,22 @@ the summary line. `NO_COLOR` disables colour.
 - **Header box:** braille area graphs (2×4 dots per cell) for requests/s,
   tokens out/s, bytes in/out, errors/s and refusals/s, each with its
   current value and scale; the largest current refusal reason is named.
-- **Overview:** header box plus the top five of each of keys, models and
-  backends by load, and the live request count by phase.
+- **Overview is the primary view**, the one `top` opens on: a dashboard
+  that gives the gist of what is happening in one glance, without
+  switching views. Top to bottom:
+  - the header graphs (offered vs completed req/s, tokens out/s, bytes,
+    errors, refusals);
+  - an **attention** box: one line per thing currently holding traffic
+    back or going wrong, worst first, each naming the limit and the item,
+    such as `coding_agents refused 212/min by concurrent_requests (8)`,
+    `agent-…-6 vLLM queueing 18 (6 running, KV 94%)`,
+    `gpu1 in cooldown 40s (backend_connect)`,
+    `accounting dropping records`. Empty, it says `nothing held back`;
+  - side by side: the busiest keys, servers and models (five each), each
+    with its meter and sparkline;
+  - a one-line live summary: requests by phase, oldest request's age.
+  Selecting any item on the dashboard and pressing Enter opens its detail
+  box, as in the other views.
 - **Keys / Models / Backends:** one row per item with live and limit
   meters (green → yellow → red as usage approaches the limit), rates,
   refusals with dominant reason, p50 duration and a sparkline.
