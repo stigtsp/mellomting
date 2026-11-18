@@ -94,3 +94,35 @@ func TestInjectedTransportAnswer(t *testing.T) {
 		t.Fatalf("body after header bound: %q %v", b, err)
 	}
 }
+
+type probeRT func(*http.Request) (*http.Response, error)
+
+func (f probeRT) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Probe reads a server's own endpoints (metrics) outside admission,
+// with the configured credential and a bounded body.
+func TestProbe(t *testing.T) {
+	var got *http.Request
+	c, err := New(Options{
+		Name: "b1", Cfg: config.Backend{BaseURL: "http://127.0.0.1:8000", UpstreamModel: "m", MaxConcurrency: 1,
+			ConnectTimeout: config.Duration(time.Second), HeaderTimeout: config.Duration(time.Second), RequestTimeout: config.Duration(time.Second)},
+		Network: Policy{Mode: "loopback-only"}, MaxResponseBytes: 1 << 20,
+		Transport: probeRT(func(r *http.Request) (*http.Response, error) {
+			got = r
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("0123456789")), Request: r}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body, err := c.Probe(context.Background(), "/metrics", 4)
+	if err != nil || status != 200 || string(body) != "0123" {
+		t.Fatalf("status %d body %q err %v", status, body, err)
+	}
+	if got.Method != http.MethodGet || got.URL.String() != "http://127.0.0.1:8000/metrics" {
+		t.Fatalf("request %s %s", got.Method, got.URL)
+	}
+	if c.Admitted() != 0 {
+		t.Fatal("probe took an admission slot")
+	}
+}

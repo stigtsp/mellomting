@@ -29,6 +29,9 @@ type sourceServer struct {
 	MaxConcurrency *int      `yaml:"max_concurrency"`
 	QueueSize      *int      `yaml:"queue_size"`
 	QueueTimeout   *Duration `yaml:"queue_timeout"`
+	// Metrics false stops `top` from reading this server's own load
+	// report (PLAN §43.2). Absent means on.
+	Metrics *bool `yaml:"metrics,omitempty"`
 }
 
 // admission resolves the server's admission limits against the
@@ -188,6 +191,7 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				MaxConcurrency:      admission[server].conc,
 				QueueSize:           admission[server].queue,
 				QueueTimeout:        admission[server].wait,
+				NoMetrics:           s.Metrics != nil && !*s.Metrics,
 			}
 			refs = append(refs, BackendRef{Name: name, Weight: 1})
 			referenced[server] = true
@@ -228,6 +232,7 @@ type effectiveServer struct {
 	MaxConcurrency      int      `yaml:"max_concurrency"`
 	QueueSize           int      `yaml:"queue_size"`
 	QueueTimeout        Duration `yaml:"queue_timeout"`
+	Metrics             *bool    `yaml:"metrics,omitempty"`
 }
 
 // effectiveModel is the fully defaulted operator-facing projection of one
@@ -277,6 +282,7 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 			MaxConcurrency:      conc,
 			QueueSize:           queue,
 			QueueTimeout:        wait,
+			Metrics:             s.Metrics,
 		}
 	}
 

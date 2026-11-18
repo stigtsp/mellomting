@@ -1,0 +1,19 @@
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine="0",model_name="Qwen/Qwen3-8B"} 4.0
+vllm:num_requests_running{engine="1",model_name="Qwen/Qwen3-8B"} 2.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="Qwen/Qwen3-8B"} 10.0
+vllm:num_requests_waiting{engine="1",model_name="Qwen/Qwen3-8B"} 8.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="Qwen/Qwen3-8B"} 0.94
+vllm:gpu_cache_usage_perc{engine="0",model_name="Qwen/Qwen3-8B"} 0.10
+# HELP vllm:prompt_tokens_total Number of prefill tokens processed.
+# TYPE vllm:prompt_tokens_total counter
+vllm:prompt_tokens_total{engine="0",model_name="Qwen/Qwen3-8B"} 1.2345e+06
+vllm:generation_tokens_total{engine="0",model_name="Qwen/Qwen3-8B"} 54321.0
+vllm:num_preemptions_total{engine="0",model_name="Qwen/Qwen3-8B"} 3.0
+vllm:time_to_first_token_seconds_bucket{engine="0",le="0.001",model_name="Qwen/Qwen3-8B"} 0.0
+python_gc_objects_collected_total{generation="0"} 1234.0

@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -36,6 +37,23 @@ type statsSource struct {
 	// metrics returns the latest backend reports by server name; nil
 	// when nothing is polled.
 	metrics func() map[string]backendmetrics.Reading
+	poller  *backendmetrics.Poller
+}
+
+// newMetricsPoller reads each configured server's own load report
+// through one of its backend clients, which carries the server's
+// network policy and credential. A server is polled once however many
+// models it serves; metrics: false leaves it out.
+func newMetricsPoller(cfg *config.Config, clients map[string]*backend.Client, log *slog.Logger) *backendmetrics.Poller {
+	fetch := map[string]backendmetrics.Fetch{}
+	for name, b := range cfg.Backends {
+		server := cmp.Or(b.Server, name)
+		if _, ok := fetch[server]; ok || b.NoMetrics || clients[name] == nil {
+			continue
+		}
+		fetch[server] = clients[name].Probe
+	}
+	return backendmetrics.NewPoller(fetch, log)
 }
 
 func (s *statsSource) Stats(since int64) adminapi.Stats {

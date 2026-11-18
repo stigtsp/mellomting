@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -129,5 +130,42 @@ version: 1
 	}
 	if _, err := Parse(eff); err != nil {
 		t.Fatalf("show-effective does not parse: %v\n%s", err, eff)
+	}
+}
+
+func TestServerMetricsSwitch(t *testing.T) {
+	base := `version: 1
+auth: {pepper_file: /etc/m/p, users_file: /etc/m/u.yaml}
+server: {listen: {address: "127.0.0.1:8080", network: tcp}}
+models: {m1: {servers: [s1]}}
+servers:
+  s1: {url: "http://127.0.0.1:8000"%s}
+`
+	cfg, eff, err := ParseEffective([]byte(fmt.Sprintf(base, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range cfg.Backends {
+		if b.NoMetrics {
+			t.Fatal("metrics off by default")
+		}
+	}
+	if strings.Contains(string(eff), "metrics") {
+		t.Fatalf("show-effective names the default:\n%s", eff)
+	}
+	cfg, eff, err = ParseEffective([]byte(fmt.Sprintf(base, ", metrics: false")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range cfg.Backends {
+		if !b.NoMetrics {
+			t.Fatal("metrics: false ignored")
+		}
+	}
+	if !strings.Contains(string(eff), "metrics: false") {
+		t.Fatalf("show-effective dropped metrics: false:\n%s", eff)
+	}
+	if _, err := Parse(eff); err != nil {
+		t.Fatalf("show-effective does not parse: %v", err)
 	}
 }

@@ -1,0 +1,1 @@
+{"models":[{"name":"local-30b","model":"local-30b","size":20000000000,"digest":"abc","details":{"format":"gguf","family":"qwen3"},"expires_at":"2026-11-18T14:00:00Z","size_vram":19000000000,"context_length":8192},{"name":"gemma4:12b","model":"gemma4:12b","size":9000000000,"digest":"def","details":{},"expires_at":"2026-11-18T13:50:00Z","size_vram":9000000000}]}

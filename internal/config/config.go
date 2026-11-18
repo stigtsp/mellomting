@@ -297,6 +297,9 @@ type Backend struct {
 	MaxConcurrency    int      `yaml:"max_concurrency"`
 	QueueSize         int      `yaml:"queue_size"`
 	QueueTimeout      Duration `yaml:"queue_timeout"`
+	// NoMetrics stops the daemon reading this backend's server for
+	// `top` (servers.<name>.metrics: false).
+	NoMetrics bool `yaml:"-"`
 	// RelayUpstreamErrors appends this backend's own sanitized error
 	// message to the client-facing error it produces (PLAN §43, §72).
 	// Off by default: a rejection message can quote the request it

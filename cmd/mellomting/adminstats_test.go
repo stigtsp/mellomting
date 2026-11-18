@@ -104,3 +104,18 @@ func TestStatsSourceAssembles(t *testing.T) {
 		t.Fatalf("server gauges %+v", g.Servers)
 	}
 }
+
+func TestMetricsPollerOnePerServer(t *testing.T) {
+	src, _ := statsFixture(t)
+	p := newMetricsPoller(src.cfg, src.clients, testsupport.DiscardLogger())
+	if got := p.Servers(); len(got) != 1 || got[0] != "gpu1" {
+		t.Fatalf("polled servers %v", got)
+	}
+	for name, b := range src.cfg.Backends {
+		b.NoMetrics = true
+		src.cfg.Backends[name] = b
+	}
+	if got := newMetricsPoller(src.cfg, src.clients, nil).Servers(); len(got) != 0 {
+		t.Fatalf("metrics: false still polled %v", got)
+	}
+}

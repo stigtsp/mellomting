@@ -195,6 +195,7 @@ func serveCmd(args []string) int {
 		sctx, stopSampler := context.WithCancel(context.Background())
 		defer stopSampler()
 		go runSampler(sctx, d.stats)
+		go d.stats.poller.Run(sctx)
 		log.Info("admin socket ready", "address", cfg.Server.AdminSocket)
 	}
 
@@ -909,7 +910,9 @@ func buildDaemon(cfg *config.Config, log *slog.Logger) (*daemon, error) {
 		api.SetStats(st)
 		prox.SetStats(st)
 		src = &statsSource{cfg: cfg, started: time.Now(), store: st, api: api, clients: clients,
-			router: router, quota: quota, acc: writer, live: live, agents: agents}
+			router: router, quota: quota, acc: writer, live: live, agents: agents,
+			poller: newMetricsPoller(cfg, clients, log)}
+		src.metrics = src.poller.Latest
 	}
 	return &daemon{cfg: cfg, log: log, api: api, proxy: prox, acc: writer, live: live, pepper: pepper, tlsConfig: tlsConfig, users: watcher, agents: agents, stats: src}, nil
 }

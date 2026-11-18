@@ -939,3 +939,27 @@ func (c *cancelOnClose) Close() error {
 	c.cancel()
 	return err
 }
+
+// Probe GETs one of the server's own endpoints, such as /metrics, and
+// returns the status and at most limit bytes of body. It runs outside
+// admission and records nothing in passive health: it observes the
+// server, it is not a request on anyone's behalf. The configured
+// credential is sent, and redirects are refused as for requests.
+func (c *Client) Probe(ctx context.Context, path string, limit int64) (int, []byte, error) {
+	u := *c.base
+	u.Path = path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpPlain.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	return resp.StatusCode, body, err
+}
