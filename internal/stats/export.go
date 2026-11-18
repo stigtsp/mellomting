@@ -48,7 +48,9 @@ type SeriesExport struct {
 }
 
 // Export is the store as `GET /stats` serves it. Seq is the newest
-// second; a client passes it back as since to get only what is newer.
+// complete second; a client passes it back as since to get only what
+// is newer. The second still being filled is never exported, so no
+// client keeps a partial count.
 type Export struct {
 	Seq          int64          `json:"seq"`
 	BucketMillis int64          `json:"bucket_ms"`
@@ -71,7 +73,7 @@ func (s *Store) Since(seq int64, maxBytes int) Export {
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
 	e := Export{
-		Seq:          now,
+		Seq:          now - 1,
 		BucketMillis: 1000,
 		HistEdgesMs:  histEdges[:],
 		RefusalOrder: refusals[:],
@@ -139,7 +141,7 @@ func (se *series) export(dim string, seq, now int64, global bool) SeriesExport {
 		for i, n := range b.refusals {
 			refs[i] += int64(n)
 		}
-		if b.sec <= seq {
+		if b.sec <= seq || b.sec >= now {
 			continue
 		}
 		be := BucketExport{

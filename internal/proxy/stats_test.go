@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -25,11 +26,12 @@ func TestRequestRecordedInStats(t *testing.T) {
 	p, _ := agentProxy(t, []string{"agent-a-1"}, func(cfg *config.Config) fakeAgents {
 		return fakeAgents{"agent-a-1": agentClient(t, cfg, "agent-a-1")}
 	})
-	st := stats.New(nil)
+	st, later := steppedStore()
 	p.SetStats(st)
 	if w := run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"lab/m","messages":[]}`, labKey()); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
+	later()
 	e := st.Since(0, 1<<20)
 	b := e.Global.Buckets[0]
 	if b.OK != 1 || b.TokensIn != 1 || b.TokensOut != 1 || b.BytesOut == 0 {
@@ -60,9 +62,10 @@ func TestUntrustedTokensScaledToCharge(t *testing.T) {
 		}
 		return fakeAgents{"agent-a-1": c}
 	})
-	st := stats.New(nil)
+	st, later := steppedStore()
 	p.SetStats(st)
 	run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"lab/m","messages":[]}`, labKey())
+	later()
 	b := st.Since(0, 1<<20).Global.Buckets[0]
 	if moved := b.BytesIn + b.BytesOut; b.TokensIn+b.TokensOut > moved || b.TokensIn+b.TokensOut == 0 {
 		t.Fatalf("tokens in=%d out=%d exceed the %d bytes that moved", b.TokensIn, b.TokensOut, moved)
@@ -74,10 +77,11 @@ func TestUntrustedTokensScaledToCharge(t *testing.T) {
 
 func TestDrainingRecordedAsRefusal(t *testing.T) {
 	p, _ := agentProxy(t, nil, func(*config.Config) fakeAgents { return fakeAgents{} })
-	st := stats.New(nil)
+	st, later := steppedStore()
 	p.SetStats(st)
 	p.BeginDraining()
 	run(t, p, http.MethodPost, "/v1/chat/completions", `{"model":"lab/m","messages":[]}`, labKey())
+	later()
 	if e := st.Since(0, 1<<20); e.Global.Refusals["draining"] != 1 {
 		t.Fatalf("refusals %v", e.Global.Refusals)
 	}
@@ -96,4 +100,11 @@ func TestScaleTokensNoOverflow(t *testing.T) {
 	if in, out := scaleTokens(0, 0, 50); in != 0 || out != 50 {
 		t.Fatalf("no split reported: %d %d", in, out)
 	}
+}
+
+// steppedStore is a stats store whose clock moves only when later is
+// called: Since exports complete seconds only.
+func steppedStore() (*stats.Store, func()) {
+	now := time.Now()
+	return stats.New(func() time.Time { return now }), func() { now = now.Add(time.Second) }
 }

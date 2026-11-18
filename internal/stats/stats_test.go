@@ -35,6 +35,7 @@ func TestRecordAndSince(t *testing.T) {
 	s.Record(ok("k1", "m", "srv"))
 	c.add(time.Second)
 	s.Record(ok("k1", "m", "srv"))
+	c.add(time.Second)
 
 	e := s.Since(0, 1<<20)
 	if len(e.Global.Buckets) != 2 || e.Global.Buckets[0].OK != 2 || e.Global.Buckets[1].OK != 1 {
@@ -60,8 +61,9 @@ func TestRecordAndSince(t *testing.T) {
 }
 
 func TestRefusalNotCompleted(t *testing.T) {
-	s, _ := newTestStore()
+	s, c := newTestStore()
 	s.Refuse(KeyConcurrency, "k1", "alice", "", "")
+	c.add(time.Second)
 	e := s.Since(0, 1<<20)
 	k := find(e, "key", "k1")
 	if k == nil || len(k.Buckets) != 1 {
@@ -90,10 +92,11 @@ func TestTerminalClassification(t *testing.T) {
 		{"token_quota", 429, Quota},
 		{"overload", 503, Draining},
 	} {
-		s, _ := newTestStore()
+		s, c := newTestStore()
 		smp := ok("k", "m", "srv")
 		smp.Status, smp.ErrorClass = tc.status, tc.class
 		s.Record(smp)
+		c.add(time.Second)
 		e := s.Since(0, 1<<20)
 		b := e.Global.Buckets[0]
 		if b.Refused != 1 || b.C5xx != 0 || b.C4xx != 0 || e.Global.Refusals[string(tc.refusal)] != 1 {
@@ -104,10 +107,11 @@ func TestTerminalClassification(t *testing.T) {
 		}
 	}
 
-	s, _ := newTestStore()
+	s, c := newTestStore()
 	smp := ok("k", "m", "srv")
 	smp.Status, smp.ErrorClass = 502, "backend_connect"
 	s.Record(smp)
+	c.add(time.Second)
 	e := s.Since(0, 1<<20)
 	if b := e.Global.Buckets[0]; b.C5xx != 1 || b.Refused != 0 || e.Global.Errors["backend_connect"] != 1 {
 		t.Fatalf("error: bucket %+v errors %v", b, e.Global.Errors)
@@ -122,6 +126,7 @@ func TestWindowRollsOff(t *testing.T) {
 	s.Record(ok("k1", "m", "srv"))
 	c.add(Window + time.Second)
 	s.Record(ok("k2", "m", "srv"))
+	c.add(time.Second)
 	e := s.Since(0, 1<<20)
 	if len(e.Global.Buckets) != 1 {
 		t.Fatalf("old bucket kept: %+v", e.Global.Buckets)
@@ -132,10 +137,11 @@ func TestWindowRollsOff(t *testing.T) {
 }
 
 func TestSeriesCapFoldsToOther(t *testing.T) {
-	s, _ := newTestStore()
+	s, c := newTestStore()
 	for i := range 70 {
 		s.Record(ok(fmt.Sprintf("k%02d", i), "m", "srv"))
 	}
+	c.add(time.Second)
 	e := s.Since(0, 1<<22)
 	keys := 0
 	var other *SeriesExport
@@ -153,12 +159,13 @@ func TestSeriesCapFoldsToOther(t *testing.T) {
 }
 
 func TestGaugesSampled(t *testing.T) {
-	s, _ := newTestStore()
+	s, c := newTestStore()
 	s.Sample(Gauges{
 		GlobalInflight: 5,
 		Keys:           map[string]KeyGauge{"k1": {Name: "alice", Inflight: 8, AtLimit: true}},
 		Servers:        map[string]ServerGauge{"gpu": {Admitted: 24, Queued: 2, HasMetrics: true, Running: 6, Waiting: 18, KVPercent: 94}},
 	})
+	c.add(time.Second)
 	e := s.Since(0, 1<<20)
 	if g := e.Global.Buckets[0]; g.Inflight != 5 {
 		t.Fatalf("global gauge %+v", g)
@@ -218,5 +225,22 @@ func BenchmarkRecord(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		s.Record(smp)
+	}
+}
+
+// The second still being filled is not exported: a client that polls
+// with since=seq would otherwise keep the partial count for good.
+func TestSinceOmitsCurrentSecond(t *testing.T) {
+	s, c := newTestStore()
+	s.Record(ok("k1", "m", "srv"))
+	first := s.Since(0, 1<<20)
+	if len(first.Global.Buckets) != 0 || first.Seq != c.t.Unix()-1 {
+		t.Fatalf("partial second exported: seq %d buckets %+v", first.Seq, first.Global.Buckets)
+	}
+	s.Record(ok("k1", "m", "srv"))
+	c.add(time.Second)
+	next := s.Since(first.Seq, 1<<20)
+	if len(next.Global.Buckets) != 1 || next.Global.Buckets[0].OK != 2 {
+		t.Fatalf("completed second %+v", next.Global.Buckets)
 	}
 }
