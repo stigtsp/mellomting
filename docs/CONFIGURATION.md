@@ -244,6 +244,27 @@ attach:
   # metrics: false                                  # refuse the edge's reads of the servers' load
 ```
 
+A decision server (`POST /v1/systemone`, see [Servers and
+models](#servers-and-models)) has no model list to discover, so it is
+declared, by hand, under `decision_servers`, beside or instead of
+`servers`:
+
+```yaml
+attach:
+  edge: https://edge.example.org
+  key_file: /etc/mellomting/agent.key
+  decision_servers:
+    - url: http://127.0.0.1:18440
+      models: [karpo-decision-31b]   # ids the server accepts in "model"
+      health: /healthz               # probed for readiness; default /health
+```
+
+The edge registers those models typed `decision`, under the agent key's
+namespace, and serves them on `/v1/systemone` only, with the decision
+timeouts. The agent relays nothing else to a decision server. Rejection
+messages from attached servers reach the client as a configured server's
+do. SYSTEMONE_PLAN §D13 has the design.
+
 A daemon that attaches serves no clients, so a configuration with `attach`
 may set only `logging`, `shutdown`, and the sandbox modes under `security`;
 any other section is refused. `shutdown.grace_period` is the longest a

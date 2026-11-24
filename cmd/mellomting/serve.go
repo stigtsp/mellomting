@@ -666,6 +666,9 @@ func sandboxPolicy(cfg *config.Config, listeners []net.Addr) (sandbox.Policy, er
 	urls := backendBaseURLs(cfg)
 	if a := cfg.Attach; a != nil {
 		urls = append([]string{a.Edge}, a.Servers...)
+		for _, d := range a.DecisionServers {
+			urls = append(urls, d.URL)
+		}
 	}
 	ports, err := sandbox.BackendPorts(urls...)
 	if err != nil {

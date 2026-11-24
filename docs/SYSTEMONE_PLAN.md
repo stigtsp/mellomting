@@ -340,6 +340,12 @@ attach:
   nothing else; a generation connection relays everything it did, and not
   `/v1/systemone`. Both remain exact-path allow-lists (PLAN §11.3). The
   body is relayed unchanged, so §D3 holds end to end.
+- **Error relay.** Attached backends relay their rejection messages as
+  configured servers do by default (§D12); before, the relay lookup only
+  knew configured servers, so an attached server's rejections all read
+  "upstream rejected the request". The agent already chooses the whole
+  body of every answer, so its bounded, sanitized message discloses
+  nothing new. This applies to generation agents too.
 - **Threat model** is PLAN §104.7's: the agent already chooses the
   responses and the usage for its models. Declaring a model `decision`
   only narrows which endpoint reaches it, within the agent key's own

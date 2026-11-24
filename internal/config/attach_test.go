@@ -187,3 +187,83 @@ func TestAttachMetricsKey(t *testing.T) {
 		t.Fatal("metrics: false ignored")
 	}
 }
+
+const attachDecision = `version: 1
+attach:
+  edge: https://edge.example.org
+  key_file: /etc/mellomting/agent.key
+  decision_servers:
+    - url: http://127.0.0.1:18440
+      models: [karpo-decision-31b]
+      health: /healthz
+`
+
+// A decision server is enough on its own (SYSTEMONE_PLAN §D13), and
+// show-effective round-trips it.
+func TestAttachDecisionServers(t *testing.T) {
+	cfg, err := Parse([]byte(attachDecision))
+	if err != nil {
+		t.Fatalf("decision-only attach must be valid: %v", err)
+	}
+	d := cfg.Attach.DecisionServers
+	if len(cfg.Attach.Servers) != 0 || len(d) != 1 || d[0].Models[0] != "karpo-decision-31b" || d[0].HealthPath() != "/healthz" {
+		t.Fatalf("decision server not carried: %+v", cfg.Attach)
+	}
+	if got := (DecisionServer{}).HealthPath(); got != DefaultDecisionHealth {
+		t.Fatalf("default health = %q", got)
+	}
+	_, eff, err := ParseEffective([]byte(attachDecision))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Parse(eff); err != nil || again.Attach.DecisionServers[0].Health != "/healthz" {
+		t.Fatalf("show-effective must parse back to the same decision server: %v\n%s", err, eff)
+	}
+}
+
+func TestAttachDecisionValidation(t *testing.T) {
+	const head = "version: 1\nattach:\n  edge: https://e.example.org\n  key_file: /k\n"
+	for body, want := range map[string]string{
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n":                                                         "models: at least one",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [\"a b\"]\n":                                "must be ASCII",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m, m]\n":                                   "listed twice",
+		"  decision_servers:\n    - url: http://127.0.0.1:1/v1\n      models: [m]\n":                                   "path",
+		"  servers: [\"http://127.0.0.1:1\"]\n  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n": "listed twice",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      health: healthz\n":               "health",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      health: /a/../metrics\n":         "health",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      health: /health?x=1\n":           "health",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      health: //health\n":              "health",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      health: /h%2f\n":                 "health",
+		"  decision_servers:\n    - url: http://127.0.0.1:1\n      models: [m]\n      typo: 1\n":                       "typo",
+	} {
+		_, err := Parse([]byte(head + body))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: got %v, want error containing %q", body, err, want)
+		}
+	}
+	var many strings.Builder
+	many.WriteString(head + "  decision_servers:\n")
+	for i := range maxAttachServers + 1 {
+		fmt.Fprintf(&many, "    - url: http://127.0.0.1:%d\n      models: [m]\n", 1000+i)
+	}
+	if _, err := Parse([]byte(many.String())); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Errorf("%d decision servers: got %v, want the server cap", maxAttachServers+1, err)
+	}
+}
+
+// An attachment of only decision models takes the decision timeouts of
+// a configured decision-only server, its queue wait no longer than the
+// request bound.
+func TestAgentDecisionBackend(t *testing.T) {
+	a := Agents{MaxConcurrency: 8, QueueSize: 32, QueueTimeout: Duration(120e9)}
+	b := AgentDecisionBackend(a)
+	if b.RequestTimeout != Duration(decisionRequestTimeout) || b.HeaderTimeout != Duration(decisionHeaderTimeout) {
+		t.Fatalf("timeouts = %v/%v, want the decision bounds", b.HeaderTimeout, b.RequestTimeout)
+	}
+	if b.QueueTimeout != Duration(decisionRequestTimeout) || b.MaxConcurrency != 8 || b.QueueSize != 32 {
+		t.Fatalf("admission = %+v, want the agents' caps with the wait lowered", b)
+	}
+	if g := AgentBackend(a); g.RequestTimeout != Duration(defaultRequestTimeout) {
+		t.Fatalf("generation attachment request timeout = %v", g.RequestTimeout)
+	}
+}

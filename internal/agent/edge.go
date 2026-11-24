@@ -107,6 +107,8 @@ type counters struct {
 type Model struct {
 	Name          string `json:"name"`
 	ContextLength int    `json:"context_length,omitempty"`
+	// Type is "decision" for a declared decision model, else empty.
+	Type string `json:"type,omitempty"`
 }
 
 // Record is one attachment as `mellomting top` and the admin socket
@@ -401,9 +403,15 @@ func (g *Registry) serve(a *attachment) {
 		return
 	}
 
+	// An attachment serving only decision models takes the decision
+	// timeouts, as a configured decision-only server does.
+	cfg := config.AgentBackend(g.cfg)
+	if allDecision(models) {
+		cfg = config.AgentDecisionBackend(g.cfg)
+	}
 	client, err := backend.New(backend.Options{
 		Name:             a.name,
-		Cfg:              config.AgentBackend(g.cfg),
+		Cfg:              cfg,
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: g.maxResponseBytes,
 		Log:              g.log,
@@ -428,11 +436,11 @@ func (g *Registry) serve(a *attachment) {
 		if m.public != "" {
 			// A register entry, validated with the key and again by
 			// filterRegister; the alias is the public name.
-			if err := g.router.AddDynamic(m.public, a.name, m.ID, m.ContextLength, a.keyID); err != nil {
+			if err := g.router.AddDynamicTyped(m.public, a.name, m.ID, m.ContextLength, a.keyID, m.typ); err != nil {
 				g.log.Warn("agent model ignored", "agent", a.name, "model", m.public, "upstream", m.ID, "error", err)
 				continue
 			}
-			registered = append(registered, Model{Name: m.public, ContextLength: m.ContextLength})
+			registered = append(registered, Model{Name: m.public, ContextLength: m.ContextLength, Type: m.typ})
 			continue
 		}
 		if !validAgentModelID(m.ID) {
@@ -449,11 +457,11 @@ func (g *Registry) serve(a *attachment) {
 			g.log.Warn("agent model ignored", "agent", a.name, "model", public, "error", err)
 			continue
 		}
-		if err := g.router.AddDynamic(public, a.name, m.ID, m.ContextLength, a.keyID); err != nil {
+		if err := g.router.AddDynamicTyped(public, a.name, m.ID, m.ContextLength, a.keyID, m.typ); err != nil {
 			g.log.Warn("agent model ignored", "agent", a.name, "model", public, "error", err)
 			continue
 		}
-		registered = append(registered, Model{Name: public, ContextLength: m.ContextLength})
+		registered = append(registered, Model{Name: public, ContextLength: m.ContextLength, Type: m.typ})
 	}
 	if a.draining.Load() {
 		// GOAWAY arrived during discovery: stopRouting ran before the
@@ -515,6 +523,9 @@ func modelSummary(ms []Model) string {
 		parts[i] = m.Name
 		if m.ContextLength > 0 {
 			parts[i] += fmt.Sprintf("(ctx %d)", m.ContextLength)
+		}
+		if m.Type != "" {
+			parts[i] += "(" + m.Type + ")"
 		}
 	}
 	return strings.Join(parts, ",")
@@ -626,6 +637,18 @@ func newEdgeTransport(c *trackedConn, goAway, gone func()) *http.Transport {
 type advertised struct {
 	discovery.Model
 	public string
+	typ    string // "decision" when the agent declared it, else ""
+}
+
+// allDecision reports whether every model of an attachment is a decision
+// model.
+func allDecision(ms []advertised) bool {
+	for _, m := range ms {
+		if m.typ != "decision" {
+			return false
+		}
+	}
+	return len(ms) > 0
 }
 
 // filterRegister keeps the advertised models the attachment's key lists,
@@ -700,6 +723,15 @@ func discover(rt http.RoundTripper, maxModels int, closed <-chan struct{}) ([]ad
 	out := make([]advertised, len(models))
 	for i, m := range models {
 		out[i] = advertised{Model: m}
+	}
+	decision, err := readModelTypes(ctx, rt, out)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if decision[out[i].ID] {
+			out[i].typ = "decision"
+		}
 	}
 	return out, nil
 }

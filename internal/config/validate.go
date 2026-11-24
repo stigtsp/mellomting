@@ -591,6 +591,18 @@ func AgentBackend(a Agents) Backend {
 	}
 }
 
+// AgentDecisionBackend is AgentBackend for an attachment that serves only
+// decision models: the decision timeouts, with the queue wait lowered to
+// the request bound as a configured decision server's is (SYSTEMONE_PLAN
+// §D11, §D13).
+func AgentDecisionBackend(a Agents) Backend {
+	b := AgentBackend(a)
+	b.HeaderTimeout = Duration(decisionHeaderTimeout)
+	b.RequestTimeout = Duration(decisionRequestTimeout)
+	b.QueueTimeout = min(b.QueueTimeout, Duration(decisionRequestTimeout))
+	return b
+}
+
 // AgentNamespaceWildcard lets an agent key register models under the
 // names its server advertises, without a namespace prefix.
 const AgentNamespaceWildcard = "*"
