@@ -39,6 +39,30 @@ Limits observed on the wrapper: request bodies of 65536 bytes (rejected
 with a 400, not a 413) and 4096 input tokens including the question
 schema.
 
+Other SystemOne servers accept more than Clef-Flash (the Brev pilot,
+2026-11-24): optional `images` and `assets` keys, `state` as a string or
+an object, bodies up to 32 MiB, `multipart/form-data` bodies with a
+`request` JSON part, and `Content-Encoding: gzip`, `x-gzip` or `zstd`.
+Through Mellomting:
+
+- The body must be one uncompressed JSON object, because `model` is read
+  from it and checked against the key before anything is forwarded. A
+  multipart body is refused with 400 `invalid_json`, and a compressed one
+  with 415 `unsupported_media_type`; neither reaches the server. Send
+  assets inline in the JSON.
+- `server.max_body_bytes` (16 MiB by default) bounds the body, for every
+  endpoint; raise it for large images. The server's own limit still
+  applies after it.
+- Every top-level key other than `model` is forwarded unchanged, so
+  `images`, `assets` and any later key pass through. `model` is rewritten
+  to the model's `upstream_model`, which defaults to the public name. A
+  server that accepts only its own aliases needs `upstream_model` set to
+  one; a server that ignores `model` needs nothing. There is no way to
+  omit `model` from the forwarded body.
+- `latency_ms`, `id` and other response keys are relayed unchanged. Usage
+  is read from `usage.input_tokens`; a response without it is charged
+  `accounting.unknown_usage_reservation`.
+
 ## Request fields
 
 Mellomting checks the top-level routing and policy fields: `model`, `stream`,

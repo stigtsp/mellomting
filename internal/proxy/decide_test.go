@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -380,4 +381,41 @@ func TestDecideRelaysBackendStringError(t *testing.T) {
 			t.Fatalf("upstream_message = %v, want %q", got, reason)
 		}
 	})
+}
+
+// Some SystemOne servers (Karpo) also take multipart/form-data bodies and
+// gzip or zstd request compression. Mellomting reads model from a JSON
+// body only and does not decompress, so those are refused locally with a
+// stated reason and never reach the server: forwarding a body whose
+// model the ACL never saw would bypass it.
+func TestDecideRefusesMultipartAndCompressedBodies(t *testing.T) {
+	t.Parallel()
+	f := newFakeSystemOne(t, "clef-flash")
+	p := newDecideProxy(t, f)
+
+	send := func(body string, header map[string]string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(body))
+		for k, v := range header {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		p.Decide(&Req{W: w, R: r, Key: testKey("clef-flash"), RequestID: "req_t", Remote: "x"})
+		return w
+	}
+	multipart := "--b\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n" +
+		`{"model":"clef-flash","state":"x","questions":{}}` + "\r\n--b--\r\n"
+	rec := send(multipart, map[string]string{"Content-Type": "multipart/form-data; boundary=b"})
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "invalid_json") {
+		t.Fatalf("multipart: status = %d body = %s, want 400 invalid_json", rec.Code, rec.Body.String())
+	}
+	for _, enc := range []string{"gzip", "x-gzip", "zstd"} {
+		rec := send(`{"model":"clef-flash","state":"x","questions":{}}`,
+			map[string]string{"Content-Type": "application/json", "Content-Encoding": enc})
+		if rec.Code != 415 || !strings.Contains(rec.Body.String(), "unsupported_media_type") {
+			t.Fatalf("%s: status = %d body = %s, want 415 unsupported_media_type", enc, rec.Code, rec.Body.String())
+		}
+	}
+	if _, n := f.lastRequest(); n != 0 {
+		t.Fatalf("backend received %d requests, want none", n)
+	}
 }
