@@ -6,20 +6,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
-	"strings"
 )
 
-// maxAttachServers bounds attach.servers and attach.decision_servers
-// together: each one holds a connection to the edge.
+// maxAttachServers bounds attach.servers: each one holds a connection to
+// the edge.
 const maxAttachServers = 16
-
-// maxDecisionModels bounds one decision server's model list; the edge's
-// agents.max_models applies as well.
-const maxDecisionModels = 64
-
-// DefaultDecisionHealth is the readiness path of a decision server whose
-// entry names none: the Clef wrapper and SGLang answer it.
-const DefaultDecisionHealth = "/health"
 
 // Attach makes the daemon an agent (PLAN §104): it dials an edge with an
 // agent key and serves the edge's requests from local inference servers,
@@ -30,11 +21,7 @@ type Attach struct {
 	// KeyFile holds the agent key.
 	KeyFile string `yaml:"key_file"`
 	// Servers are the local inference servers' base URLs.
-	Servers []string `yaml:"servers,omitempty"`
-	// DecisionServers are local decision servers (SYSTEMONE_PLAN §D13):
-	// no model list to discover, so the models and a health path are
-	// declared here.
-	DecisionServers []DecisionServer `yaml:"decision_servers,omitempty"`
+	Servers []string `yaml:"servers"`
 	// BackendKeyFile holds a bearer token for the local servers.
 	BackendKeyFile string `yaml:"backend_key_file,omitempty"`
 	// CAFile holds the PEM CAs the edge is verified with, instead of the
@@ -47,25 +34,6 @@ type Attach struct {
 	// load reports (PLAN §104): the agent's operator may not want the
 	// edge's to see them. Absent means on.
 	Metrics *bool `yaml:"metrics,omitempty"`
-}
-
-// DecisionServer is one local decision server.
-type DecisionServer struct {
-	// URL is the server's base URL.
-	URL string `yaml:"url"`
-	// Models are the ids the server accepts in the request's model field.
-	Models []string `yaml:"models"`
-	// Health is the path probed for readiness and liveness; any 2xx
-	// means up. Empty means DefaultDecisionHealth.
-	Health string `yaml:"health,omitempty"`
-}
-
-// HealthPath is the path the agent probes.
-func (d DecisionServer) HealthPath() string {
-	if d.Health == "" {
-		return DefaultDecisionHealth
-	}
-	return d.Health
 }
 
 // MetricsEnabled reports whether the edge may read the local servers'
@@ -148,13 +116,13 @@ func validateAttach(a *Attach) []string {
 			errs = append(errs, "attach."+f.name+": must be an absolute path")
 		}
 	}
-	switch n := len(a.Servers) + len(a.DecisionServers); {
+	switch n := len(a.Servers); {
 	case n == 0:
-		errs = append(errs, "attach.servers: at least one server or decision server is required")
+		errs = append(errs, "attach.servers: at least one server is required")
 	case n > maxAttachServers:
-		errs = append(errs, fmt.Sprintf("attach.servers: at most %d servers and decision servers together, got %d", maxAttachServers, n))
+		errs = append(errs, fmt.Sprintf("attach.servers: at most %d servers, got %d", maxAttachServers, n))
 	}
-	seen := make(map[string]bool, len(a.Servers)+len(a.DecisionServers))
+	seen := make(map[string]bool, len(a.Servers))
 	for i, s := range a.Servers {
 		if err := checkServerURL(s); err != nil {
 			errs = append(errs, fmt.Sprintf("attach.servers[%d]: %v", i, err))
@@ -164,57 +132,7 @@ func validateAttach(a *Attach) []string {
 		}
 		seen[s] = true
 	}
-	for i, d := range a.DecisionServers {
-		prefix := fmt.Sprintf("attach.decision_servers[%d]", i)
-		if err := checkServerURL(d.URL); err != nil {
-			errs = append(errs, fmt.Sprintf("%s.url: %v", prefix, err))
-		}
-		if seen[d.URL] {
-			errs = append(errs, fmt.Sprintf("%s.url: %q is listed twice", prefix, d.URL))
-		}
-		seen[d.URL] = true
-		switch n := len(d.Models); {
-		case n == 0:
-			errs = append(errs, prefix+".models: at least one model is required")
-		case n > maxDecisionModels:
-			errs = append(errs, fmt.Sprintf("%s.models: at most %d models, got %d", prefix, maxDecisionModels, n))
-		}
-		ids := make(map[string]bool, len(d.Models))
-		for j, id := range d.Models {
-			if !ValidAgentModelID(id) {
-				errs = append(errs, fmt.Sprintf("%s.models[%d]: %q must be ASCII letters, digits or ._:@+/-, at most %d bytes", prefix, j, id, maxAgentModelIDBytes))
-			}
-			if ids[id] {
-				errs = append(errs, fmt.Sprintf("%s.models[%d]: %q is listed twice", prefix, j, id))
-			}
-			ids[id] = true
-		}
-		if d.Health != "" && !validHealthPath(d.Health) {
-			errs = append(errs, fmt.Sprintf("%s.health: %q must be an absolute path of letters, digits and ._-/ without empty or dot segments", prefix, d.Health))
-		}
-	}
 	return errs
-}
-
-// validHealthPath accepts a plain absolute path: it is requested from
-// the local server as given, so it carries no query, escape or dot
-// segment a server might normalize into another route.
-func validHealthPath(p string) bool {
-	if len(p) < 2 || len(p) > 256 || p[0] != '/' || strings.Contains(p, "//") {
-		return false
-	}
-	for _, seg := range strings.Split(p[1:], "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return false
-		}
-	}
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("._-/", c) >= 0) {
-			return false
-		}
-	}
-	return true
 }
 
 // checkServerURL applies the base-URL rules of a configured server

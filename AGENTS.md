@@ -273,6 +273,3 @@ implemented: relay-by-default, the string-shaped backend diagnostic, the
 allow-list type gating (attached models, which have no type, reach the
 generation and embeddings routes only), and the `POST /v1/systemone` route.
 The live check against the Clef wrapper (step 7) is still to be run.
-Agents attach decision servers declared under `attach.decision_servers`
-(SYSTEMONE_PLAN §D13): typed on an agent-answered path, relayed only
-`POST /v1/systemone`.

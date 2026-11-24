@@ -106,12 +106,10 @@ type Router struct {
 	dyn   map[string]dynModel
 }
 
-// dynModel is one attached model: the agent key that registered it, its
-// type ("" when its agent's server did not declare one, else
-// "decision"), and the attachments serving it.
+// dynModel is one attached model: the agent key that registered it and
+// the attachments serving it.
 type dynModel struct {
 	owner    string
-	typ      string
 	replicas []replica
 }
 
@@ -123,10 +121,6 @@ var (
 	// the name: replicas may only join a name their own key registered,
 	// so one key cannot intercept another key's traffic.
 	ErrModelOwned = errors.New("model name is served by another agent key")
-	// ErrModelType is returned when a replica's type differs from the
-	// one the name is already served as: type gating would otherwise
-	// depend on which replica a request lands on.
-	ErrModelType = errors.New("model name is served as another model type")
 )
 
 // AddDynamic routes publicModel to an attached agent's backend, which
@@ -135,16 +129,6 @@ var (
 // least-inflight; another key cannot join it. contextLength is the
 // window the agent's server advertises, 0 when unknown.
 func (r *Router) AddDynamic(publicModel, backendName, upstream string, contextLength int, owner string) error {
-	return r.AddDynamicTyped(publicModel, backendName, upstream, contextLength, owner, "")
-}
-
-// AddDynamicTyped is AddDynamic for a model of type typ: "" for an
-// untyped attached model, "decision" for one a decision server declared
-// (SYSTEMONE_PLAN §D13). All replicas of a name share its type.
-func (r *Router) AddDynamicTyped(publicModel, backendName, upstream string, contextLength int, owner, typ string) error {
-	if typ != "" && typ != "decision" {
-		return fmt.Errorf("unsupported attached model type %q", typ)
-	}
 	if _, ok := r.models[publicModel]; ok {
 		return ErrStaticModel
 	}
@@ -154,14 +138,10 @@ func (r *Router) AddDynamicTyped(publicModel, backendName, upstream string, cont
 	if exists && m.owner != owner {
 		return ErrModelOwned
 	}
-	if exists && m.typ != typ {
-		return ErrModelType
-	}
 	if slices.ContainsFunc(m.replicas, func(rep replica) bool { return rep.name == backendName }) {
 		return nil
 	}
 	m.owner = owner
-	m.typ = typ
 	m.replicas = append(m.replicas, replica{name: backendName, upstream: upstream, weight: 1, contextLength: contextLength})
 	r.dyn[publicModel] = m
 	return nil
@@ -213,10 +193,9 @@ func (r *Router) lookup(publicModel string) (modelEntry, bool) {
 	if !ok {
 		return modelEntry{}, false
 	}
-	// No type unless a decision server declared one: a server's model
-	// list does not say whether a model generates or embeds, so both
-	// endpoints are left to the server.
-	return modelEntry{typ: m.typ, strategy: "least-inflight", replicas: slices.Clone(m.replicas)}, true
+	// No type: a server's model list does not say whether a model
+	// generates or embeds, so both endpoints are left to the server.
+	return modelEntry{strategy: "least-inflight", replicas: slices.Clone(m.replicas)}, true
 }
 
 // wrrState is the classic smooth weighted round-robin state indexed by

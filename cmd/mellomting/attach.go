@@ -51,11 +51,11 @@ func attachOptionsWithKey(a *config.Attach, key string, log *slog.Logger) ([]age
 			return nil, fmt.Errorf("attach.ca_file: %w", err)
 		}
 	}
-	opts := make([]agent.Options, 0, len(a.Servers)+len(a.DecisionServers))
-	add := func(field, s string, d *agent.Decision) error {
+	opts := make([]agent.Options, 0, len(a.Servers))
+	for _, s := range a.Servers {
 		u, err := backend.ParseBaseURL(s)
 		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+			return nil, fmt.Errorf("attach.servers: %w", err)
 		}
 		opts = append(opts, agent.Options{
 			Edge:           edge,
@@ -66,21 +66,8 @@ func attachOptionsWithKey(a *config.Attach, key string, log *slog.Logger) ([]age
 			BackendRootCAs: system,
 			UserAgent:      "mellomting-agent/" + version.String(),
 			Metrics:        a.MetricsEnabled(),
-			Decision:       d,
 			Log:            log.With("component", "agent", "backend", u.Redacted()),
 		})
-		return nil
-	}
-	for _, s := range a.Servers {
-		if err := add("attach.servers", s, nil); err != nil {
-			return nil, err
-		}
-	}
-	for _, d := range a.DecisionServers {
-		dec := &agent.Decision{Models: d.Models, Health: d.HealthPath()}
-		if err := add("attach.decision_servers", d.URL, dec); err != nil {
-			return nil, err
-		}
 	}
 	return opts, nil
 }

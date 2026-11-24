@@ -236,7 +236,6 @@ agents:
   queue_size: 32               # requests waiting for a slot, per agent
   queue_timeout: 120s          # longest wait for a slot
   max_models: 16               # models one agent may register; more refuses the attach
-  decision_request_timeout: 30s # request bound of an agent serving only decision models, at most 30m
 ```
 
 The values shown are the defaults; `config show-effective` prints what
@@ -263,32 +262,6 @@ attach:
   # insecure_edge: true                             # allow plain http off loopback
   # metrics: false                                  # refuse the edge's reads of the servers' load
 ```
-
-A decision server (`POST /v1/systemone`, see [Servers and
-models](#servers-and-models)) has no model list to discover, so it is
-declared, by hand, under `decision_servers`, beside or instead of
-`servers`:
-
-```yaml
-attach:
-  edge: https://edge.example.org
-  key_file: /etc/mellomting/agent.key
-  decision_servers:
-    - url: http://127.0.0.1:18440
-      models: [karpo-decision-31b]   # ids the server accepts in "model"
-      health: /healthz               # probed for readiness; default /health
-```
-
-The edge registers those models typed `decision`, under the agent key's
-namespace, and serves them on `/v1/systemone` only, with the decision
-timeouts: `agents.decision_request_timeout` on the edge, 30s unless set
-(see the decision-server table in [Servers and models](#servers-and-models)
-for when to raise it). `agents.max_concurrency` applies to every
-attachment alike, so a decision server that computes one call at a time
-still receives up to that many at once, each waiting its turn against the
-request bound. The agent relays nothing else to a decision server. Rejection
-messages from attached servers reach the client as a configured server's
-do. SYSTEMONE_PLAN §D13 has the design.
 
 A daemon that attaches serves no clients, so a configuration with `attach`
 may set only `logging`, `shutdown`, and the sandbox modes under `security`;

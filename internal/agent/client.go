@@ -49,20 +49,7 @@ type Options struct {
 	// Metrics lets the edge read the local server's load report
 	// (attach.metrics, default on).
 	Metrics bool
-	// Decision, when set, makes the local server a decision server
-	// (SYSTEMONE_PLAN §D13): its models are declared rather than
-	// discovered, and only POST /v1/systemone is relayed to it.
-	Decision *Decision
-	Log      *slog.Logger
-}
-
-// Decision declares a local decision server, which has no model list.
-type Decision struct {
-	// Models are the ids the server accepts, as configured.
-	Models []string
-	// Health is the path probed for readiness and liveness; any 2xx
-	// means up.
-	Health string
+	Log     *slog.Logger
 }
 
 // drainTimeout bounds a graceful detach: in-flight streams of a few
@@ -216,13 +203,8 @@ func jitter(d time.Duration) time.Duration {
 	return d/2 + rand.N(d/2)
 }
 
-// probeBackend asks the local server for its models. A decision server
-// has none to list: it is asked for its health, and its models are the
-// declared ones.
+// probeBackend asks the local server for its models.
 func probeBackend(ctx context.Context, o Options) ([]discovery.Model, error) {
-	if o.Decision != nil {
-		return probeDecision(ctx, o)
-	}
 	client := &http.Client{Timeout: 10 * time.Second, Transport: backendTransport(o)}
 	u := *o.Backend
 	u.Path = path.Join("/", o.Backend.Path, "/v1/models")
@@ -251,45 +233,6 @@ func probeBackend(ctx context.Context, o Options) ([]discovery.Model, error) {
 	return models, nil
 }
 
-// probeDecision checks a decision server's health path and returns its
-// declared models, sorted as a discovered list is.
-func probeDecision(ctx context.Context, o Options) ([]discovery.Model, error) {
-	client := &http.Client{
-		Timeout:       10 * time.Second,
-		Transport:     backendTransport(o),
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	u := *o.Backend
-	u.Path = path.Join("/", o.Backend.Path, o.Decision.Health)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	if o.BackendKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.BackendKey)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	_ = resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("GET %s: %s", o.Decision.Health, resp.Status)
-	}
-	return decisionModels(o.Decision), nil
-}
-
-func decisionModels(d *Decision) []discovery.Model {
-	ids := slices.Clone(d.Models)
-	slices.Sort(ids)
-	ms := make([]discovery.Model, len(ids))
-	for i, id := range ids {
-		ms[i] = discovery.Model{ID: id}
-	}
-	return ms
-}
-
 // errModelList marks a server that answered but whose model list cannot
 // be used: a configuration problem to report, not a server still
 // starting.
@@ -301,8 +244,8 @@ func probeClass(err error) string {
 	switch {
 	case errors.Is(err, errModelList):
 		return err.Error()
-	case strings.HasPrefix(err.Error(), "GET /"):
-		return err.Error() // HTTP status of the model list or health path
+	case strings.HasPrefix(err.Error(), "GET /v1/models: "):
+		return err.Error() // HTTP status
 	default:
 		return "unreachable"
 	}
@@ -726,16 +669,10 @@ func handshake(ctx context.Context, o Options) (net.Conn, *bufio.Reader, error) 
 // than the edge is talking to the agent; it keeps the agent from
 // widening what reaches the local server, such as admin or LoRA routes
 // under /v1/, or dot segments a server might normalize.
-//
-// A decision server is relayed POST /v1/systemone and nothing else, and
-// only a decision server is relayed it (SYSTEMONE_PLAN §D13).
-func relayable(r *http.Request, decision bool) bool {
+func relayable(r *http.Request) bool {
 	p := r.URL.EscapedPath()
 	if r.URL.RawQuery != "" || p != r.URL.Path || strings.Contains(p, "//") {
 		return false // encoded characters, a query, or empty segments
-	}
-	if decision {
-		return r.Method == http.MethodPost && p == "/v1/systemone"
 	}
 	switch {
 	case r.Method == http.MethodGet && p == "/v1/models":
@@ -879,25 +816,12 @@ func backendHandler(o Options, st *stats) http.Handler {
 		},
 	}
 	metrics := metricsHandler(o.Metrics, localFetch(o))
-	types := modelTypesHandler(o.Decision)
-	var models http.Handler
-	if o.Decision != nil {
-		models = decisionModelList(o.Decision)
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == MetricsPath {
 			metrics.ServeHTTP(w, r)
 			return
 		}
-		if r.Method == http.MethodGet && r.URL.Path == ModelTypesPath {
-			types.ServeHTTP(w, r)
-			return
-		}
-		if models != nil && r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-			models.ServeHTTP(w, r)
-			return
-		}
-		if !relayable(r, o.Decision != nil) {
+		if !relayable(r) {
 			http.NotFound(w, r)
 			return
 		}

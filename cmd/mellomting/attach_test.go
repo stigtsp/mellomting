@@ -284,29 +284,3 @@ func TestAttachOptionsCarryMetricsSwitch(t *testing.T) {
 		t.Fatal("metrics not on by default")
 	}
 }
-
-// Each decision server becomes one more agent, declared rather than
-// discovered (SYSTEMONE_PLAN §D13); discovered servers stay undeclared.
-func TestAttachOptionsCarryDecisionServers(t *testing.T) {
-	a := &config.Attach{
-		Edge:    "https://edge.example.org",
-		Servers: []string{"http://127.0.0.1:8000"},
-		DecisionServers: []config.DecisionServer{
-			{URL: "http://127.0.0.1:18440", Models: []string{"karpo-decision-31b"}, Health: "/healthz"},
-			{URL: "http://127.0.0.1:8011", Models: []string{"clef-flash"}},
-		},
-	}
-	opts, err := attachOptionsWithKey(a, "key", testsupport.DiscardLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(opts) != 3 || opts[0].Decision != nil {
-		t.Fatalf("got %d agents, first decision %+v; want 3, the discovered server undeclared", len(opts), opts[0].Decision)
-	}
-	if d := opts[1].Decision; d == nil || d.Health != "/healthz" || d.Models[0] != "karpo-decision-31b" || opts[1].Backend.Port() != "18440" {
-		t.Fatalf("karpo agent: %+v", opts[1])
-	}
-	if d := opts[2].Decision; d == nil || d.Health != config.DefaultDecisionHealth {
-		t.Fatalf("clef agent health: %+v, want the default", d)
-	}
-}

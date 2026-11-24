@@ -90,39 +90,3 @@ func TestNoModelsWithoutAgents(t *testing.T) {
 		t.Fatal("a router with no models and agents disabled must be refused")
 	}
 }
-
-// A decision server's model is typed; every replica of a name shares one
-// type, so type gating cannot depend on which replica answers
-// (SYSTEMONE_PLAN §D13).
-func TestDynamicModelTypes(t *testing.T) {
-	r := agentsOnlyRouter(t)
-	if err := r.AddDynamicTyped("lab/k", "agent-1", "k", 0, "key1", "decision"); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.TypeOf("lab/k"); got != "decision" {
-		t.Fatalf("type = %q, want decision", got)
-	}
-	if err := r.AddDynamicTyped("lab/k", "agent-2", "k", 0, "key1", "decision"); err != nil {
-		t.Fatalf("a second decision replica: %v", err)
-	}
-	if err := r.AddDynamic("lab/k", "agent-3", "k", 0, "key1"); !errors.Is(err, ErrModelType) {
-		t.Fatalf("an untyped replica of a decision model: %v, want ErrModelType", err)
-	}
-	if err := r.AddDynamic("lab/g", "agent-1", "g", 0, "key1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.AddDynamicTyped("lab/g", "agent-2", "g", 0, "key1", "decision"); !errors.Is(err, ErrModelType) {
-		t.Fatalf("a decision replica of an untyped model: %v, want ErrModelType", err)
-	}
-	if got := r.TypeOf("lab/g"); got != "" {
-		t.Fatalf("untyped model type = %q", got)
-	}
-	if err := r.AddDynamicTyped("lab/x", "agent-1", "x", 0, "key1", "generation"); err == nil {
-		t.Fatal("an attached model may only be untyped or decision")
-	}
-	r.RemoveDynamic("agent-1")
-	r.RemoveDynamic("agent-2")
-	if err := r.AddDynamic("lab/k", "agent-3", "k", 0, "key1"); err != nil {
-		t.Fatalf("once its decision replicas are gone the name is free: %v", err)
-	}
-}

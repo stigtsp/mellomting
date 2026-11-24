@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"mellomting/internal/discovery"
 )
 
 func TestRelayableRoutes(t *testing.T) {
@@ -35,61 +33,8 @@ func TestRelayableRoutes(t *testing.T) {
 		{"GET", "/v1/responses/a.b", false},
 	} {
 		r := httptest.NewRequest(c.method, "http://agent"+c.target, nil)
-		if got := relayable(r, false); got != c.want {
+		if got := relayable(r); got != c.want {
 			t.Errorf("%s %s: relayable = %v, want %v", c.method, c.target, got, c.want)
-		}
-	}
-}
-
-// A decision server is relayed POST /v1/systemone and nothing else, and
-// a discovered server is not relayed it (SYSTEMONE_PLAN §D13).
-func TestRelayableDecisionRoutes(t *testing.T) {
-	for _, c := range []struct {
-		method, target string
-		decision, want bool
-	}{
-		{"POST", "/v1/systemone", true, true},
-		{"POST", "/v1/systemone", false, false},
-		{"GET", "/v1/systemone", true, false},
-		{"POST", "/v1/systemone/x", true, false},
-		{"POST", "/v1/systemone?x=1", true, false},
-		{"POST", "/v1//systemone", true, false},
-		{"POST", "/v1/%73ystemone", true, false},
-		{"POST", "/v1/chat/completions", true, false},
-		{"POST", "/v1/embeddings", true, false},
-		{"POST", "/v1/responses", true, false},
-		{"GET", "/v1/models", true, false},
-		{"GET", "/healthz", true, false},
-		{"GET", "/metrics", true, false},
-	} {
-		r := httptest.NewRequest(c.method, "http://agent"+c.target, nil)
-		if got := relayable(r, c.decision); got != c.want {
-			t.Errorf("%s %s (decision %v): relayable = %v, want %v", c.method, c.target, c.decision, got, c.want)
-		}
-	}
-}
-
-func TestParseModelTypes(t *testing.T) {
-	adv := []advertised{{Model: discovery.Model{ID: "k"}}, {Model: discovery.Model{ID: "j"}}}
-	got, err := parseModelTypes([]byte(`{"decision":["k"]}`), adv)
-	if err != nil || len(got) != 1 || !got["k"] {
-		t.Fatalf("got %v, %v", got, err)
-	}
-	if got, err := parseModelTypes([]byte(`{"decision":[]}`), adv); err != nil || len(got) != 0 {
-		t.Fatalf("empty list: %v, %v", got, err)
-	}
-	for _, bad := range []string{
-		``, `null`, `[]`, `"k"`, `{}`, `{"decision":null}`, `{"decision":"k"}`,
-		`{"decision":["x"]}`, `{"decision":["k","k"]}`, `{"decision":[null]}`, `{"decision":[1]}`,
-		`{"decision":["k"],"generation":["j"]}`, `{"decision":["k"]} {}`, `{"decision":["k"]`,
-		// One key, spelled exactly: encoding/json alone matches keys
-		// case-insensitively and lets a repeated key win last, so an
-		// agent's reply could read differently to another decoder.
-		`{"decision":["k"],"decision":["j"]}`, `{"decision":[],"decision":["j"]}`,
-		`{"Decision":["k"]}`, `{"DECISION":["k"]}`,
-	} {
-		if got, err := parseModelTypes([]byte(bad), adv); err == nil {
-			t.Errorf("%q: accepted as %v", bad, got)
 		}
 	}
 }

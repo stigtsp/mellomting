@@ -59,25 +59,3 @@ attach:
 		t.Errorf("attach-only policy grants read %v, write %v, listen %v; want none", pol.ReadPaths, pol.WriteFiles, pol.Listeners)
 	}
 }
-
-// A decision server's port is granted like a discovered server's.
-func TestAttachDecisionSandboxPolicy(t *testing.T) {
-	cfg, err := config.Parse([]byte(`version: 1
-attach:
-  edge: https://edge.example.org
-  key_file: /etc/mellomting/agent.key
-  decision_servers:
-    - url: http://127.0.0.1:18440
-      models: [karpo-decision-31b]
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pol, err := sandboxPolicy(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(pol.ConnectTCP, []uint16{443, 18440}) {
-		t.Errorf("connect %v, want the edge's 443 and the decision server", pol.ConnectTCP)
-	}
-}

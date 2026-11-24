@@ -3,7 +3,6 @@ package config
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 const agentsBase = `version: 1
@@ -52,38 +51,5 @@ func TestAgentNamespaceAndNames(t *testing.T) {
 	}
 	if ValidateModelName("lab/*") == nil {
 		t.Fatal(`a model named "lab/*" would read as a namespace grant`)
-	}
-}
-
-// TestAgentsDecisionRequestTimeout pins SYSTEMONE_PLAN §D14: the request
-// bound of an attachment serving only decision models is configurable on
-// the edge, defaults to the 30s decision bound, and is bounded like a
-// server's.
-func TestAgentsDecisionRequestTimeout(t *testing.T) {
-	cfg, err := Parse([]byte(agentsBase + "agents:\n  enabled: true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cfg.Agents.DecisionRequestTimeout.Duration(); got != decisionRequestTimeout {
-		t.Fatalf("default = %s, want %s", got, decisionRequestTimeout)
-	}
-	cfg, err = Parse([]byte(agentsBase + "agents:\n  enabled: true\n  decision_request_timeout: 10m\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := AgentDecisionBackend(cfg.Agents)
-	if b.RequestTimeout.Duration() != 10*time.Minute || b.HeaderTimeout.Duration() != 10*time.Minute {
-		t.Fatalf("timeouts = %s/%s, want 10m/10m", b.HeaderTimeout.Duration(), b.RequestTimeout.Duration())
-	}
-	if b.QueueTimeout.Duration() != defaultQueueTimeout {
-		t.Fatalf("queue wait = %s, want the agents' 120s, under the 10m bound", b.QueueTimeout.Duration())
-	}
-	for doc, want := range map[string]string{
-		"agents:\n  enabled: true\n  decision_request_timeout: 31m\n":                                                               "agents.decision_request_timeout",
-		"servers:\n  a: {url: \"http://127.0.0.1:8000\"}\nmodels:\n  m: {servers: [a]}\nagents:\n  decision_request_timeout: 60s\n": "agents.enabled is false",
-	} {
-		if _, err := Parse([]byte(agentsBase + doc)); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%q: got %v, want error containing %q", doc, err, want)
-		}
 	}
 }
