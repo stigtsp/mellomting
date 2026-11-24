@@ -678,7 +678,7 @@ func relayable(r *http.Request) bool {
 	case r.Method == http.MethodGet && p == "/v1/models":
 		return true
 	case r.Method == http.MethodPost && (p == "/v1/chat/completions" || p == "/v1/completions" ||
-		p == "/v1/embeddings" || p == "/v1/responses"):
+		p == "/v1/embeddings" || p == "/v1/responses" || p == "/v1/systemone"):
 		return true
 	}
 	rest, ok := strings.CutPrefix(p, "/v1/responses/")

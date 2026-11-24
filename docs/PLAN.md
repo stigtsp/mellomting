@@ -608,9 +608,9 @@ Three rules:
   serves, and a model of any other type is refused with 400
   `model_type_mismatch`. A type added later is refused everywhere until an
   operation names it, which fails closed. An attached model (§104) has no
-  type, since its server's model list does not say whether it embeds; it
-  reaches the generation and embeddings operations, never this one, and
-  agents do not relay this path.
+  type, since its server's model list does not say whether it embeds or
+  decides; it reaches every operation, this one included, and its server
+  refuses what it does not serve (SYSTEMONE_PLAN §D13).
 - The body is forwarded with nothing added. The server rejects any key it
   does not know, so Mellomting rewrites only `model` (to `upstream_model`)
   and adds nothing: no output cap, no stream-usage injection, and
@@ -4212,9 +4212,9 @@ configuration also means a restart per model.
   registers each id as `<namespace>/<id>`, with the context window the
   server reports (MODEL_METADATA_DESIGN §1, §3). `/v1/models` lists the
   window as `context_length`, the minimum across replicas, and nothing
-  else from the card. A model list does not say whether a model generates
-  or embeds, so attached models have no type (§13) and both kinds of
-  endpoint reach them; the server rejects what it cannot serve.
+  else from the card. A model list does not say whether a model generates,
+  embeds or decides, so attached models have no type (§13) and every kind
+  of endpoint reaches them; the server rejects what it cannot serve.
 - An attachment can detach between routing and forwarding. The proxy then
   routes the request to another replica without spending a retry attempt,
   or answers 503 when none is left. A stored Responses API response lives

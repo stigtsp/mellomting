@@ -263,6 +263,13 @@ attach:
   # metrics: false                                  # refuse the edge's reads of the servers' load
 ```
 
+Every model a server lists in `/v1/models` is served on every endpoint,
+`/v1/systemone` included, and the server refuses the calls it does not
+serve; its rejection message reaches the client. An Ollama server with
+decision models attaches like this with no further configuration. A
+decision server without `/v1/models` cannot attach; configure it on the
+edge as `type: decision` (SYSTEMONE_PLAN §D13).
+
 A daemon that attaches serves no clients, so a configuration with `attach`
 may set only `logging`, `shutdown`, and the sandbox modes under `security`;
 any other section is refused. `shutdown.grace_period` is the longest a

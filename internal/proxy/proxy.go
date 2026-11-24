@@ -92,13 +92,11 @@ func (o operation) consumesUsage() bool { return o.route == routeByModel }
 
 // serves reports whether a model of type mt may be served here. An
 // attached model has no type (""): its server's model list does not say
-// whether it embeds, so it reaches the generation and embeddings
-// operations as it always has. A decision server advertises no model
-// list to attach from, so an untyped model never reaches a decision
-// operation.
+// whether it generates, embeds or decides, so it reaches every operation
+// and the server refuses the ones it does not serve (SYSTEMONE_PLAN §D13).
 func (o operation) serves(mt string) bool {
 	if mt == "" {
-		return o.modelType == "generation" || o.modelType == "embedding"
+		return true
 	}
 	return mt == o.modelType
 }

@@ -183,15 +183,48 @@ func TestGoneConnectionFallsBack(t *testing.T) {
 	}
 }
 
-// An attached model's type is unknown, and a decision server advertises
-// no model list to attach from, so /v1/systemone never reaches one: the
-// decision endpoint serves only models configured as type: decision.
-func TestAttachedModelRefusedOnDecision(t *testing.T) {
-	p, _ := agentProxy(t, []string{"agent-a-1"}, func(cfg *config.Config) fakeAgents {
-		return fakeAgents{"agent-a-1": agentClient(t, cfg, "agent-a-1")}
-	})
-	w := run(t, p, http.MethodPost, "/v1/systemone", `{"model":"lab/m","input":"x"}`, labKey())
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "model_type_mismatch") {
-		t.Fatalf("status %d, want 400 model_type_mismatch: %s", w.Code, w.Body)
+// An attached model's type is unknown, so /v1/systemone reaches it as
+// every other operation does, and the server's own refusal is what a
+// model of the wrong kind gets (SYSTEMONE_PLAN §D13).
+func TestAttachedModelServesDecisions(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		want   string
+	}{
+		{http.StatusOK, `{"answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":3,"output_tokens":0}}`, `"noul":0.9`},
+		{http.StatusBadRequest, `{"error":"model does not support decisions"}`, "model does not support decisions"},
+	} {
+		var path string
+		p, _ := agentProxy(t, []string{"agent-a-1"}, func(cfg *config.Config) fakeAgents {
+			cl, err := backend.New(backend.Options{
+				Name:             "agent-a-1",
+				Cfg:              config.AgentBackend(cfg.Agents),
+				Network:          backend.Policy{Mode: "loopback-only"},
+				MaxResponseBytes: cfg.Server.MaxResponseBytes,
+				Log:              testsupport.DiscardLogger(),
+				Untrusted:        true,
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					path = r.URL.Path
+					return &http.Response{
+						StatusCode: c.status,
+						Header:     http.Header{"Content-Type": {"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(c.body)),
+						Request:    r,
+					}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return fakeAgents{"agent-a-1": cl}
+		})
+		w := run(t, p, http.MethodPost, "/v1/systemone", `{"model":"lab/m","state":"x","questions":{}}`, labKey())
+		if path != "/v1/systemone" {
+			t.Fatalf("backend path %q, want /v1/systemone", path)
+		}
+		if w.Code != c.status || !strings.Contains(w.Body.String(), c.want) {
+			t.Fatalf("status %d body %s, want %d containing %q", w.Code, w.Body, c.status, c.want)
+		}
 	}
 }

@@ -270,6 +270,6 @@ users file's directory, not the inode a key mutation renames away.)
 The SystemOne decision endpoint (`docs/SYSTEMONE_PLAN.md`, PLAN §11.4) is
 implemented: relay-by-default, the string-shaped backend diagnostic, the
 `decision` model type with its per-server timeout and metrics defaults,
-allow-list type gating (attached models, which have no type, reach the
-generation and embeddings routes only), and the `POST /v1/systemone` route.
+allow-list type gating (attached models, which have no type, reach every
+route, `/v1/systemone` included), and the `POST /v1/systemone` route.
 The live check against the Clef wrapper (step 7) is still to be run.

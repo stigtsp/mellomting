@@ -86,9 +86,8 @@ type later is refused everywhere until an operation names it.
 
 An attached model (PLAN §104) has no type: its server's `/v1/models` does
 not say whether it embeds, so it has always been served on both the
-generation and embeddings operations. It keeps that, and is refused on
-`/v1/systemone`: a decision server has no model list to attach from, and
-an agent does not relay the path.
+generation and embeddings operations. It is served on `/v1/systemone` too
+(§D13).
 
 ### D3. Forward the body with nothing added
 
@@ -286,6 +285,38 @@ Two things were weighed for the amendment:
 `RelayUpstreamErrors` becomes a pointer in the source schema, as the
 admission fields already are, so an explicit `false` can be told from
 unset. `config show-effective` prints the resolved value.
+
+### D13. Agents relay /v1/systemone
+
+Amendment, 2026-11-24 (Brev pilot). The decision models the pilot serves
+run where the edge cannot reach them, which is the case PLAN §104 exists
+for. Ollama, the runtime the pilot settled on for 16 GB cards, serves
+`/v1/systemone` beside the OpenAI routes on one port and lists its
+decision models in `/v1/models`, so an agent attaches them like any other
+model.
+
+- The agent relays `POST /v1/systemone` with its other allow-listed
+  routes (PLAN §11.3), exact path only.
+- Attached models stay untyped, and type gating (§D2) lets an untyped
+  model reach every operation. A chat call to a decision model, or a
+  decision call to a chat model, is refused by the server, and the
+  refusal reaches the client through error relay. Type gating would only
+  have refused it one hop earlier.
+- Attached backends relay their rejection messages as configured servers
+  do by default (§D12). The agent already chooses the whole body of every
+  answer, so its bounded, sanitized message discloses nothing new.
+- An attachment keeps the generation bounds (30m request), so a slow or
+  queued decision call is not cut at 30s. `agents.max_concurrency`
+  applies as for any attachment; a serial server queues the rest itself.
+- A decision server with no `/v1/models` cannot attach. Serve it as a
+  configured `type: decision` server, or put a server with a model list
+  in front of it.
+- Rejected design, built and removed: `attach.decision_servers` declaring
+  url, model ids and a health path per server, typed through a
+  `/mellomting/model-types` path the edge read on attach. It needed a
+  second list for Ollama, which serves both kinds from one port, and a
+  server in the wrong list failed the attach on the edge with nothing
+  shown on the agent.
 
 ### D14. A configurable request bound
 
