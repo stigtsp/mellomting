@@ -82,6 +82,11 @@ func TestParseModelTypes(t *testing.T) {
 		``, `null`, `[]`, `"k"`, `{}`, `{"decision":null}`, `{"decision":"k"}`,
 		`{"decision":["x"]}`, `{"decision":["k","k"]}`, `{"decision":[null]}`, `{"decision":[1]}`,
 		`{"decision":["k"],"generation":["j"]}`, `{"decision":["k"]} {}`, `{"decision":["k"]`,
+		// One key, spelled exactly: encoding/json alone matches keys
+		// case-insensitively and lets a repeated key win last, so an
+		// agent's reply could read differently to another decoder.
+		`{"decision":["k"],"decision":["j"]}`, `{"decision":[],"decision":["j"]}`,
+		`{"Decision":["k"]}`, `{"DECISION":["k"]}`,
 	} {
 		if got, err := parseModelTypes([]byte(bad), adv); err == nil {
 			t.Errorf("%q: accepted as %v", bad, got)

@@ -94,28 +94,46 @@ func readModelTypes(ctx context.Context, rt http.RoundTripper, advertised []adve
 }
 
 // parseModelTypes strictly decodes a model-types reply against the
-// attachment's advertised ids.
+// attachment's advertised ids: exactly one object with exactly one key,
+// spelled "decision", whose value is an array of strings. It walks the
+// tokens itself because encoding/json matches keys case-insensitively
+// and lets a repeated key win last, so `{"decision":[],"decision":["x"]}`
+// would otherwise type a model that a reader of the first key would not.
 func parseModelTypes(data []byte, advertised []advertised) (map[string]bool, error) {
+	invalid := errors.New("model types: invalid reply")
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var mt struct {
-		Decision *[]string `json:"decision"`
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, invalid
 	}
-	if err := dec.Decode(&mt); err != nil {
-		return nil, errors.New("model types: invalid reply")
+	key, err := dec.Token()
+	if err != nil {
+		return nil, invalid
+	}
+	if key == json.Delim('}') {
+		return nil, errors.New("model types: decision list missing")
+	}
+	if key != "decision" {
+		return nil, invalid
+	}
+	var ids *[]string
+	if err := dec.Decode(&ids); err != nil {
+		return nil, invalid
+	}
+	if ids == nil {
+		return nil, errors.New("model types: decision list missing")
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, invalid // a second key, or a truncated object
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("model types: trailing data")
-	}
-	if mt.Decision == nil {
-		return nil, errors.New("model types: decision list missing")
 	}
 	known := make(map[string]bool, len(advertised))
 	for _, m := range advertised {
 		known[m.ID] = true
 	}
-	out := make(map[string]bool, len(*mt.Decision))
-	for _, id := range *mt.Decision {
+	out := make(map[string]bool, len(*ids))
+	for _, id := range *ids {
 		if !known[id] {
 			return nil, fmt.Errorf("model types: %q is not an advertised model", id)
 		}
