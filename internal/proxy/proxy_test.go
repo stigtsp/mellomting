@@ -34,7 +34,7 @@ import (
 // requests at once; reading them is safe once every request a test
 // issued has returned, which is when tests read them.
 type fakeVLLM struct {
-	server    *httptest.Server
+	server    *testsupport.PipeServer
 	mu        sync.Mutex
 	lastModel string
 	lastPath  string
@@ -45,7 +45,9 @@ type fakeVLLM struct {
 func newFakeVLLM(t *testing.T, behaviour http.HandlerFunc) *fakeVLLM {
 	t.Helper()
 	f := &fakeVLLM{behaviour: behaviour}
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Served in memory, so these tests run where loopback ports cannot
+	// be bound; the client reaches it through transportFor.
+	f.server = testsupport.NewPipeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var env struct {
 			Model string `json:"model"`
@@ -56,7 +58,7 @@ func newFakeVLLM(t *testing.T, behaviour http.HandlerFunc) *fakeVLLM {
 		f.mu.Unlock()
 		behaviour(w, r)
 	}))
-	t.Cleanup(f.server.Close)
+	pipeTransports.Store(f.server.URL, f.server.Transport)
 	return f
 }
 
@@ -167,8 +169,8 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name:             "b1",
-		Cfg:              cfg.Backends["b1"],
+		Name: "b1",
+		Cfg:  cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL),
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              testsupport.DiscardLogger(),
@@ -185,6 +187,29 @@ func newProxy(t *testing.T, f *fakeVLLM) *Proxy {
 
 // newProxyCfg builds a single-backend proxy from an explicit config, for
 // tests that need to vary timeouts.
+// pipeTransports maps an in-memory fake backend's base URL to the
+// transport that reaches it, so the helpers below wire it into the
+// backend client without each test passing it along.
+var pipeTransports sync.Map
+
+// pipeBackend serves h in memory and returns its base URL. Tests built
+// on it run where loopback ports cannot be bound.
+func pipeBackend(t *testing.T, h http.Handler) string {
+	t.Helper()
+	s := testsupport.NewPipeServer(t, h)
+	pipeTransports.Store(s.URL, s.Transport)
+	return s.URL
+}
+
+// transportFor returns the in-memory transport for baseURL, or nil
+// (an untyped nil, so the client dials) for a real server.
+func transportFor(baseURL string) http.RoundTripper {
+	if v, ok := pipeTransports.Load(baseURL); ok {
+		return v.(*http.Transport)
+	}
+	return nil
+}
+
 func newProxyCfg(t *testing.T, cfg *config.Config) *Proxy {
 	t.Helper()
 	router, err := routing.New(cfg, nil)
@@ -194,6 +219,7 @@ func newProxyCfg(t *testing.T, cfg *config.Config) *Proxy {
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
+		Transport: transportFor(cfg.Backends["b1"].BaseURL),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +286,7 @@ func TestModelLoggedTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log,
 	})
 	if err != nil {
@@ -310,7 +336,7 @@ func TestClientDisconnectClassified(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
@@ -437,8 +463,8 @@ func TestEndpointModelTypeAgreement(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name:             "b1",
-		Cfg:              cfg.Backends["b1"],
+		Name: "b1",
+		Cfg:  cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL),
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              testsupport.DiscardLogger(),
@@ -505,8 +531,8 @@ func TestResolveTargetModelTypeAllowList(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name:             "b1",
-		Cfg:              cfg.Backends["b1"],
+		Name: "b1",
+		Cfg:  cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL),
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              testsupport.DiscardLogger(),
@@ -633,7 +659,7 @@ func TestEmbeddingsStreamDoesNotBypassAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"],
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL),
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              testsupport.DiscardLogger(),
@@ -1258,8 +1284,8 @@ func TestStreamIdleUsesPerBackendBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name:             "b1",
-		Cfg:              cfg.Backends["b1"],
+		Name: "b1",
+		Cfg:  cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL),
 		Network:          backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes,
 		Log:              testsupport.DiscardLogger(),
@@ -1576,7 +1602,7 @@ func TestBodyLimitsAndEncoding(t *testing.T) {
 	cfg3.Server.MaxBodyBytes = 64
 	router3, _ := routing.New(cfg3, nil)
 	cl3, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg3.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg3.Backends["b1"], Transport: transportFor(cfg3.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg3.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
@@ -1840,8 +1866,8 @@ func TestAffinityPinBoundToModel(t *testing.T) {
 	clients := map[string]*backend.Client{}
 	for _, name := range []string{"b1", "b2"} {
 		c, err := backend.New(backend.Options{
-			Name:             name,
-			Cfg:              cfg.Backends[name],
+			Name: name,
+			Cfg:  cfg.Backends[name], Transport: transportFor(cfg.Backends[name].BaseURL),
 			Network:          backend.Policy{Mode: "loopback-only"},
 			MaxResponseBytes: cfg.Server.MaxResponseBytes,
 			Log:              testsupport.DiscardLogger(),
@@ -1920,7 +1946,7 @@ func TestLogEndpointExcludesResponseID(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {

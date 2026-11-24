@@ -77,7 +77,7 @@ func agentProxy(t *testing.T, routes []string, agents func(*config.Config) fakeA
 		}
 	}
 	static, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {

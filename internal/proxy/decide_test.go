@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +27,7 @@ import (
 // with a 400 {"error": ...} instead.
 type fakeSystemOne struct {
 	id       string // the server's own model id
-	server   *httptest.Server
+	url      string
 	failWith string
 
 	mu       sync.Mutex
@@ -39,16 +38,17 @@ type fakeSystemOne struct {
 func newFakeSystemOne(t *testing.T, id string) *fakeSystemOne {
 	t.Helper()
 	f := &fakeSystemOne{id: id}
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.url = pipeBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.lastBody = body
 		f.requests++
+		failWith := f.failWith
 		f.mu.Unlock()
-		if f.failWith != "" {
+		if failWith != "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"` + f.failWith + `"}`))
+			_, _ = w.Write([]byte(`{"error":"` + failWith + `"}`))
 			return
 		}
 		var fields map[string]json.RawMessage
@@ -78,7 +78,6 @@ func newFakeSystemOne(t *testing.T, id string) *fakeSystemOne {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"` + f.id + `","answers":{"q1":"yes"},"usage":{"input_tokens":7,"output_tokens":0}}`))
 	}))
-	t.Cleanup(f.server.Close)
 	return f
 }
 
@@ -111,14 +110,14 @@ func decideConfig(serverURL, upstream string) *config.Config {
 // the upstream model defaulting to the server's own id (§D11).
 func newDecideProxy(t *testing.T, f *fakeSystemOne) *Proxy {
 	t.Helper()
-	return newProxyCfg(t, decideConfig(f.server.URL, f.id))
+	return newProxyCfg(t, decideConfig(f.url, f.id))
 }
 
 // newDecideAccountingProxy is newDecideProxy with token accounting
 // enabled, for the usage test (§D5).
 func newDecideAccountingProxy(t *testing.T, f *fakeSystemOne, quota *accounting.Quota, writer *accounting.Writer) *Proxy {
 	t.Helper()
-	cfg := decideConfig(f.server.URL, f.id)
+	cfg := decideConfig(f.url, f.id)
 	cfg.Accounting.Enabled = true
 	cfg.Accounting.EnsureStreamUsage = new(true)
 	router, err := routing.New(cfg, nil)
@@ -128,6 +127,7 @@ func newDecideAccountingProxy(t *testing.T, f *fakeSystemOne, quota *accounting.
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
+		Transport: transportFor(cfg.Backends["b1"].BaseURL),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestDecideForwardsBodyWithNothingAdded(t *testing.T) {
 	// The server's own id differs from the public name, so the model
 	// rewrite is visible in what the backend received.
 	f := newFakeSystemOne(t, "clef-internal")
-	p := newProxyCfg(t, decideConfig(f.server.URL, "clef-internal"))
+	p := newProxyCfg(t, decideConfig(f.url, "clef-internal"))
 
 	body := `{"model":"clef-flash","state":{"pkg":"Acme"},"questions":{"q1":"Is this safe?"}}`
 	rec := run(t, p, http.MethodPost, "/v1/systemone", body, testKey("clef-flash"))
@@ -266,7 +266,7 @@ func TestDecideAccountsUsageAsSystemone(t *testing.T) {
 func TestDecideForwardsServerRejections(t *testing.T) {
 	t.Parallel()
 	f := newFakeSystemOne(t, "clef-flash")
-	cfg := decideConfig(f.server.URL, f.id)
+	cfg := decideConfig(f.url, f.id)
 	b := cfg.Backends["b1"]
 	b.RelayUpstreamErrors = true
 	cfg.Backends["b1"] = b
@@ -305,7 +305,7 @@ func TestDecideRelaysBackendStringError(t *testing.T) {
 		f := newFakeSystemOne(t, "clef-flash")
 		f.failWith = reason
 		var buf bytes.Buffer
-		p := newProxyLogged(t, withRelay(decideConfig(f.server.URL, f.id), true), &buf, slog.LevelInfo)
+		p := newProxyLogged(t, withRelay(decideConfig(f.url, f.id), true), &buf, slog.LevelInfo)
 
 		rec := run(t, p, http.MethodPost, "/v1/systemone",
 			`{"model":"clef-flash","state":{},"questions":{}}`, testKey("clef-flash"))
@@ -334,7 +334,7 @@ func TestDecideRelaysBackendStringError(t *testing.T) {
 		f := newFakeSystemOne(t, "clef-flash")
 		f.failWith = reason
 		var buf bytes.Buffer
-		p := newProxyLogged(t, withRelay(decideConfig(f.server.URL, f.id), false), &buf, slog.LevelDebug)
+		p := newProxyLogged(t, withRelay(decideConfig(f.url, f.id), false), &buf, slog.LevelDebug)
 
 		rec := run(t, p, http.MethodPost, "/v1/systemone",
 			`{"model":"clef-flash","state":{},"questions":{}}`, testKey("clef-flash"))
@@ -362,7 +362,7 @@ func TestDecideRelaysBackendStringError(t *testing.T) {
 		f := newFakeSystemOne(t, "clef-flash")
 		f.failWith = reason
 		var buf bytes.Buffer
-		p := newProxyLogged(t, withRelay(decideConfig(f.server.URL, f.id), true), &buf, slog.LevelDebug)
+		p := newProxyLogged(t, withRelay(decideConfig(f.url, f.id), true), &buf, slog.LevelDebug)
 
 		rec := run(t, p, http.MethodPost, "/v1/systemone",
 			`{"model":"clef-flash","state":{},"questions":{}}`, testKey("clef-flash"))

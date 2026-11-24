@@ -51,7 +51,9 @@ func buildEnvWithLog(t *testing.T, behaviour http.HandlerFunc, mod func(*config.
 // before the store is built (e.g. to add disabled or expired keys).
 func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*config.Config), k1lim auth.KeyLimits, log *slog.Logger, usersFn func(*auth.UsersFile)) *env {
 	t.Helper()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The fake backend is served in memory, so these tests run where
+	// loopback ports cannot be bound.
+	ts := testsupport.NewPipeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/responses/") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"resp_x","object":"response"}`))
@@ -59,7 +61,6 @@ func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*confi
 		}
 		behaviour(w, r)
 	}))
-	t.Cleanup(ts.Close)
 
 	cfg := &config.Config{
 		Server: config.Server{
@@ -118,9 +119,14 @@ func buildEnvWithUsers(t *testing.T, behaviour http.HandlerFunc, mod func(*confi
 		t.Fatal(err)
 	}
 
+	// A test that points b1 at another server dials it for real.
+	var transport http.RoundTripper
+	if cfg.Backends["b1"].BaseURL == ts.URL {
+		transport = ts.Transport
+	}
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
-		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log,
+		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log, Transport: transport,
 	})
 	if err != nil {
 		t.Fatal(err)

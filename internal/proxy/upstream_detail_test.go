@@ -43,6 +43,7 @@ func newProxyLogged(t *testing.T, cfg *config.Config, buf *bytes.Buffer, level s
 	client, err := backend.New(backend.Options{
 		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: log,
+		Transport: transportFor(cfg.Backends["b1"].BaseURL),
 	})
 	if err != nil {
 		t.Fatal(err)

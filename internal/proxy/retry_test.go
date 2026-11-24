@@ -81,14 +81,14 @@ func newDualEnvStrategyIdle(t *testing.T, strategy string, maxAttempts int, idle
 	}
 
 	cl1, err := backend.New(backend.Options{
-		Name: "b1", Cfg: cfg.Backends["b1"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: cfg.Backends["b1"], Transport: transportFor(cfg.Backends["b1"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cl2, err := backend.New(backend.Options{
-		Name: "b2", Cfg: cfg.Backends["b2"], Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b2", Cfg: cfg.Backends["b2"], Transport: transportFor(cfg.Backends["b2"].BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
@@ -344,7 +344,7 @@ func TestQueueFullFallsBack(t *testing.T) {
 	b.QueueTimeout = config.Duration(50 * time.Millisecond)
 	cfg.Backends["b1"] = b
 	c, err := backend.New(backend.Options{
-		Name: "b1", Cfg: b, Network: backend.Policy{Mode: "loopback-only"},
+		Name: "b1", Cfg: b, Transport: transportFor(b.BaseURL), Network: backend.Policy{Mode: "loopback-only"},
 		MaxResponseBytes: cfg.Server.MaxResponseBytes, Log: testsupport.DiscardLogger(),
 	})
 	if err != nil {
