@@ -609,8 +609,10 @@ Three rules:
   `model_type_mismatch`. A type added later is refused everywhere until an
   operation names it, which fails closed. An attached model (§104) has no
   type, since its server's model list does not say whether it embeds; it
-  reaches the generation and embeddings operations, never this one, and
-  agents do not relay this path.
+  reaches the generation and embeddings operations, never this one. A
+  decision server an agent's operator declares attaches its models typed
+  `decision`, served here and nowhere else (§104.2b, SYSTEMONE_PLAN
+  §D13).
 - The body is forwarded with nothing added. The server rejects any key it
   does not know, so Mellomting rewrites only `model` (to `upstream_model`)
   and adds nothing: no output cap, no stream-usage injection, and
@@ -4204,7 +4206,8 @@ configuration also means a restart per model.
   control come from the protocol.
 - The agent relays exactly the proxy's allow-listed routes (§11.1) to its
   local server, with no encoded or dot segments and no query, and nothing
-  else.
+  else: the generation and embeddings routes to a server it discovers,
+  `POST /v1/systemone` alone to a decision server (§104.2b).
 - On attach the proxy reads the agent's `GET /v1/models` with the same
   strict parser `init` uses (§77a.4, `discovery.ParseModelCards`) and
   registers each id as `<namespace>/<id>`, with the context window the
@@ -4222,6 +4225,17 @@ configuration also means a restart per model.
 - Attached backends go through the same admission, header and request
   timeouts, response bounds, SSE handling, accounting and sanitized errors
   as configured ones.
+
+## 104.2b Decision servers
+
+Amendment, 2026-11-24 (Brev pilot). `attach.decision_servers` names local
+decision servers (§11.4), each with the model ids it accepts and a health
+path. A decision server has no model list, so the agent probes the health
+path instead, answers the edge's `GET /v1/models` itself with the
+configured ids, and answers `GET /mellomting/model-types` with them; it
+relays only `POST /v1/systemone` to that server. The edge registers those
+models typed `decision`, and only the agent's own answer on that path can
+type a model. SYSTEMONE_PLAN §D13 has the rules.
 
 ## 104.2a Installation
 

@@ -87,8 +87,8 @@ type later is refused everywhere until an operation names it.
 An attached model (PLAN §104) has no type: its server's `/v1/models` does
 not say whether it embeds, so it has always been served on both the
 generation and embeddings operations. It keeps that, and is refused on
-`/v1/systemone`: a decision server has no model list to attach from, and
-an agent does not relay the path.
+`/v1/systemone`. An agent's operator can declare a decision server, whose
+models attach typed `decision` (§D13).
 
 ### D3. Forward the body with nothing added
 
@@ -285,6 +285,68 @@ Two things were weighed for the amendment:
 `RelayUpstreamErrors` becomes a pointer in the source schema, as the
 admission fields already are, so an explicit `false` can be told from
 unset. `config show-effective` prints the resolved value.
+
+### D13. Agents relay decision servers
+
+Amendment, 2026-11-24 (Brev pilot): the first decision models the pilot
+serves run on rented GPU instances the edge cannot reach, which is the
+case PLAN §104 exists for. Until now a decision server could only be a
+configured server.
+
+A decision server has no `/v1/models`, so nothing about it can be
+discovered, on either side. The agent's operator declares it, as the
+edge's operator declares `type: decision` (§D11):
+
+```yaml
+attach:
+  edge: https://edge.example
+  key_file: /etc/mellomting/agent.key
+  decision_servers:
+    - url: http://127.0.0.1:18440
+      models: [karpo-decision-31b]
+      health: /healthz
+```
+
+- `decision_servers` sits beside `servers`; at least one of the two is
+  required. Each entry is one more connection to the edge, as each
+  `servers` URL is. `models` are the ids the server accepts in `model`,
+  with the advertised-id rules (PLAN §104.4); `health` is the path the
+  agent probes for readiness and liveness in place of `/v1/models`
+  (default `/health`), any 2xx meaning up. A URL may not appear in both
+  lists.
+- **Readiness and recovery.** The agent attaches once `health` answers 2xx
+  and watches it as it watches `/v1/models` (PLAN §104.3); the model list
+  is the configured one, so it never changes while the agent runs.
+- **What the edge sees.** The agent answers the edge's `GET /v1/models`
+  itself, never relaying it, with the configured ids. The type travels on
+  a second path the agent also answers itself, `GET
+  /mellomting/model-types`, like `/mellomting/backend-metrics` (PLAN
+  §104.6): `{"decision": [ids]}`. A generation agent and an older agent
+  answer 404 there, which means no typed models. The type therefore comes
+  from the agent's configuration, never from its server: a server's model
+  list cannot make a model `decision`, because that list is not where the
+  edge reads types.
+- **The edge** strictly decodes the reply, size-bounded: one object, one
+  key, an array of distinct advertised ids, each also in the attachment's
+  model list. Anything else fails the attach, as a malformed model list
+  does. Each listed id registers typed `decision`; type gating (§D2) then
+  routes `/v1/systemone` to it and refuses every generative and embeddings
+  operation, and untyped attached models stay refused on `/v1/systemone`.
+  Replicas of one name must agree on type; one that does not is ignored,
+  as a name owned by another key is. An attachment whose models are all
+  decision models takes the decision timeouts (§D11), with its queue wait
+  lowered to that bound.
+- **The relay.** A decision connection relays `POST /v1/systemone` and
+  nothing else; a generation connection relays everything it did, and not
+  `/v1/systemone`. Both remain exact-path allow-lists (PLAN §11.3). The
+  body is relayed unchanged, so §D3 holds end to end.
+- **Threat model** is PLAN §104.7's: the agent already chooses the
+  responses and the usage for its models. Declaring a model `decision`
+  only narrows which endpoint reaches it, within the agent key's own
+  namespace and ownership rules.
+
+`init --edge` does not write `decision_servers`; the section is written by
+hand, as a configured decision model is (§D9).
 
 ## Implementation
 
