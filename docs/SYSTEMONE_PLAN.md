@@ -1,6 +1,7 @@
 # SystemOne decision endpoint
 
-Status: plan, decisions settled; awaiting go-ahead. Date: 2026-10-06.
+Status: implemented through step 6; step 7, the live check, waits on the
+wrapper. Planned 2026-10-06.
 
 ## Goal
 
@@ -117,8 +118,10 @@ source code. Revisit if over-size bodies show up as load.
 `{"input_tokens": N, "output_tokens": 0}` is the Responses usage shape, which
 `fromUsageJSON` already recognizes by its key names
 (`internal/accounting/record.go:174`). Total is computed as input plus
-output. Records carry `endpoint: "systemone"`, so `mellomting usage report`
-separates decision traffic from generation without a new field. Quota
+output. Records carry `endpoint: "systemone"` and the decision model's name,
+so decision traffic can be told from generation without a new field: `top`'s
+Usage view groups by model, and the log can be filtered on `endpoint`.
+`mellomting usage report` totals by key only, so it adds the two together. Quota
 reservation follows the non-generative path, as for embeddings. Tests pin
 all three.
 
@@ -225,6 +228,11 @@ backends; it needs the types of the models that reference the server,
 which it has. The startup `backend admission` line prints the timeouts in
 force. Timeouts gain no configuration key, so `show-effective` gains no
 field and its output still parses back to the same config.
+
+The wrapper has no `/metrics` or `/api/ps` either, so `top` does not read a
+decision-only server's load report (PLAN §43.2) unless the operator writes
+`metrics: true`. Without this, the daemon would ask it for both every five
+minutes and get two 404s.
 
 `queue_timeout` must not exceed `request_timeout`: a longer wait would
 outlive the request it is waiting to send. Today the check compares

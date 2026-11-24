@@ -653,6 +653,40 @@ func TestSourceDecisionServerDefaults(t *testing.T) {
 	}
 }
 
+// TestSourceDecisionServerSkipsMetrics: a decision server publishes
+// neither /metrics nor /api/ps, so top does not read a decision-only
+// server unless the operator writes metrics: true. A server shared with
+// a generation model is read as before.
+func TestSourceDecisionServerSkipsMetrics(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]byte(decisionServerYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Backends[defaultBackendName("clef-flash", "clef")].NoMetrics {
+		t.Fatal("decision-only server is polled for metrics by default")
+	}
+	on := strings.Replace(decisionServerYAML, "url: http://127.0.0.1:8011", "url: http://127.0.0.1:8011\n    metrics: true", 1)
+	cfg, err = Parse([]byte(on))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Backends[defaultBackendName("clef-flash", "clef")].NoMetrics {
+		t.Fatal("metrics: true ignored on a decision server")
+	}
+	mixed := decisionServerYAML + "  qwen:\n    servers: [clef]\n"
+	cfg, err = Parse([]byte(mixed))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, model := range []string{"clef-flash", "qwen"} {
+		if cfg.Backends[defaultBackendName(model, "clef")].NoMetrics {
+			t.Fatalf("%s: shared server not polled for metrics", model)
+		}
+	}
+}
+
 // TestSourceMixedServerKeepsGenerationTimeouts pins §D11: a server
 // shared by a decision and a generation model keeps the generation
 // timeouts. The smaller bounds would cut a generation call off, while

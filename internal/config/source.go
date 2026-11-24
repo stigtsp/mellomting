@@ -31,7 +31,8 @@ type sourceServer struct {
 	QueueSize      *int      `yaml:"queue_size"`
 	QueueTimeout   *Duration `yaml:"queue_timeout"`
 	// Metrics false stops `top` from reading this server's own load
-	// report (PLAN §43.2). Absent means on.
+	// report (PLAN §43.2). Absent means on, except on a server that
+	// serves only decision models, which publish no report.
 	Metrics *bool `yaml:"metrics,omitempty"`
 }
 
@@ -48,6 +49,8 @@ type serverSettings struct {
 	wait           Duration
 	headerTimeout  Duration
 	requestTimeout Duration
+	// noMetrics stops top reading the server's load report.
+	noMetrics bool
 }
 
 // resolveServers resolves every server's admission limits and timeouts
@@ -110,7 +113,13 @@ func resolveServers(doc sourceDoc) (map[string]serverSettings, []string) {
 		if queue < 0 || queue > maxServerQueueSize {
 			errs = append(errs, fmt.Sprintf("servers.%s.queue_size: must be between 0 and %d, got %d", name, maxServerQueueSize, queue))
 		}
-		out[name] = serverSettings{conc: conc, queue: queue, wait: wait, headerTimeout: header, requestTimeout: request}
+		// A decision server publishes no load report, so a decision-only
+		// server is not read unless the operator asks for it.
+		noMetrics := decisionOnly[name]
+		if s.Metrics != nil {
+			noMetrics = !*s.Metrics
+		}
+		out[name] = serverSettings{conc: conc, queue: queue, wait: wait, headerTimeout: header, requestTimeout: request, noMetrics: noMetrics}
 	}
 	return out, errs
 }
@@ -242,7 +251,7 @@ func normalizeSourceWith(doc sourceDoc, backendName func(publicModel, server str
 				QueueTimeout:        st.wait,
 				HeaderTimeout:       st.headerTimeout,
 				RequestTimeout:      st.requestTimeout,
-				NoMetrics:           s.Metrics != nil && !*s.Metrics,
+				NoMetrics:           st.noMetrics,
 			}
 			refs = append(refs, BackendRef{Name: name, Weight: 1})
 			referenced[server] = true

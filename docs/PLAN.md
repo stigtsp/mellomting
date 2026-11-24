@@ -1981,7 +1981,8 @@ seconds, through the server's backend client (its network policy and
 credential): `/metrics` for vLLM and SGLang, `/api/ps` for Ollama. A server
 that publishes neither, such as another Mellomting, is asked again every
 five minutes and logs nothing above debug. `servers.<name>.metrics: false`
-turns it off. Pages are bounded and only allow-listed series are kept.
+turns it off. A server serving only decision models (§11.4) publishes no
+report, so it is not read unless `metrics: true` is written. Pages are bounded and only allow-listed series are kept.
 
 `top` opens on a dashboard that ranks what is holding traffic back, naming
 the limit and the item; other views list keys, models, servers, live

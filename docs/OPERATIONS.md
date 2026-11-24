@@ -413,7 +413,8 @@ listed in the bottom border.
 
 Server reports come from `/metrics` (vLLM; SGLang started with
 `--enable-metrics`) or `/api/ps` (Ollama). A server that publishes neither
-shows "no metrics". To stop reading one, set `metrics: false` on it. An
+shows "no metrics". To stop reading one, set `metrics: false` on it. A
+decision-only server is not read at all unless it has `metrics: true`. An
 agent's operator can refuse with `attach.metrics: false`.
 
 The Usage view reads the accounting log and its rotations directly, so run

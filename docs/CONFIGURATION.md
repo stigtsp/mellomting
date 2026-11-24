@@ -78,6 +78,7 @@ server's own request bound is refused, naming the server.
 | Request timeout | 30s | 30m |
 | Header timeout | 30s | 300s |
 | Queue wait default | 30s | 120s |
+| Load report read by `top` | no | yes |
 
 If a server requires authentication, add `api_key_file` to its entry, pointing
 to a protected file containing its credential. Client credentials are stripped
@@ -104,7 +105,9 @@ servers:
 See [Operations](OPERATIONS.md) for how relays are logged.
 
 With `server.admin_socket` set, the daemon reads each server's own load
-report for `mellomting top`. To stop that for one server:
+report for `mellomting top`. A server that serves only decision models is
+not read, since decision servers publish no report; `metrics: true` reads it
+anyway. To stop reading any other server:
 
 ```yaml
 servers:
