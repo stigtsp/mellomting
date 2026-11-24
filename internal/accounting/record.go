@@ -89,8 +89,8 @@ type responsesUsage struct {
 }
 
 // ParseUsage parses token usage from a backend response body. endpoint is
-// one of "chat.completions", "completions", "responses", or "" (best
-// effort). Both the Chat/Completions and the Responses usage shapes are
+// one of "chat.completions", "completions", "responses", "embeddings",
+// "systemone", or "" (best effort). Both the Chat/Completions and the Responses usage shapes are
 // recognized. Present is false when the body carries no usage.
 func ParseUsage(body []byte, endpoint string) Usage {
 	if len(body) == 0 {
