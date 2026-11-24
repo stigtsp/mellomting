@@ -30,6 +30,11 @@ type sourceServer struct {
 	MaxConcurrency *int      `yaml:"max_concurrency"`
 	QueueSize      *int      `yaml:"queue_size"`
 	QueueTimeout   *Duration `yaml:"queue_timeout"`
+	// RequestTimeout replaces the bound a non-streaming call waits on,
+	// which otherwise follows the types of the server's models: 30s on
+	// a decision-only server, 30m elsewhere (SYSTEMONE_PLAN §D14). A
+	// pointer, so show-effective prints it only when written.
+	RequestTimeout *Duration `yaml:"request_timeout,omitempty"`
 	// Metrics false stops `top` from reading this server's own load
 	// report (PLAN §43.2). Absent means on, except on a server that
 	// serves only decision models, which publish no report.
@@ -92,6 +97,20 @@ func resolveServers(doc sourceDoc) (map[string]serverSettings, []string) {
 		header, request := Duration(defaultHeaderTimeout), Duration(defaultRequestTimeout)
 		if decisionOnly[name] {
 			header, request = Duration(decisionHeaderTimeout), Duration(decisionRequestTimeout)
+		}
+		// An explicit request bound (§D14). A decision server's header
+		// bound is its request bound, as the defaults are; on any server
+		// the header bound never exceeds the request bound.
+		if s.RequestTimeout != nil {
+			request = *s.RequestTimeout
+			if d := request.Duration(); d <= 0 || d > defaultRequestTimeout {
+				errs = append(errs, fmt.Sprintf("servers.%s.request_timeout: must be > 0 and at most %s, got %s", name, defaultRequestTimeout, d))
+			}
+			if decisionOnly[name] {
+				header = request
+			} else {
+				header = min(header, request)
+			}
 		}
 		// A queue wait must not outlive the request it is waiting to
 		// send, so the bound is the server's own request timeout, not
@@ -290,11 +309,12 @@ type effectiveServer struct {
 	APIKeyFile string `yaml:"api_key_file,omitempty"`
 	// Not omitempty: with relay on by default, a dropped false would
 	// parse back as on.
-	RelayUpstreamErrors bool     `yaml:"relay_upstream_errors"`
-	MaxConcurrency      int      `yaml:"max_concurrency"`
-	QueueSize           int      `yaml:"queue_size"`
-	QueueTimeout        Duration `yaml:"queue_timeout"`
-	Metrics             *bool    `yaml:"metrics,omitempty"`
+	RelayUpstreamErrors bool      `yaml:"relay_upstream_errors"`
+	MaxConcurrency      int       `yaml:"max_concurrency"`
+	QueueSize           int       `yaml:"queue_size"`
+	QueueTimeout        Duration  `yaml:"queue_timeout"`
+	RequestTimeout      *Duration `yaml:"request_timeout,omitempty"`
+	Metrics             *bool     `yaml:"metrics,omitempty"`
 }
 
 // effectiveModel is the fully defaulted operator-facing projection of one
@@ -345,6 +365,7 @@ func effectiveSource(doc sourceDoc, cfg *Config) effectiveDoc {
 			MaxConcurrency:      st.conc,
 			QueueSize:           st.queue,
 			QueueTimeout:        st.wait,
+			RequestTimeout:      s.RequestTimeout,
 			Metrics:             s.Metrics,
 		}
 	}

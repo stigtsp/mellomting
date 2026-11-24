@@ -354,6 +354,41 @@ attach:
 `init --edge` does not write `decision_servers`; the section is written by
 hand, as a configured decision model is (§D9).
 
+### D14. A configurable request bound
+
+Amendment, 2026-11-24 (Brev pilot), revising §D11's "timeouts gain no
+configuration key". The 30s bound was sized from Clef-Flash's 150 ms
+calls. The decision servers the pilot measured on an A100 take far
+longer: a 30K-token state takes about 22 s on Karpo Decision 31B. Most of
+them compute one call at a time, and the bound starts when Mellomting
+forwards a call, not when it queues it (`Forward` arms it after
+admission), so with the default `max_concurrency` of 8 a call also waits
+behind up to seven others on the server against its own bound. Past it,
+the client gets a 504 `upstream_timeout`, the call is not retried (a
+timeout is not on the retry list), and the server goes on computing it,
+which delays the calls behind it further.
+
+- `servers.NAME.request_timeout` replaces a server's request bound, in
+  (0, 30m]: the generation bound is the ceiling, so no server can hold
+  a slot longer than it could before. On a decision-only server the
+  header bound is set to it, as the defaults are equal; on any other
+  server the header bound becomes the smaller of its default and the
+  request bound. `queue_timeout` stays bounded by it. `show-effective`
+  prints the key when written.
+- `agents.decision_request_timeout` is the same bound for an attachment
+  serving only decision models, default 30s, same range. It lives on the
+  edge, not in the agent's `decision_servers`, because the bound limits
+  how long the edge holds its own slots, which an agent must not choose.
+- The defaults do not change: 30s still refuses a wedged fast server in
+  seconds. CONFIGURATION.md says when to raise it and pairs it with
+  `max_concurrency: 1` for a serial server, so that the waiting happens
+  in Mellomting's queue, which does not count against the bound and
+  sends nothing the server would compute for a client that has gone.
+- Not addressed: an attachment's admission cap is `agents.max_concurrency`
+  for every attachment alike, so a serial decision server behind an
+  agent cannot be given a cap of 1 without capping every generation
+  agent too. A raised bound absorbs the wait instead.
+
 ## Implementation
 
 In this order. Each step leaves `make check` passing.
@@ -434,7 +469,8 @@ Decided 2026-10-06:
 - Scope stays minimal: a configurable `header_timeout`, a per-model
   `max_request_bytes`, and hiding decision models from `/v1/models` are
   all deferred (§D4, §D9). §D11 makes the timeout key unnecessary for
-  Clef; it is still wanted for generation servers.
+  Clef; the slower servers of the Brev pilot made a request bound
+  necessary (§D14, 2026-11-24).
 - Adding Clef should need only the §D11 block (2026-10-06).
 - Relay is on by default for every server; 429 stays relayable; the Info
   record carries the message length and the debug line its text (§D12).

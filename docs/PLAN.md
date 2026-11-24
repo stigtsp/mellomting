@@ -801,6 +801,8 @@ servers:
     max_concurrency: N           # optional, default 8 (§22)
     queue_size: N                # optional, default 32 (§22)
     queue_timeout: DURATION      # optional, default 120s (§22)
+    request_timeout: DURATION    # optional, default 30m; 30s on a
+                                 # decision-only server (SYSTEMONE_PLAN §D14)
 ```
 
 Model fields:
@@ -3234,7 +3236,7 @@ models:
 ```
 
 Server fields are `url` (required) and `api_key_file`, `relay_upstream_errors`,
-`max_concurrency`, `queue_size` and `queue_timeout` (optional). Model fields
+`max_concurrency`, `queue_size`, `queue_timeout` and `request_timeout` (optional). Model fields
 are `type` (optional, default generation), `servers` (required), `upstream_model`
 (optional, default public map key), `strategy` (optional; single when one
 server, least-inflight when several), and `policy` (optional). `backends:` and
@@ -4348,6 +4350,7 @@ agents:
   queue_size: 32               # requests waiting for a slot, per attachment
   queue_timeout: 120s          # longest wait for a slot
   max_models: 16               # models one attachment may register
+  decision_request_timeout: 30s # request bound of a decision-only attachment
 ```
 
 The defaults live in `internal/config/validate.go`. With agents enabled,

@@ -838,3 +838,77 @@ func TestSourceEffectiveShowsServerLimits(t *testing.T) {
 		t.Fatalf("effective output parses to a different config:\nfirst = %+v\nagain = %+v", cfg, again)
 	}
 }
+
+// TestSourceServerRequestTimeout pins SYSTEMONE_PLAN §D14: a decision
+// server whose calls take tens of seconds (a 30K-token state takes ~22s
+// on Karpo on an A100, and most servers run one request at a time, so a
+// call also waits behind the ones ahead of it on the server) needs a
+// longer bound than the 30s default. request_timeout sets the server's
+// request bound; the header bound follows it on a decision server and
+// never exceeds it on any server; the queue wait is checked against it.
+func TestSourceServerRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	with := func(limits string) string {
+		return strings.Replace(decisionServerYAML, "url: http://127.0.0.1:8011", "url: http://127.0.0.1:8011\n"+limits, 1)
+	}
+	cfg, err := Parse([]byte(with("    request_timeout: 10m\n    queue_timeout: 5m")))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	b := cfg.Backends[defaultBackendName("clef-flash", "clef")]
+	if b.RequestTimeout.Duration() != 10*time.Minute || b.HeaderTimeout.Duration() != 10*time.Minute {
+		t.Fatalf("timeouts = %s/%s, want 10m/10m", b.HeaderTimeout.Duration(), b.RequestTimeout.Duration())
+	}
+	if b.QueueTimeout.Duration() != 5*time.Minute {
+		t.Fatalf("queue wait = %s, want 5m", b.QueueTimeout.Duration())
+	}
+
+	// Without queue_timeout the default 120s wait fits under 10m.
+	cfg, err = Parse([]byte(with("    request_timeout: 10m")))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Backends[defaultBackendName("clef-flash", "clef")].QueueTimeout.Duration(); got != defaultQueueTimeout {
+		t.Fatalf("queue wait = %s, want the default %s", got, defaultQueueTimeout)
+	}
+
+	// A generation server: the header bound never exceeds the request
+	// bound, and a longer request bound leaves the header default.
+	gen, err := Parse([]byte(serverLimitsYAML("    request_timeout: 60s")))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, model := range []string{"m1", "m2"} {
+		gb := gen.Backends[defaultBackendName(model, "tuned")]
+		if gb.RequestTimeout.Duration() != time.Minute || gb.HeaderTimeout.Duration() != time.Minute {
+			t.Fatalf("generation timeouts = %s/%s, want 60s/60s", gb.HeaderTimeout.Duration(), gb.RequestTimeout.Duration())
+		}
+		if gb.QueueTimeout.Duration() != time.Minute {
+			t.Fatalf("generation queue wait = %s, want it lowered to 60s", gb.QueueTimeout.Duration())
+		}
+	}
+
+	for limits, want := range map[string]string{
+		"    request_timeout: 0s":                          "servers.clef.request_timeout",
+		"    request_timeout: 31m":                         "servers.clef.request_timeout",
+		"    request_timeout: 60s\n    queue_timeout: 61s": "servers.clef.queue_timeout",
+	} {
+		if _, err := Parse([]byte(with(limits))); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want one naming %s", limits, err, want)
+		}
+	}
+
+	// show-effective prints what the operator wrote, and parses back.
+	cfg, out, err := ParseEffective([]byte(with("    request_timeout: 10m")))
+	if err != nil {
+		t.Fatalf("ParseEffective: %v", err)
+	}
+	if !strings.Contains(string(out), "request_timeout: 10m0s") {
+		t.Fatalf("effective output lacks the request timeout:\n%s", out)
+	}
+	again, err := Parse(out)
+	if err != nil || !reflect.DeepEqual(cfg, again) {
+		t.Fatalf("effective output does not parse back to the same config: %v\n%s", err, out)
+	}
+}

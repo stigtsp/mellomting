@@ -187,6 +187,7 @@ func applyDefaults(c *Config) {
 		a.MaxModels = cmp.Or(a.MaxModels, defaultAgentMaxModels)
 		a.QueueSize = cmp.Or(a.QueueSize, defaultBackendQueueSize)
 		a.QueueTimeout = cmp.Or(a.QueueTimeout, Duration(defaultQueueTimeout))
+		a.DecisionRequestTimeout = cmp.Or(a.DecisionRequestTimeout, Duration(decisionRequestTimeout))
 	}
 
 	for name, b := range c.Backends {
@@ -547,7 +548,7 @@ func validateResponses(r *Responses) []string {
 func validateAgents(a *Agents) []string {
 	if !a.Enabled {
 		if a.MaxAttachments != 0 || a.MaxAttachmentsPerKey != 0 || a.MaxConcurrency != 0 || a.MaxModels != 0 ||
-			a.QueueSize != 0 || a.QueueTimeout != 0 {
+			a.QueueSize != 0 || a.QueueTimeout != 0 || a.DecisionRequestTimeout != 0 {
 			return []string{"agents: limits are set but agents.enabled is false"}
 		}
 		return nil
@@ -567,6 +568,9 @@ func validateAgents(a *Agents) []string {
 	}
 	if d := a.QueueTimeout.Duration(); d <= 0 || d > defaultRequestTimeout {
 		errs = append(errs, fmt.Sprintf("agents.queue_timeout: must be > 0 and at most request_timeout (%s), got %s", defaultRequestTimeout, d))
+	}
+	if d := a.DecisionRequestTimeout.Duration(); d <= 0 || d > defaultRequestTimeout {
+		errs = append(errs, fmt.Sprintf("agents.decision_request_timeout: must be > 0 and at most %s, got %s", defaultRequestTimeout, d))
 	}
 	if a.MaxModels < 1 || a.MaxModels > maxAgentModels {
 		errs = append(errs, fmt.Sprintf("agents.max_models: must be between 1 and %d, got %d", maxAgentModels, a.MaxModels))
@@ -592,14 +596,15 @@ func AgentBackend(a Agents) Backend {
 }
 
 // AgentDecisionBackend is AgentBackend for an attachment that serves only
-// decision models: the decision timeouts, with the queue wait lowered to
-// the request bound as a configured decision server's is (SYSTEMONE_PLAN
-// §D11, §D13).
+// decision models: agents.decision_request_timeout (30s by default) as
+// both the request and header bound, with the queue wait lowered to it as
+// a configured decision server's is (SYSTEMONE_PLAN §D11, §D13, §D14).
 func AgentDecisionBackend(a Agents) Backend {
+	request := cmp.Or(a.DecisionRequestTimeout, Duration(decisionRequestTimeout))
 	b := AgentBackend(a)
-	b.HeaderTimeout = Duration(decisionHeaderTimeout)
-	b.RequestTimeout = Duration(decisionRequestTimeout)
-	b.QueueTimeout = min(b.QueueTimeout, Duration(decisionRequestTimeout))
+	b.HeaderTimeout = request
+	b.RequestTimeout = request
+	b.QueueTimeout = min(b.QueueTimeout, request)
 	return b
 }
 

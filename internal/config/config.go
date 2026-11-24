@@ -99,6 +99,9 @@ type Agents struct {
 	// queue_timeout.
 	QueueSize    int      `yaml:"queue_size,omitempty"`
 	QueueTimeout Duration `yaml:"queue_timeout,omitempty"`
+	// DecisionRequestTimeout is the request bound of an attachment that
+	// serves only decision models (SYSTEMONE_PLAN §D14); default 30s.
+	DecisionRequestTimeout Duration `yaml:"decision_request_timeout,omitempty"`
 }
 
 // Shutdown controls graceful shutdown (PLAN §74).

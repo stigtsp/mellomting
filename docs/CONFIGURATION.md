@@ -73,10 +73,29 @@ model routed to it is `type: decision`; a server shared with generation
 models keeps the generation timeouts. An explicit `queue_timeout` above the
 server's own request bound is refused, naming the server.
 
+The 30s bound suits a server that answers in milliseconds. A server that
+takes seconds per call needs more, and so does one that computes one call
+at a time: the bound starts when Mellomting forwards the call, so a call
+waiting behind others on the server spends that wait against it, while a
+call waiting in Mellomting's own queue does not. A call past the bound gets
+a 504 `upstream_timeout` and is not retried; the server may go on computing
+it. Raise the bound with `request_timeout` (at most 30m), and set
+`max_concurrency` to what the server runs at once, so the rest wait in
+Mellomting's queue instead:
+
+```yaml
+servers:
+  karpo:
+    url: http://127.0.0.1:18440
+    max_concurrency: 1     # the server computes one call at a time
+    request_timeout: 2m    # one call's compute, with room to spare
+    queue_timeout: 2m      # the wait for the slot, at most request_timeout
+```
+
 | Setting | Decision server | Generation server |
 |---------|-----------------|-------------------|
-| Request timeout | 30s | 30m |
-| Header timeout | 30s | 300s |
+| Request timeout (`request_timeout`) | 30s | 30m |
+| Header timeout | the request timeout | 300s, or the request timeout if lower |
 | Queue wait default | 30s | 120s |
 | Load report read by `top` | no | yes |
 
@@ -217,6 +236,7 @@ agents:
   queue_size: 32               # requests waiting for a slot, per agent
   queue_timeout: 120s          # longest wait for a slot
   max_models: 16               # models one agent may register; more refuses the attach
+  decision_request_timeout: 30s # request bound of an agent serving only decision models, at most 30m
 ```
 
 The values shown are the defaults; `config show-effective` prints what
@@ -261,7 +281,12 @@ attach:
 
 The edge registers those models typed `decision`, under the agent key's
 namespace, and serves them on `/v1/systemone` only, with the decision
-timeouts. The agent relays nothing else to a decision server. Rejection
+timeouts: `agents.decision_request_timeout` on the edge, 30s unless set
+(see the decision-server table in [Servers and models](#servers-and-models)
+for when to raise it). `agents.max_concurrency` applies to every
+attachment alike, so a decision server that computes one call at a time
+still receives up to that many at once, each waiting its turn against the
+request bound. The agent relays nothing else to a decision server. Rejection
 messages from attached servers reach the client as a configured server's
 do. SYSTEMONE_PLAN §D13 has the design.
 
@@ -296,14 +321,16 @@ lists it. See [Hardening](../HARDENING.md).
 | Server admission | 8 in flight, queue 32, queue wait 120s |
 | Retry attempts | 1 |
 
-Backend timeouts assume a local inference server and have no configuration
-key. Generation servers get the defaults above; a server whose models are
-all `type: decision` gets the decision bounds from the table in
-[Servers and models](#servers-and-models) instead. A large request waits
+Backend timeouts assume a local inference server. Generation servers get the
+defaults above; a server whose models are all `type: decision` gets the
+decision bounds from the table in [Servers and models](#servers-and-models)
+instead. A server's `request_timeout` replaces its request bound, and its
+header bound never exceeds it; the other timeouts have no configuration key. A large request waits
 tens of seconds on scheduler admission and prefill before its first
 response byte, so the header bound covers that wait instead of reporting it
-as a backend failure. `config show-effective` does not show timeouts; the
-daemon logs each backend's bounds in a `backend admission` line at startup.
+as a backend failure. `config show-effective` shows only a `request_timeout`
+written in the configuration; the daemon logs each backend's bounds in a
+`backend admission` line at startup.
 
 Whichever in-flight limit is lowest decides when work starts queueing. A
 key's own `concurrent_requests` is 8 by default, the same as a server's

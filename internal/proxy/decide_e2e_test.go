@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"mellomting/internal/backend"
 	"mellomting/internal/config"
@@ -169,5 +172,66 @@ func TestDecideResponseIsBounded(t *testing.T) {
 	rec := run(t, p, http.MethodPost, "/v1/systemone", `{"model":"clef-flash","state":{},"questions":{}}`, testKey("clef-flash"))
 	if rec.Code == 200 || strings.Contains(rec.Body.String(), "xxxx") {
 		t.Fatalf("status = %d, oversized answer passed through (%d bytes)", rec.Code, rec.Body.Len())
+	}
+}
+
+// §D14: the request bound starts when Mellomting admits the call, so a
+// call waiting behind others on a server that runs one at a time spends
+// that wait against it, while a call waiting in Mellomting's own queue
+// does not. A call past the bound is a 504 upstream_timeout, sent once
+// even with retries configured: the server may still be computing it.
+func TestDecideTimeoutCountsServerSideQueueing(t *testing.T) {
+	t.Parallel()
+	// A fresh server per run: one that timed out at the proxy keeps
+	// computing, as a real one does, and would delay the next run.
+	server := func(calls *atomic.Int32) string {
+		var serial sync.Mutex
+		return pipeBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			calls.Add(1)
+			serial.Lock() // the server computes one call at a time
+			defer serial.Unlock()
+			time.Sleep(400 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"clef-flash","answers":{},"usage":{"input_tokens":1,"output_tokens":0}}`))
+		}))
+	}
+	var calls atomic.Int32
+	run2 := func(conc int) []int {
+		cfg := decideConfig(server(&calls), "clef-flash")
+		cfg.Retry.MaxAttempts = 2
+		b := cfg.Backends["b1"]
+		b.MaxConcurrency, b.QueueSize = conc, 4
+		b.RequestTimeout, b.HeaderTimeout = config.Duration(600*time.Millisecond), config.Duration(600*time.Millisecond)
+		b.QueueTimeout = config.Duration(2 * time.Second)
+		cfg.Backends["b1"] = b
+		p := newProxyCfg(t, cfg)
+		codes := make([]int, 2)
+		var wg sync.WaitGroup
+		for i := range codes {
+			wg.Go(func() {
+				rec := run(t, p, http.MethodPost, "/v1/systemone", `{"model":"clef-flash","state":{},"questions":{}}`, testKey("clef-flash"))
+				codes[i] = rec.Code
+				if rec.Code == 504 && !strings.Contains(rec.Body.String(), "upstream_timeout") {
+					t.Errorf("504 body = %s, want upstream_timeout", rec.Body.String())
+				}
+			})
+		}
+		wg.Wait()
+		slices.Sort(codes)
+		return codes
+	}
+
+	// Both admitted at once: the second waits 400ms on the server, then
+	// computes 400ms, past the 600ms bound.
+	calls.Store(0)
+	if got := run2(2); !slices.Equal(got, []int{200, 504}) || calls.Load() != 2 {
+		t.Fatalf("concurrency 2: statuses %v after %d calls, want [200 504] after 2 (no retry)", got, calls.Load())
+	}
+	// One at a time: the second waits in Mellomting's queue, which does
+	// not count, and both answer.
+	calls.Store(0)
+	if got := run2(1); !slices.Equal(got, []int{200, 200}) {
+		t.Fatalf("concurrency 1: statuses %v, want [200 200]", got)
 	}
 }
