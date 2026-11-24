@@ -204,8 +204,14 @@ var relayableUpstreamStatus = map[int]bool{
 // handed out went to the client that sent the request, about that
 // request; its text is on the debug attempt line logBackendFailure has
 // already written.
+//
+// An attached agent's backend always relays (SYSTEMONE_PLAN §D13). Its
+// operator already chooses the whole body of every answer it gives, so
+// the bounded, sanitized message of a rejection discloses nothing it
+// could not send anyway, and without it every rejection by an attached
+// decision server reads alike (§D12).
 func (p *Proxy) relayUpstreamDetail(e apiError, requestID, backendName string, err error) apiError {
-	if !p.cfg.Backends[backendName].RelayUpstreamErrors {
+	if !p.cfg.Backends[backendName].RelayUpstreamErrors && !p.attached(backendName) {
 		return e
 	}
 	up, ok := errors.AsType[*backend.Upstream](err)
@@ -220,4 +226,13 @@ func (p *Proxy) relayUpstreamDetail(e apiError, requestID, backendName string, e
 		"message_bytes", len(up.Detail.Message),
 	)
 	return e
+}
+
+// attached reports whether backendName is an attached agent's backend.
+func (p *Proxy) attached(backendName string) bool {
+	if _, ok := p.clients[backendName]; ok {
+		return false
+	}
+	c, ok := p.client(backendName)
+	return ok && c.Untrusted()
 }
