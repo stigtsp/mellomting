@@ -227,7 +227,8 @@ Normalization resolves this where it already builds each server's
 backends; it needs the types of the models that reference the server,
 which it has. The startup `backend admission` line prints the timeouts in
 force. Timeouts gain no configuration key, so `show-effective` gains no
-field and its output still parses back to the same config.
+field and its output still parses back to the same config. (Revised by
+§D14: the request bound gained one.)
 
 The wrapper has no `/metrics` or `/api/ps` either, so `top` does not read a
 decision-only server's load report (PLAN §43.2) unless the operator writes
